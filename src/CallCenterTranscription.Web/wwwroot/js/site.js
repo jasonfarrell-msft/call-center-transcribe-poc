@@ -27,3 +27,36 @@ document.querySelectorAll("[data-translation-toggle='true']").forEach((button) =
         }
     });
 });
+
+const consoleNavButtons = Array.from(document.querySelectorAll("[data-console-nav-toggle='true']"));
+const consoleNavViews = Array.from(document.querySelectorAll("[data-console-nav-view='true']"));
+
+if (consoleNavButtons.length > 0 && consoleNavViews.length > 0) {
+    const setActiveView = (targetId) => {
+        consoleNavViews.forEach((view) => {
+            if (view.id === targetId) {
+                view.removeAttribute("hidden");
+            } else {
+                view.setAttribute("hidden", "");
+            }
+        });
+
+        consoleNavButtons.forEach((button) => {
+            const isActive = button.getAttribute("data-console-nav-target") === targetId;
+            button.setAttribute("aria-pressed", isActive ? "true" : "false");
+            button.classList.toggle("btn-primary", isActive);
+            button.classList.toggle("btn-outline-primary", !isActive);
+        });
+    };
+
+    consoleNavButtons.forEach((button) => {
+        button.addEventListener("click", () => {
+            const targetId = button.getAttribute("data-console-nav-target");
+            if (!targetId) {
+                return;
+            }
+
+            setActiveView(targetId);
+        });
+    });
+}
