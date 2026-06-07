@@ -1,0 +1,17 @@
+name: callcentertranscription
+infra:
+  provider: bicep
+  path: infra
+services:
+  api:
+    project: src/CallCenterTranscription.Api
+    language: dotnet
+    host: containerapp
+    docker:
+      path: ./Dockerfile
+      context: ../..
+      remoteBuild: true
+  web:
+    project: src/CallCenterTranscription.Web
+    language: dotnet
+    host: appservice

@@ -1,0 +1,20 @@
+﻿<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UserSecretsId>f2541aff-0fb3-4e1c-b0b6-38cdbd84a1d3</UserSecretsId>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="9.0.16" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\CallCenterTranscription.Shared\CallCenterTranscription.Shared.csproj" />
+    <ProjectReference Include="..\CallCenterTranscription.Ai\CallCenterTranscription.Ai.csproj" />
+    <ProjectReference Include="..\CallCenterTranscription.Telephony\CallCenterTranscription.Telephony.csproj" />
+  </ItemGroup>
+
+</Project>

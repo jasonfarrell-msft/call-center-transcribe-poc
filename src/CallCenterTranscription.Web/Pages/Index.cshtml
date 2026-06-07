@@ -1,0 +1,212 @@
+﻿@page
+@model IndexModel
+@{
+    ViewData["Title"] = "Representative Console";
+    var hasSession = !string.IsNullOrWhiteSpace(Model.CurrentSession.Call.CallId);
+    var hasSentiment = !string.IsNullOrWhiteSpace(Model.SentimentFeed.CallId);
+}
+
+<div class="rep-console">
+    <section class="console-context card-shell" aria-labelledby="console-heading">
+        <h1 id="console-heading" class="mb-3">Call-Center Representative Console</h1>
+        <p class="status-strip" role="status" aria-live="polite">@Model.ConnectionSummary</p>
+        @if (Model.HasConnectionIssues)
+        {
+            <div class="alert alert-warning" role="alert">
+                <p class="mb-2"><strong>Backend API connection issues detected.</strong></p>
+                <ul class="mb-0">
+                    @foreach (var issue in Model.ConnectionIssues)
+                    {
+                        <li>@issue</li>
+                    }
+                </ul>
+            </div>
+        }
+        <dl class="context-grid">
+            <div>
+                <dt>Call ID</dt>
+                <dd>@(string.IsNullOrWhiteSpace(Model.CurrentSession.Call.CallId) ? "Not connected" : Model.CurrentSession.Call.CallId)</dd>
+            </div>
+            <div>
+                <dt>Session</dt>
+                <dd>@(string.IsNullOrWhiteSpace(Model.CurrentSession.Call.SessionId) ? "Not connected" : Model.CurrentSession.Call.SessionId)</dd>
+            </div>
+            <div>
+                <dt>Customer</dt>
+                <dd>@(string.IsNullOrWhiteSpace(Model.CurrentSession.Call.CustomerName) ? "Not connected" : Model.CurrentSession.Call.CustomerName)</dd>
+            </div>
+            <div>
+                <dt>Representative</dt>
+                <dd>@(string.IsNullOrWhiteSpace(Model.CurrentSession.Call.AgentName) ? "Not connected" : Model.CurrentSession.Call.AgentName)</dd>
+            </div>
+            <div>
+                <dt>Queue</dt>
+                <dd>@(string.IsNullOrWhiteSpace(Model.CurrentSession.Call.QueueName) ? "Not connected" : Model.CurrentSession.Call.QueueName)</dd>
+            </div>
+            <div>
+                <dt>State</dt>
+                <dd>@(hasSession ? IndexModel.ToDisplayLabel(Model.CurrentSession.Call.State) : "Not connected")</dd>
+            </div>
+            <div>
+                <dt>Started</dt>
+                <dd>@(hasSession ? Model.CurrentSession.Call.StartedAtUtc.ToLocalTime().ToString("g") : "Not connected")</dd>
+            </div>
+            <div>
+                <dt>Scenario</dt>
+                <dd>@(string.IsNullOrWhiteSpace(Model.CurrentSession.Call.ScenarioName) ? "Not connected" : Model.CurrentSession.Call.ScenarioName)</dd>
+            </div>
+        </dl>
+        @if (!string.IsNullOrWhiteSpace(Model.CurrentSession.Notes))
+        {
+            <p class="supporting-copy mb-0">@Model.CurrentSession.Notes</p>
+        }
+    </section>
+
+    <section class="card-shell" aria-labelledby="transcript-heading">
+        <h2 id="transcript-heading">Transcript timeline</h2>
+        @if (!string.IsNullOrWhiteSpace(Model.TranscriptWarning))
+        {
+            <p class="mb-0 text-warning">@Model.TranscriptWarning</p>
+        }
+        else if (Model.TranscriptTimeline.Count == 0)
+        {
+            <p class="mb-0">No transcript events yet.</p>
+        }
+        else
+        {
+            <ol class="transcript-list">
+                @foreach (var item in Model.TranscriptTimeline)
+                {
+                    <li class="transcript-item">
+                        <article aria-labelledby="turn-@item.Sequence">
+                            <header class="transcript-header">
+                                <h3 id="turn-@item.Sequence">Turn @item.Sequence — @item.SpeakerDisplayLabel</h3>
+                                <p class="mb-0">
+                                    <span class="badge text-bg-light">@item.SpeakerRoleLabel</span>
+                                    <span class="badge text-bg-secondary">@item.SpeakerSourceLabel</span>
+                                    <span class="badge text-bg-info">@item.DetectedLanguageCode.ToUpperInvariant() · @item.DetectedLanguageLabel</span>
+                                    <span class="badge text-bg-dark">@item.SourceIndicator</span>
+                                </p>
+                            </header>
+                            <p class="meta-line">
+                                <time datetime="@item.TimestampUtc.ToString("O")">@item.TimestampDisplay</time>
+                            </p>
+                            @if (item.IsNonEnglish)
+                            {
+                                <p lang="@item.LanguageAttribute">@item.Text</p>
+                            }
+                            else
+                            {
+                                <p>@item.Text</p>
+                            }
+
+                            @if (item.IsNonEnglish)
+                            {
+                                @if (item.HasTranslation)
+                                {
+                                    var translationPanelId = $"translation-{item.EventId}";
+                                    <button type="button"
+                                                class="btn btn-outline-primary btn-sm"
+                                                data-translation-toggle="true"
+                                                data-translation-target="@translationPanelId"
+                                                aria-controls="@translationPanelId"
+                                                aria-expanded="false"
+                                                aria-label="@item.TranslationButtonLabel">
+                                            Reveal English translation
+                                        </button>
+                                    <section id="@translationPanelId"
+                                             class="translation-panel"
+                                             aria-label="Translation"
+                                             hidden>
+                                        <p class="mb-1"><strong>Translation (@item.TranslationTargetLanguageLabel):</strong></p>
+                                        <p lang="en" class="mb-0">@item.TranslationText</p>
+                                    </section>
+                                }
+                                else if (!item.HasTranslation)
+                                {
+                                    <button type="button"
+                                            class="btn btn-outline-secondary btn-sm"
+                                            disabled
+                                            aria-label="@item.TranslationButtonLabel">
+                                        Translation unavailable
+                                    </button>
+                                }
+                            }
+                        </article>
+                    </li>
+                }
+            </ol>
+
+            @if (!string.IsNullOrWhiteSpace(Model.TranslationWarning))
+            {
+                <p class="mb-0 text-warning">@Model.TranslationWarning</p>
+            }
+        }
+    </section>
+
+    <section class="card-shell" aria-labelledby="sentiment-heading">
+        <h2 id="sentiment-heading">Sentiment indicator</h2>
+        @if (!string.IsNullOrWhiteSpace(Model.SentimentWarning))
+        {
+            <p class="mb-0 text-warning">@Model.SentimentWarning</p>
+        }
+        else if (!hasSentiment)
+        {
+            <p class="mb-0">No sentiment updates yet.</p>
+        }
+        else
+        {
+            <p><strong>Current tone:</strong> @IndexModel.ToDisplayLabel(Model.SentimentFeed.Summary.OverallLabel)</p>
+            <p><strong>Trend:</strong> @IndexModel.ToDisplayLabel(Model.SentimentFeed.Summary.Trend)</p>
+            @if (!string.IsNullOrWhiteSpace(Model.SentimentFeed.Summary.SummaryText))
+            {
+                <p>@Model.SentimentFeed.Summary.SummaryText</p>
+            }
+            <p class="mb-0">
+                <strong>Updated:</strong>
+                @Model.SentimentFeed.Summary.UpdatedAtUtc.ToLocalTime().ToString("g")
+            </p>
+        }
+    </section>
+
+    <section class="card-shell" aria-labelledby="mission-control-heading">
+        <h2 id="mission-control-heading">Mission Control health</h2>
+        @if (!string.IsNullOrWhiteSpace(Model.MissionControlWarning))
+        {
+            <p class="mb-0 text-warning">@Model.MissionControlWarning</p>
+        }
+        else
+        {
+            <p><strong>Overall status:</strong> @IndexModel.ToDisplayLabel(Model.MissionControlHealth.OverallStatus)</p>
+            @if (!string.IsNullOrWhiteSpace(Model.MissionControlHealth.Summary))
+            {
+                <p>@Model.MissionControlHealth.Summary</p>
+            }
+
+            @if (Model.MissionControlHealth.Components.Count == 0)
+            {
+                <p class="mb-0">No mission control components reported yet.</p>
+            }
+            else
+            {
+                <ul class="mission-control-list">
+                    @foreach (var component in Model.MissionControlHealth.Components)
+                    {
+                        var modeLabel = component.IsLive ? "Live" : "Mock/Deferred";
+                        <li>
+                            <h3>@component.DisplayName</h3>
+                            <p><strong>Status:</strong> @IndexModel.ToDisplayLabel(component.Status)</p>
+                            <p><strong>Mode:</strong> @modeLabel</p>
+                            <p><strong>Readiness:</strong> @IndexModel.ToDisplayLabel(component.Readiness)</p>
+                            <p><strong>Evidence:</strong> @component.Evidence</p>
+                            <p class="mb-0">
+                                <strong>Checked:</strong>
+                                @(component.LastCheckedUtc == default ? "Not available" : component.LastCheckedUtc.ToLocalTime().ToString("g"))
+                            </p>
+                        </li>
+                    }
+                </ul>
+            }
+        }
+    </section>
+</div>

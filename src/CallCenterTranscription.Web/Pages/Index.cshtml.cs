@@ -1,0 +1,296 @@
+using CallCenterTranscription.Shared.Events;
+using CallCenterTranscription.Web.Services;
+using Microsoft.AspNetCore.Mvc.RazorPages;
+using System.Globalization;
+
+namespace CallCenterTranscription.Web.Pages;
+
+public class IndexModel : PageModel
+{
+    private readonly ILogger<IndexModel> _logger;
+    private readonly PipelineApiClient _pipelineApiClient;
+    private readonly List<string> _connectionIssues = [];
+
+    public IndexModel(ILogger<IndexModel> logger, PipelineApiClient pipelineApiClient)
+    {
+        _logger = logger;
+        _pipelineApiClient = pipelineApiClient;
+    }
+
+    public SessionCurrentResponse CurrentSession { get; private set; } = new();
+    public SentimentFeedResponse SentimentFeed { get; private set; } = new();
+    public MissionControlHealthResponse MissionControlHealth { get; private set; } = new();
+    public IReadOnlyList<TranscriptTimelineItem> TranscriptTimeline { get; private set; } = [];
+    public string ConnectionSummary { get; private set; } = "Backend API disconnected";
+    public string? SessionWarning { get; private set; }
+    public string? TranscriptWarning { get; private set; }
+    public string? TranslationWarning { get; private set; }
+    public string? SentimentWarning { get; private set; }
+    public string? MissionControlWarning { get; private set; }
+    public bool HasConnectionIssues => _connectionIssues.Count > 0;
+    public IReadOnlyList<string> ConnectionIssues => _connectionIssues;
+
+    public async Task OnGetAsync()
+    {
+        var cancellationToken = HttpContext.RequestAborted;
+        var currentSessionTask = _pipelineApiClient.GetCurrentSessionAsync(cancellationToken);
+        var transcriptTask = _pipelineApiClient.GetTranscriptEventsAsync(cancellationToken);
+        var translationTask = _pipelineApiClient.GetTranslationEventsAsync(cancellationToken);
+        var sentimentTask = _pipelineApiClient.GetSentimentFeedAsync(cancellationToken);
+        var missionControlTask = _pipelineApiClient.GetMissionControlHealthAsync(cancellationToken);
+
+        await Task.WhenAll(currentSessionTask, transcriptTask, translationTask, sentimentTask, missionControlTask);
+
+        var currentSessionResult = await currentSessionTask;
+        var transcriptResult = await transcriptTask;
+        var translationResult = await translationTask;
+        var sentimentResult = await sentimentTask;
+        var missionControlResult = await missionControlTask;
+
+        CurrentSession = ResolveResult(
+            currentSessionResult,
+            new SessionCurrentResponse(),
+            "session context",
+            warning => SessionWarning = warning);
+        var transcriptEvents = ResolveResult(
+            transcriptResult,
+            [],
+            "transcript feed",
+            warning => TranscriptWarning = warning);
+        var translationEvents = ResolveResult(
+            translationResult,
+            [],
+            "translation feed",
+            warning => TranslationWarning = warning);
+        SentimentFeed = ResolveResult(
+            sentimentResult,
+            new SentimentFeedResponse(),
+            "sentiment feed",
+            warning => SentimentWarning = warning);
+        MissionControlHealth = ResolveResult(
+            missionControlResult,
+            new MissionControlHealthResponse(),
+            "mission control feed",
+            warning => MissionControlWarning = warning);
+
+        TranscriptTimeline = BuildTranscriptTimeline(transcriptEvents, translationEvents);
+        ConnectionSummary = BuildConnectionSummary(currentSessionResult);
+    }
+
+    private static IReadOnlyList<TranscriptTimelineItem> BuildTranscriptTimeline(
+        IReadOnlyList<TranscriptEvent> transcriptEvents,
+        IReadOnlyList<TranslationEvent> translationEvents)
+    {
+        var translationByUtterance = translationEvents
+            .Where(translation => !string.IsNullOrWhiteSpace(translation.UtteranceId))
+            .GroupBy(translation => translation.UtteranceId, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(
+                group => group.Key,
+                group => group
+                    .OrderBy(translation => translation.TimestampUtc)
+                    .ThenBy(translation => translation.Sequence)
+                    .Last(),
+                StringComparer.OrdinalIgnoreCase);
+
+        return transcriptEvents
+            .OrderBy(transcriptEvent => transcriptEvent.Sequence)
+            .ThenBy(transcriptEvent => transcriptEvent.TimestampUtc)
+            .Select(transcriptEvent =>
+            {
+                var utteranceId = transcriptEvent.UtteranceId ?? string.Empty;
+                var isEnglish = IsEnglish(transcriptEvent.DetectedLanguage);
+                var isNonEnglish = !isEnglish && !string.IsNullOrWhiteSpace(transcriptEvent.DetectedLanguage);
+                TranslationEvent? translationEvent = null;
+                var hasTranslation = !string.IsNullOrWhiteSpace(utteranceId)
+                    && translationByUtterance.TryGetValue(utteranceId, out translationEvent);
+
+                return new TranscriptTimelineItem
+                {
+                    EventId = transcriptEvent.EventId,
+                    UtteranceId = utteranceId,
+                    Sequence = transcriptEvent.Sequence,
+                    TimestampUtc = transcriptEvent.TimestampUtc,
+                    TimestampDisplay = transcriptEvent.TimestampUtc.ToLocalTime().ToString("h:mm:ss tt"),
+                    SpeakerDisplayLabel = !string.IsNullOrWhiteSpace(transcriptEvent.SpeakerDisplayLabel)
+                        ? transcriptEvent.SpeakerDisplayLabel
+                        : transcriptEvent.SpeakerId,
+                    SpeakerRoleLabel = ToDisplayLabel(transcriptEvent.SpeakerRole),
+                    SpeakerSourceLabel = GetSpeakerSourceLabel(transcriptEvent.SpeakerLabelSource),
+                    Text = transcriptEvent.Text,
+                    DetectedLanguageCode = NormalizeLanguageCode(transcriptEvent.DetectedLanguage),
+                    DetectedLanguageLabel = GetLanguageLabel(transcriptEvent.DetectedLanguage),
+                    LanguageAttribute = isNonEnglish ? NormalizeLanguageCode(transcriptEvent.DetectedLanguage) : string.Empty,
+                    SourceIndicator = GetSourceIndicator(transcriptEvent.Source),
+                    IsNonEnglish = isNonEnglish,
+                    HasTranslation = hasTranslation,
+                    TranslationButtonLabel = hasTranslation
+                        ? $"Reveal English translation for utterance {transcriptEvent.Sequence}"
+                        : $"Translation not available for utterance {transcriptEvent.Sequence}",
+                    TranslationTargetLanguageLabel = hasTranslation ? GetLanguageLabel(translationEvent!.TargetLanguage) : "English",
+                    TranslationText = hasTranslation ? translationEvent!.TranslatedText : string.Empty
+                };
+            })
+            .ToArray();
+    }
+
+    private string BuildConnectionSummary(ApiFetchResult<SessionCurrentResponse> currentSessionResult)
+    {
+        if (HasConnectionIssues)
+        {
+            return currentSessionResult.IsSuccess
+                ? "Backend API degraded"
+                : "Backend API disconnected";
+        }
+
+        if (CurrentSession.Call.CallId is null or "")
+        {
+            return "Backend connected • Waiting for active call";
+        }
+
+        var mode = CurrentSession.IsMockFeedActive ? "Mock feed active" : "Live feed active";
+        var state = ToDisplayLabel(CurrentSession.Call.State);
+        return $"{mode} • Call state: {state}";
+    }
+
+    private T ResolveResult<T>(
+        ApiFetchResult<T> result,
+        T fallback,
+        string scope,
+        Action<string> setWarning)
+    {
+        if (result.IsSuccess && result.Value is not null)
+        {
+            return result.Value;
+        }
+
+        var warning = BuildUserFacingWarning(scope, result.FailureKind);
+        setWarning(warning);
+        _connectionIssues.Add(warning);
+        _logger.LogWarning(
+            "Backend API {Scope} unavailable ({FailureKind}). Detail: {Detail}. Rendering disconnected UI state.",
+            scope,
+            result.FailureKind?.ToString() ?? "unknown",
+            result.ErrorMessage ?? "none");
+        return fallback;
+    }
+
+    private static string BuildUserFacingWarning(string scope, ApiFetchFailureKind? failureKind)
+    {
+        return failureKind switch
+        {
+            ApiFetchFailureKind.Configuration => $"Backend API is not configured for {scope}.",
+            ApiFetchFailureKind.Connectivity => $"Backend API is unreachable for {scope}.",
+            ApiFetchFailureKind.Upstream => $"Backend API returned an error for {scope}.",
+            ApiFetchFailureKind.Payload => $"Backend API returned invalid data for {scope}.",
+            _ => $"Backend API is unavailable for {scope}."
+        };
+    }
+
+    private static bool IsEnglish(string? languageCode)
+    {
+        if (string.IsNullOrWhiteSpace(languageCode))
+        {
+            return true;
+        }
+
+        return languageCode.StartsWith("en", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsMockLike(string? source)
+    {
+        if (string.IsNullOrWhiteSpace(source))
+        {
+            return false;
+        }
+
+        return source.Contains("mock", StringComparison.OrdinalIgnoreCase)
+            || source.Contains("script", StringComparison.OrdinalIgnoreCase)
+            || source.Contains("deferred", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string GetSpeakerSourceLabel(string? source)
+    {
+        if (string.IsNullOrWhiteSpace(source))
+        {
+            return "Diarization source unknown";
+        }
+
+        return IsMockLike(source) ? "Mock diarization" : "Live diarization";
+    }
+
+    private static string GetSourceIndicator(string? source)
+    {
+        if (string.IsNullOrWhiteSpace(source))
+        {
+            return "Source unknown";
+        }
+
+        return IsMockLike(source) ? "Mock source" : "Live source";
+    }
+
+    private static string GetLanguageLabel(string? languageCode)
+    {
+        if (string.IsNullOrWhiteSpace(languageCode))
+        {
+            return "Unknown";
+        }
+
+        var normalized = NormalizeLanguageCode(languageCode);
+        try
+        {
+            var culture = CultureInfo.GetCultureInfo(normalized);
+            return culture.EnglishName;
+        }
+        catch (CultureNotFoundException)
+        {
+            return normalized.ToUpperInvariant();
+        }
+    }
+
+    private static string NormalizeLanguageCode(string? languageCode)
+    {
+        return string.IsNullOrWhiteSpace(languageCode) ? "und" : languageCode.Trim().ToLowerInvariant();
+    }
+
+    public static string ToDisplayLabel(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return "Unknown";
+        }
+
+        return string.Join(' ',
+            value.Split(['-', '_', ' '], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(token =>
+                {
+                    if (token.Length == 0)
+                    {
+                        return token;
+                    }
+
+                    return char.ToUpperInvariant(token[0]) + token[1..].ToLowerInvariant();
+                }));
+    }
+
+    public sealed record TranscriptTimelineItem
+    {
+        public string EventId { get; init; } = string.Empty;
+        public string UtteranceId { get; init; } = string.Empty;
+        public long Sequence { get; init; }
+        public DateTimeOffset TimestampUtc { get; init; }
+        public string TimestampDisplay { get; init; } = string.Empty;
+        public string SpeakerDisplayLabel { get; init; } = string.Empty;
+        public string SpeakerRoleLabel { get; init; } = string.Empty;
+        public string SpeakerSourceLabel { get; init; } = string.Empty;
+        public string Text { get; init; } = string.Empty;
+        public string DetectedLanguageCode { get; init; } = string.Empty;
+        public string DetectedLanguageLabel { get; init; } = "Unknown";
+        public string LanguageAttribute { get; init; } = string.Empty;
+        public string SourceIndicator { get; init; } = string.Empty;
+        public bool IsNonEnglish { get; init; }
+        public bool HasTranslation { get; init; }
+        public string TranslationButtonLabel { get; init; } = string.Empty;
+        public string TranslationTargetLanguageLabel { get; init; } = "English";
+        public string TranslationText { get; init; } = string.Empty;
+    }
+}

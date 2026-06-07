@@ -1,0 +1,52 @@
+# Build output
+bin/
+obj/
+TestResults/
+coverage/
+*.trx
+*.coverage
+*.coveragexml
+
+# IDE/editor state
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+*.swp
+*.bak
+
+# Package/cache output
+node_modules/
+dist/
+out/
+publish/
+
+# Local environment/secrets
+.env
+.env.*
+!.env.example
+secrets.json
+appsettings.Local.json
+
+# Azure Developer CLI local environment state
+.azure/*/.env
+.azure/*/.env.lock
+.azure/*/.state.json
+.azure/*/.state/
+.azure/.state-change
+
+# Squad local scratch only; keep team, decisions, logs, and orchestration history tracked.
+.squad/.scratch/
+.squad-workstream
