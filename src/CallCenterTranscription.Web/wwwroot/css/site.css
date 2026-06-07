@@ -35,6 +35,39 @@ body {
   gap: 1rem;
 }
 
+.console-nav {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.console-view {
+  display: grid;
+  gap: 1rem;
+}
+
+.console-columns {
+  display: grid;
+  gap: 1rem;
+}
+
+@media (min-width: 992px) {
+  .console-columns {
+    grid-template-columns: minmax(0, 2fr) minmax(260px, 1fr);
+    align-items: start;
+  }
+}
+
+.console-main-column {
+  min-width: 0;
+}
+
+.console-side-column {
+  display: grid;
+  gap: 1rem;
+  align-content: start;
+}
+
 .card-shell {
   border: 1px solid #d9dde5;
   border-radius: 0.75rem;
