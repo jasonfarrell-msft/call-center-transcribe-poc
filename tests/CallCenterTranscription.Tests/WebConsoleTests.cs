@@ -193,8 +193,9 @@ public sealed class WebHomepageSmokeTests(WebApplicationFactory<CallCenterTransc
         var html = await client.GetStringAsync("/");
 
         Assert.Contains("Call-Center Representative Console", html, StringComparison.Ordinal);
-        Assert.Contains("Transcript timeline", html, StringComparison.Ordinal);
+        Assert.Contains("Live transcript, diarization, and translation", html, StringComparison.Ordinal);
         Assert.Contains("Sentiment indicator", html, StringComparison.Ordinal);
+        Assert.Contains("Representative awareness", html, StringComparison.Ordinal);
         Assert.Contains("Mission Control health", html, StringComparison.Ordinal);
         Assert.Contains("Backend API connection issues detected.", html, StringComparison.Ordinal);
         Assert.Contains("Backend API is not configured", html, StringComparison.Ordinal);
