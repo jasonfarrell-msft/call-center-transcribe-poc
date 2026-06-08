@@ -668,3 +668,32 @@ Second-pass devil's-advocate review agreed with that call: the missing items are
 - **Criteria:** All 7 pass: 80/20 columns (4fr 1fr), full height + internal scroll (100dvh → flex:1 views → transcript-scroller flex:1 overflow-y:auto, body overflow:hidden), Mission Control link (styled as dimmed text, underline on hover, border-bottom on active, still a button with aria-controls, :focus-visible intact), JS hook integrity (site.js untouched, all data-* verified), content preserved (sentiment/Mission Control/transcript), colors/AA (no tokens changed, ~5.88:1 contrast), security (no secrets/external assets).
 - **Why:** The change cleanly delivers Jason's requirements without regressions. Build passed, visual hierarchy is now transcript-dominant, and the console remains keyboard-accessible and screen-reader compatible.
 - **Source:** `.squad/decisions/inbox/athrun-console-80-20-review.md`
+
+# 2026-06-08T12:05:43.410-04:00 — GitHub Actions Node20 → Node24 bump
+
+- **By:** Meyrin
+- **Type:** CI/CD maintenance
+- **Decision:** Bump all five flagged actions to their current latest major that declares `using: 'node24'`, and resolve each new major tag to its exact 40-char upstream commit SHA (annotated tags dereferenced to the underlying commit). Apply the same SHA-pinning to the floating-tag checkout references in the squad workflows.
+- **Rationale:** GitHub announced Node.js 24 enforcement on 2026-06-16 and removal of Node.js 20 from runners on 2026-09-16. Five actions in `.github/workflows/deploy-frontend.yml` were pinned to major versions declaring `using: 'node20'`. Four squad automation workflows carried floating-tag `actions/checkout@v4` references (Node20 era, no SHA pin). Bumping to Node24-compatible majors and SHA-pinning improves supply-chain posture ahead of the deadline.
+- **Actions bumped (all SHA-pinned):**
+  - `actions/checkout` v4 → v5 (SHA: `93cb6efe18208431cddfb8368fd83d5badbf9bfd`)
+  - `actions/setup-dotnet` v4 → v5 (SHA: `9a946fdbd5fb07b82b2f5a4466058b876ab72bb2`)
+  - `actions/upload-artifact` v4 → v7 (SHA: `043fb46d1a93c77aae656e7c1c64a875d1fc6a0a`)
+  - `actions/download-artifact` v4 → v8 (SHA: `3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c`)
+  - `azure/login` v2 → v3 (SHA: `532459ea530d8321f2fb9bb10d1e0bcf23869a43`)
+- **Workflows modified:** `deploy-frontend.yml`, `squad-heartbeat.yml`, `squad-issue-assign.yml`, `squad-triage.yml`, `sync-squad-labels.yml`
+- **Residual risk (non-blocking):** `actions/github-script@v7` remains floating in squad workflows (pre-existing, not in deprecation scope); `azure/webapps-deploy@v3` still Node20 era (monitor for future Node24 release).
+- **Status:** Committed as 9c6c32c (8 days ahead of enforcement deadline).
+- **Source:** `.squad/decisions/inbox/meyrin-actions-node24-bump.md`
+
+# 2026-06-08T12:05:43.410-04:00 — Review: GitHub Actions Node20 → Node24 bump
+
+- **By:** Athrun (Reviewer gate)
+- **Verdict:** ✅ APPROVE
+- **Criteria met:**
+  1. **NODE24 COVERAGE** ✅ — All 5 flagged actions bumped; version choices correct (upload-artifact v7, download-artifact v8, azure/login v3 are first Node24 releases).
+  2. **SHA INTEGRITY** ✅ — All 5 SHAs independently verified against upstream (including dereferenced annotated tag for azure/login).
+  3. **NO FLOATING TAGS (bumped only)** ✅ — All bumped actions are 40-char SHA-pinned with trailing version comments.
+  4. **NO LOGIC DRIFT** ✅ — Only `uses:` lines changed; no trigger, permissions, env, step, or with-arg modifications.
+- **Non-blocking follow-ups:** `actions/github-script@v7` floating in 6 squad workflow locations (pre-existing, supply-chain hygiene follow-up); `azure/webapps-deploy@v3` monitor for Node24 release.
+- **Source:** `.squad/decisions/inbox/athrun-actions-node24-review.md`

@@ -58,3 +58,7 @@ APPROVED. Two full-viewport screens with persistent nav bar. Flex layout fills r
 ### 2026-06-08 — Console 80/20 column layout review (Lunamaria)
 
 APPROVED. `grid-template-columns: 4fr 1fr` delivers the 80/20 split Jason asked for. Mission Control restyled from pill to dimmed text link with underline hover + border-bottom active. Height chain verified end-to-end (100dvh → flex → flex:1 grid → transcript-scroller overflow-y:auto). Body overflow:hidden prevents page scroll. JS untouched, all selectors resolve. WCAG AA contrast confirmed (≈5.88:1 for muted nav text). No content removed, no secrets.
+
+### 2026-06-08 — GitHub Actions Node20→Node24 bump review (Meyrin)
+
+APPROVED. Meyrin bumped 5 actions (checkout v5, setup-dotnet v5, upload-artifact v7, download-artifact v8, azure/login v3) across all 5 workflows to Node24-compatible releases with full 40-char SHA pins. All SHAs independently verified against upstream repos. No logic drift — only `uses:` lines changed. Non-blocking follow-up: `actions/github-script@v7` remains floating-tagged in 6 squad-workflow locations (pre-existing, not in scope of this change).
