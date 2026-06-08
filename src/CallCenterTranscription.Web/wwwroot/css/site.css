@@ -151,6 +151,7 @@ body {
   flex-direction: column;
   gap: var(--s3);
   padding: clamp(0.6rem, 1.2vw, 1.1rem);
+  overflow: hidden;
 }
 
 .console-view--mission {
@@ -178,6 +179,7 @@ body {
   padding: var(--s4) var(--s5);
   box-shadow: var(--sh);
   color: var(--cc-hdr-text);
+  flex-shrink: 0;
 }
 
 .console-header-top,
@@ -397,32 +399,43 @@ body {
 .screen-nav-btn {
   display: inline-flex;
   align-items: center;
-  padding: 0.35rem 1rem;
-  border: 1px solid transparent;
-  border-radius: 999px;
+  padding: 0.3rem 0.5rem;
+  border: none;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
   background: transparent;
   font-size: 0.82rem;
-  font-weight: 700;
+  font-weight: 600;
   letter-spacing: 0.01em;
-  color: var(--cc-hdr-text);
+  color: var(--cc-hdr-muted);
   cursor: pointer;
-  transition: background 0.15s ease, border-color 0.15s ease;
+  transition: color 0.15s ease, border-color 0.15s ease;
   white-space: nowrap;
 }
 
 .screen-nav-btn[aria-current="page"] {
-  background: rgba(255,255,255,.15);
-  border-color: rgba(255,255,255,.35);
+  color: var(--cc-hdr-text);
+  font-weight: 700;
+  border-bottom-color: rgba(255,255,255,.5);
 }
 
 .screen-nav-btn:hover:not([aria-current="page"]) {
-  background: rgba(255,255,255,.07);
-  border-color: rgba(255,255,255,.2);
+  color: var(--cc-hdr-text);
+  text-decoration: underline;
 }
 
 .screen-nav-btn:focus-visible {
   outline: 2px solid rgba(255,255,255,.7);
   outline-offset: 2px;
+  border-radius: 3px;
+}
+
+.screen-nav-sep {
+  color: var(--cc-hdr-muted);
+  font-size: 0.75rem;
+  padding: 0 0.1rem;
+  user-select: none;
+  opacity: .5;
 }
 
 /* Translation toggle link */
@@ -523,7 +536,7 @@ body {
 /* ── Two-column layout ──────────────────────────────────────── */
 .console-columns {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 295px;
+  grid-template-columns: 4fr 1fr;
   gap: var(--s4);
   flex: 1;
   min-height: 0;
@@ -538,12 +551,13 @@ body {
   overflow: hidden;
 }
 
-/* Side column: no legacy border-left/padding — the card handles its own chrome */
+/* Side column: scrollable so future stacked panels (knowledge cards, churn, etc.) work */
 .console-side-column {
   display: flex;
   flex-direction: column;
   min-height: 0;
-  overflow: hidden;
+  overflow-y: auto;
+  gap: var(--s3);
 }
 
 /* ── Panel header (inside transcript & sentiment cards) ─────── */
@@ -739,12 +753,10 @@ body {
 
 /* ── Sentiment Panel ────────────────────────────────────────── */
 .sentiment-panel {
-  height: 100%;
   display: flex;
   flex-direction: column;
   justify-content: flex-start;
   gap: 0.85rem;
-  overflow: hidden;
 }
 
 /* Score block */
@@ -921,7 +933,7 @@ body {
 /* ── Responsive ─────────────────────────────────────────────── */
 @media (max-width: 1199.98px) {
   .console-columns {
-    grid-template-columns: minmax(0, 1fr) 260px;
+    grid-template-columns: 4fr 1fr;
   }
 }
 
@@ -930,7 +942,7 @@ body {
   .console-main       { height: 100%; }
 
   .console-columns {
-    grid-template-columns: minmax(0, 2fr) minmax(180px, 1fr);
+    grid-template-columns: 4fr 1fr;
     gap: var(--s3);
   }
 }
@@ -946,7 +958,7 @@ body {
   }
 
   .screen-nav-btn {
-    padding: 0.25rem 0.65rem;
+    padding: 0.2rem 0.3rem;
     font-size: 0.77rem;
   }
 
@@ -969,7 +981,7 @@ body {
   }
 
   .console-columns {
-    grid-template-columns: minmax(0, 2.4fr) minmax(120px, 1fr);
+    grid-template-columns: 3fr 1fr;
     gap: 0.55rem;
   }
 
