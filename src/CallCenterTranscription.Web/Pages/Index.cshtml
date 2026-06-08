@@ -99,7 +99,7 @@
                                     : $"turn {item.Sequence}";
                                 var showTranslationLabel = $"Show English translation for {translationContext}";
                                 var hideTranslationLabel = $"Hide English translation for {translationContext}";
-                                <li class="transcript-item">
+                                <li class="transcript-item" data-speaker-role="@item.SpeakerRoleLabel.ToLowerInvariant()">
                                     <article aria-labelledby="turn-@item.Sequence">
                                         <div class="transcript-topline">
                                             <div class="transcript-speaker-block">
