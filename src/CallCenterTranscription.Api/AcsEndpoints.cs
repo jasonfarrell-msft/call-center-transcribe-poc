@@ -1,4 +1,5 @@
 using Azure.Communication.CallAutomation;
+using CallCenterTranscription.Api.Services;
 using CallCenterTranscription.Telephony;
 using System.Net.WebSockets;
 using System.Text.Json;
@@ -36,7 +37,6 @@ internal static class AcsEndpoints
         {
             return await HandleIncomingCallAsync(ctx, loggerFactory.CreateLogger("AcsEndpoints"), ct);
         });
-
         // Receives mid-call ACS events (CallConnected, MediaStreamingStarted, etc.).
         // Returns 200 OK; full event dispatch is out of scope for this round.
         acsEvents.MapPost("/callbacks", (ILoggerFactory loggerFactory) =>
@@ -50,9 +50,10 @@ internal static class AcsEndpoints
         app.Map("/api/calls/media-stream", async (
             HttpContext ctx,
             AcsAudioSource acsSource,
+            ActiveCallStore callStore,
             ILoggerFactory loggerFactory) =>
         {
-            await HandleMediaStreamAsync(ctx, acsSource, loggerFactory.CreateLogger("AcsEndpoints"));
+            await HandleMediaStreamAsync(ctx, acsSource, callStore, loggerFactory.CreateLogger("AcsEndpoints"));
         }).AllowAnonymous();
 
         return app;
@@ -176,10 +177,16 @@ internal static class AcsEndpoints
                             }
                         };
 
-                        await callClient.AnswerCallAsync(answerOptions, ct);
+                        var result = await callClient.AnswerCallAsync(answerOptions, ct);
+
+                        // Capture the ACS call connection ID so SpeechTranscriptionService can
+                        // route transcript events to the correct SignalR group.
+                        var callStore = ctx.RequestServices.GetRequiredService<ActiveCallStore>();
+                        callStore.SetCallId(result.Value.CallConnection.CallConnectionId);
 
                         logger.LogInformation(
-                            "ACS call answered; media streaming directed to {MediaUri}", mediaStreamUri);
+                            "ACS call answered; callId={CallId} media streaming directed to {MediaUri}",
+                            result.Value.CallConnection.CallConnectionId, mediaStreamUri);
                     }
                     catch (Exception ex)
                     {
@@ -205,6 +212,7 @@ internal static class AcsEndpoints
     private static async Task HandleMediaStreamAsync(
         HttpContext ctx,
         AcsAudioSource acsSource,
+        ActiveCallStore callStore,
         ILogger logger)
     {
         if (!ctx.WebSockets.IsWebSocketRequest)
@@ -273,6 +281,7 @@ internal static class AcsEndpoints
         {
             // Signal end-of-stream to all ReadAsync consumers regardless of how the loop ended.
             acsSource.CompleteStream();
+            callStore.Clear();  // call is over; new calls start fresh
             logger.LogInformation("ACS media-stream handler ended; audio Channel completed.");
         }
     }

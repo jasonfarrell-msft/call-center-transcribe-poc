@@ -116,3 +116,32 @@ Decision documented in:
 - orchestration-log/20260608T190537Z-athrun-rbac-correction.md
 
 Next phase: Event Grid + audio consumer (Lacus + Meyrin).
+
+### 2026-06-08 — ACS Go-Live Sign-Off (Event Grid + Consumer + Speech)
+
+**Trigger:** Real US toll-free +18774178275 purchased on ACS. Gaps: no Event Grid subscription, no audio→Speech consumer, minReplicas=0, Mode still Mock on live app.
+
+**Decisions made:**
+
+1. **Event Grid delivery auth: Plain webhook (SubscriptionValidationEvent handshake only).** Entra-protected delivery deferred. Residual risk assessed: forged IncomingCall POST → AnswerCall against invalid context → ACS rejects (4xx). No data exfil, no cost, no state corruption. Acceptable for POC.
+
+2. **Live provisioning mechanism: Surgical `az containerapp update`** (not `azd provision`). The azd env is bare; full provision risks drift. Consistent with prior ACS recreate approach. Intended end-state: minReplicas=1, AudioSource__Mode=Acs, applied atomically as the LAST step after consumer + Event Grid are ready.
+
+3. **Audio→Speech consumer shape: `SpeechTranscriptionService : BackgroundService`** in the Api project.
+   - Resolves `IAudioSource`, calls `ReadAsync()` to pull PCM frames
+   - Feeds `Microsoft.CognitiveServices.Speech` SDK (PushAudioInputStream, continuous recognition)
+   - Language auto-detect from existing `Speech:CandidateLanguages` config
+   - Emits interim (`Recognizing`, isFinal=false) and final (`Recognized`, isFinal=true) `TranscriptEvent`s via `IHubContext<PipelineHub>` to group `call:{callId}` on method `stream.transcript`
+   - UI already subscribes to this SignalR stream — no frontend changes needed
+   - Coexists with scripted feed (different path: REST vs SignalR)
+   - `DemoSafety:DataMode` startup guard must be removed/relaxed
+
+4. **Speech resource + RBAC: Already provisioned.**
+   - Resource: `speech-cctrans-{suffix}` (SpeechServices, swedencentral, S0)
+   - Role: `Cognitive Services User` (`a97b65f3-24c7-4388-baec-2e87135dc908`) — scoped to Speech resource, applied to ACA system MI
+   - GUID is a global built-in (high confidence it exists), but Meyrin must still verify via `az role definition list` before relying on it (lesson from ACS RBAC burn)
+   - Must verify the role assignment is actually LIVE on the running app (may have been lost during surgical ACS recreate)
+
+5. **Go-live sequence:** Consumer built → Speech/ACS RBAC verified → new image deployed → Event Grid subscription created → surgical az flip (minReplicas=1 + Mode=Acs) → test call → transcript visible in UI. MockAudioSource remains the instant fallback (30-second revert via env var flip).
+
+**Key file:** `.squad/decisions/inbox/athrun-acs-go-live-signoff.md`

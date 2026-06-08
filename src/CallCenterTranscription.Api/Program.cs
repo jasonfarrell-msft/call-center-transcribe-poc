@@ -7,13 +7,6 @@ var builder = WebApplication.CreateBuilder(args);
 var requireAuth = builder.Configuration.GetValue<bool>("Security:RequireAuth");
 var authAuthority = builder.Configuration["Security:Auth:Authority"];
 var authAudience = builder.Configuration["Security:Auth:Audience"];
-var dataMode = builder.Configuration.GetValue<string>("DemoSafety:DataMode") ?? "Mock";
-
-if (!string.Equals(dataMode, "Mock", StringComparison.OrdinalIgnoreCase))
-{
-    throw new InvalidOperationException(
-        $"DemoSafety:DataMode '{dataMode}' is not supported by the scripted feed. Keep DemoSafety:DataMode=Mock until live providers are implemented.");
-}
 
 if (requireAuth &&
     (string.IsNullOrWhiteSpace(authAuthority) || string.IsNullOrWhiteSpace(authAudience)))

@@ -52,3 +52,26 @@
 - Speech keyless auth needs a custom domain plus `Cognitive Services User`, and the same RBAC pattern applies to the Foundry reasoning resource.
 - Low Foundry quota assumptions only hold if `IReasoningClient` receives final/coalesced transcript turns instead of every interim STT hypothesis.
 - **2026-06-07T00:18:14Z — Frontend mission-control planning pass:** Contributed the intelligence-layer view for transcript diarization, ad hoc translation, sentiment, and mission-control health.
+
+### 2026-06-08 — Speech Consumer BackgroundService (audio→transcript, managed-identity auth)
+
+**What was built:**
+
+`SpeechTranscriptionService : BackgroundService` in `src/CallCenterTranscription.Api/Services/`.
+
+- **Pattern:** Reads `IAsyncEnumerable<AudioFrame>` from `IAudioSource` (injected — resolves MockAudioSource or AcsAudioSource depending on `AudioSource:Mode`). Writes PCM payload bytes into a `PushAudioInputStream` (format: PCM 16-bit, 16,000 Hz, mono — exact match to `AudioFrame` contract). Feeds a `SpeechRecognizer` in continuous recognition mode.
+- **SignalR output:** `Recognizing` events → `TranscriptEvent{IsFinal=false}`, `Recognized` events → `TranscriptEvent{IsFinal=true}`. Both pushed via `IHubContext<PipelineHub>.Clients.Group("call:{callId}").SendAsync(PipelineContract.StreamNames.Transcript, ...)`. Exact same method (`"stream.transcript"`) and DTO (`TranscriptEvent`) the UI already consumes — zero frontend changes required.
+- **Auth:** `DefaultAzureCredential` → AAD token for `https://cognitiveservices.azure.com/.default`. Token formatted as `"aad#{speechResourceId}#{aadToken}"` for custom-domain keyless auth. Set on `SpeechConfig` via `FromEndpoint(uri)` + `AuthorizationToken`. **NO subscription key anywhere.** Token refreshed every 9 minutes via `PeriodicTimer` (AAD tokens live ~1 hour). Refresh failure is logged as warning but non-fatal; existing token remains valid.
+- **Config keys:** `Speech:Endpoint` (custom domain URL), `Speech:Region`, `Speech:ResourceId` (ARM resource ID for `aad#` token), `Speech:CandidateLanguages` (optional; defaults `en-US`), `Speech:DefaultCallId` (fallback group name if no live ACS call).
+- **Graceful degradation:** Missing `Speech:Endpoint`/`Speech:Region` → log warning, return immediately (no crash). AAD token failure → log warning, return immediately. Scripted feed REST endpoints and SignalR UI path are unaffected in both cases.
+- **Call ID routing:** `ActiveCallStore` singleton captures the ACS `CallConnectionId` when `AnswerCallAsync` succeeds in `AcsEndpoints.cs`. `SpeechTranscriptionService` reads it to route transcript events to `"call:{callId}"` group. Cleared when the WebSocket media stream ends.
+- **DemoSafety guard removed:** The `DemoSafety:DataMode` startup throw in `Program.cs` was removed per Athrun's go-live spec — it was a Phase 1 safety net now superseded by the `AudioSource:Mode` DI swap.
+- **Package added:** `Microsoft.CognitiveServices.Speech` v1.50.0 (latest GA as of 2026-06-08) added to `CallCenterTranscription.Api.csproj`.
+- **Coexistence:** Scripted feed REST endpoints (`/api/events/*`) and the scripted scenario service are untouched. `SpeechTranscriptionService` is independent — it pushes over SignalR only when speech recognition produces results. In Mock mode (default), `MockAudioSource` yields one zero-frame then completes; the service starts/stops silently with no UI impact.
+- **Build result:** `dotnet build CallCenterTranscription.sln -c Release --nologo` → **succeeded, 0 errors**.
+
+**Residual TODOs (deferred per Athrun's spec):**
+- Diarization / speaker attribution — currently emits `"unknown"` speaker. Will require `ConversationTranscriber` (separate recognizer path) in a future sprint.
+- Language auto-detect via `AutoDetectSourceLanguageConfig` candidate list — currently uses first language from `Speech:CandidateLanguages`. Full multi-language auto-detect deferred.
+- Confidence score parsing — Speech SDK returns confidence in JSON result property; not wired up for POC.
+- `BackgroundService` does not auto-restart if `ExecuteAsync` returns after Mock completes. In ACS mode this is fine (AcsAudioSource channel stays open across calls). For Mock mode, the service exits after the single zero-frame; restart requires app restart. Acceptable for POC.

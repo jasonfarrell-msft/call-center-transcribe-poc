@@ -1,6 +1,7 @@
 using Azure.Communication.CallAutomation;
 using Azure.Identity;
 using CallCenterTranscription.Ai;
+using CallCenterTranscription.Api.Services;
 using CallCenterTranscription.Telephony;
 
 namespace CallCenterTranscription.Api;
@@ -27,6 +28,15 @@ public static class ServiceCollectionExtensions
         services.AddSignalR();
         services.AddSingleton<IReasoningClient, MockReasoningClient>();
         services.AddSingleton<IScriptedScenarioFeed, ScriptedPropaneRetentionScenarioFeed>();
+
+        // ActiveCallStore: holds the current ACS call ID so SpeechTranscriptionService can
+        // route transcript events to the correct SignalR group ("call:{callId}").
+        services.AddSingleton<ActiveCallStore>();
+
+        // SpeechTranscriptionService: reads IAudioSource → Azure AI Speech → PipelineHub.
+        // Self-gates: exits cleanly if Speech:Endpoint / Speech:Region are not configured,
+        // or if AAD token acquisition fails (e.g., running locally without a managed identity).
+        services.AddHostedService<SpeechTranscriptionService>();
 
         // Always register AcsAudioSource as a concrete singleton so the WebSocket handler
         // can inject it directly (see AcsEndpoints.MapAcsRoutes). In Mock mode this instance
