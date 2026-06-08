@@ -14,6 +14,11 @@ public sealed class PipelineApiClient(HttpClient httpClient, IOptions<BackendApi
         return await GetFromApiAsync<SessionCurrentResponse>("api/session/current", cancellationToken);
     }
 
+    public async Task<ApiFetchResult<PipelineCurrentStateResponse>> GetCurrentStateAsync(CancellationToken cancellationToken = default)
+    {
+        return await GetFromApiAsync<PipelineCurrentStateResponse>("api/session/current-state", cancellationToken);
+    }
+
     public async Task<ApiFetchResult<IReadOnlyList<TranscriptEvent>>> GetTranscriptEventsAsync(CancellationToken cancellationToken = default)
     {
         return await GetFromApiAsync<IReadOnlyList<TranscriptEvent>>("api/events/transcript", cancellationToken);
