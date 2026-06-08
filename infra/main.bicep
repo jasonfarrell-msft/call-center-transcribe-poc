@@ -9,8 +9,14 @@ param translatorLocation string = 'global'
 @description('Approved global exception for Azure Communication Services.')
 param communicationLocation string = 'global'
 
-@description('Data location for Azure Communication Services.')
-param communicationDataLocation string = 'Europe'
+// IMMUTABLE — dataLocation cannot be changed in-place after resource creation.
+// Switching from 'Europe' to 'United States' requires the ACS resource to be deleted and
+// recreated on next provision. This is intentional: enables US toll-free number acquisition;
+// there are no sunk assets (no number purchased, no Event Grid subscription wired).
+// The Communication Services Contributor role assignment re-applies automatically via its
+// deterministic guid() name scoped to the new resource id.
+@description('Data location for Azure Communication Services. Must be United States to acquire US toll-free numbers.')
+param communicationDataLocation string = 'United States'
 
 @description('Placeholder image used until the API service image is available in Azure Container Registry.')
 param apiContainerImage string = 'mcr.microsoft.com/azuredocs/containerapps-helloworld:latest'

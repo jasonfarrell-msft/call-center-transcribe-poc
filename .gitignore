@@ -50,3 +50,6 @@ appsettings.Local.json
 # Squad local scratch only; keep team, decisions, logs, and orchestration history tracked.
 .squad/.scratch/
 .squad-workstream
+
+# Compiled Bicep artifact (from az bicep build)
+infra/main.json

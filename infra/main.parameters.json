@@ -12,7 +12,7 @@
       "value": "global"
     },
     "communicationDataLocation": {
-      "value": "Europe"
+      "value": "United States"
     },
     "apiContainerImage": {
       "value": "mcr.microsoft.com/azuredocs/containerapps-helloworld:latest"
