@@ -79,13 +79,14 @@ var acrPullRoleDefinitionId = subscriptionResourceId(
   'Microsoft.Authorization/roleDefinitions',
   '7f951dda-4ed3-4680-a7ca-43fe172d538d'
 )
-// Communication Services Contributor — minimum viable built-in role for Call Automation
-// AnswerCall + StartMediaStreaming. No narrower role covers both operations. Accepted for
-// POC because the assignment is resource-scoped to ACS only and the identity is a
-// system-assigned MI with no external exposure.
-var communicationServicesContributorRoleDefinitionId = subscriptionResourceId(
+// Communication and Email Service Owner — only available built-in role covering ACS
+// management-plane operations (Call Automation AnswerCall + StartMediaStreaming via Entra
+// auth). No narrower built-in role exists in this directory. Accepted for POC because the
+// assignment is resource-scoped to ACS only and the identity is a system-assigned MI with
+// no external exposure. Residual: includes Email Service management actions (unused).
+var communicationServiceOwnerRoleDefinitionId = subscriptionResourceId(
   'Microsoft.Authorization/roleDefinitions',
-  '2b4609a5-7812-4aba-b5e3-076e6a078419'
+  '09976791-48a7-449e-bb21-39d1a415f350'
 )
 
 var speechEndpoint = 'https://${speechCustomSubdomainName}.cognitiveservices.azure.com/'
@@ -457,7 +458,7 @@ module apiToAcsRoleAssignment 'modules/acr-pull-role-assignment.bicep' = {
     scopeType: 'communicationServices'
     scopeName: communicationService.name
     principalId: apiContainerApp.identity.principalId
-    roleDefinitionId: communicationServicesContributorRoleDefinitionId
+    roleDefinitionId: communicationServiceOwnerRoleDefinitionId
   }
 }
 
