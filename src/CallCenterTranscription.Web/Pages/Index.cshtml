@@ -10,7 +10,9 @@
 
 <div class="rep-console"
      data-console-refresh-root="true"
-     data-console-refresh-interval-ms="4000">
+     data-console-refresh-interval-ms="4000"
+     data-live-mode="@(Model.LiveMode ? "true" : "false")"
+     data-api-base-url="@Model.ApiBaseUrl">
     <h1 class="visually-hidden">Call-Center Representative Console</h1>
 
     <nav class="screen-nav" aria-label="Console navigation">
@@ -59,7 +61,36 @@
             </dl>
         </header>
 
-        <div class="console-columns" data-console-refresh-region="columns">
+        <div class="console-columns" data-console-refresh-region="@(Model.LiveMode ? null : "columns")">
+            @if (Model.LiveMode)
+            {
+                <section class="card-shell console-main-column" aria-labelledby="transcript-heading">
+                    <div class="panel-header">
+                        <div>
+                            <h2 id="transcript-heading">Transcript</h2>
+                            <span class="visually-hidden">Live transcript from the active call</span>
+                            <p class="panel-copy">Live transcription from the active call appears here in real time.</p>
+                        </div>
+                        <p class="panel-kicker conn-status conn-status--disconnected" data-conn-status role="status" aria-live="polite">
+                            <span class="conn-dot" aria-hidden="true"></span>
+                            <span data-conn-label>Disconnected — waiting for call</span>
+                        </p>
+                    </div>
+                    <div class="transcript-scroller"
+                         id="live-transcript"
+                         data-live-transcript="true"
+                         data-transcript-scroll="true"
+                         tabindex="0"
+                         role="log"
+                         aria-live="polite"
+                         aria-relevant="additions text"
+                         aria-label="Live transcript feed">
+                        <p class="console-empty-state" data-live-empty>Waiting for a call. Transcription will appear here in real time once a call connects.</p>
+                    </div>
+                </section>
+            }
+            else
+            {
             <section class="card-shell console-main-column" aria-labelledby="transcript-heading">
                 <div class="panel-header">
                     <div>
@@ -161,8 +192,9 @@
                     <p class="panel-footnote">@Model.TranslationWarning</p>
                 }
             </section>
+            }
 
-            <aside class="console-side-column" aria-labelledby="sentiment-heading">
+            <aside class="console-side-column" aria-labelledby="sentiment-heading" data-console-refresh-region="@(Model.LiveMode ? "sentiment" : null)">
                 <section class="card-shell sentiment-panel">
                     <div class="panel-header panel-header--stacked">
                         <div>
@@ -224,3 +256,11 @@
         </div>
     </section>
 </div>
+
+@section Scripts {
+    @if (Model.LiveMode)
+    {
+        <script src="~/lib/signalr/dist/browser/signalr.min.js" asp-append-version="true"></script>
+        <script src="~/js/live-transcript.js" asp-append-version="true"></script>
+    }
+}

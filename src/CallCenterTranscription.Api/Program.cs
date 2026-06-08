@@ -52,6 +52,27 @@ builder.Services.AddAuthorization(options =>
 {
     options.AddPolicy("AgentAssistAccess", policy => policy.RequireAuthenticatedUser());
 });
+
+// CORS for the browser SignalR client (separate Web origin → API origin). Specific origins +
+// AllowCredentials is REQUIRED for the SignalR negotiate handshake; AllowAnyOrigin is invalid
+// with credentials, so origins come from config (Cors:AllowedOrigins, e.g. the web app URL).
+const string consoleCorsPolicy = "ConsoleCors";
+var corsAllowedOrigins = builder.Configuration
+    .GetSection("Cors:AllowedOrigins")
+    .Get<string[]>() ?? [];
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy(consoleCorsPolicy, policy =>
+    {
+        if (corsAllowedOrigins.Length > 0)
+        {
+            policy.WithOrigins(corsAllowedOrigins)
+                  .AllowAnyHeader()
+                  .AllowAnyMethod()
+                  .AllowCredentials();
+        }
+    });
+});
 builder.Services.AddCallCenterServices(builder.Configuration);
 
 var app = builder.Build();
@@ -62,6 +83,8 @@ if (app.Environment.IsDevelopment())
 }
 
 app.UseWebSockets(); // Required before route execution for WebSocket upgrade support.
+app.UseRouting();
+app.UseCors(consoleCorsPolicy); // After routing, before auth (reviewer fix). Covers /hubs negotiate + /api/calls/active.
 app.UseAuthentication();
 app.UseAuthorization();
 

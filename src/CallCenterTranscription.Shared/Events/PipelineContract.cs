@@ -19,6 +19,11 @@ public static class PipelineContract
         public const string KnowledgeCards = "stream.knowledgeCards";
         public const string NextBestAction = "stream.nextBestAction";
         public const string CurrentState = "stream.currentState";
+
+        // Call lifecycle — broadcast to all console clients so the dashboard can drive its
+        // Disconnected → Connecting → Live state machine without pre-knowing the ACS-generated callId.
+        public const string CallStarted = "stream.callStarted";
+        public const string CallEnded = "stream.callEnded";
     }
 
     public static class GroupNames

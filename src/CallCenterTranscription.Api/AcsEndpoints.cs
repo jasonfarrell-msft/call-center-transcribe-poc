@@ -1,6 +1,9 @@
 using Azure.Communication.CallAutomation;
+using CallCenterTranscription.Api.Hubs;
 using CallCenterTranscription.Api.Services;
+using CallCenterTranscription.Shared.Events;
 using CallCenterTranscription.Telephony;
+using Microsoft.AspNetCore.SignalR;
 using System.Net.WebSockets;
 using System.Text.Json;
 
@@ -51,10 +54,15 @@ internal static class AcsEndpoints
             HttpContext ctx,
             AcsAudioSource acsSource,
             ActiveCallStore callStore,
+            IHubContext<PipelineHub> hub,
             ILoggerFactory loggerFactory) =>
         {
-            await HandleMediaStreamAsync(ctx, acsSource, callStore, loggerFactory.CreateLogger("AcsEndpoints"));
+            await HandleMediaStreamAsync(ctx, acsSource, callStore, hub, loggerFactory.CreateLogger("AcsEndpoints"));
         }).AllowAnonymous();
+
+        // ── Active call query — lets a late-joining/reconnecting browser resync state ───────────
+        app.MapGet("/api/calls/active", (ActiveCallStore callStore) =>
+            Results.Ok(new { callId = callStore.CallId })).AllowAnonymous();
 
         return app;
     }
@@ -182,11 +190,25 @@ internal static class AcsEndpoints
                         // Capture the ACS call connection ID so SpeechTranscriptionService can
                         // route transcript events to the correct SignalR group.
                         var callStore = ctx.RequestServices.GetRequiredService<ActiveCallStore>();
-                        callStore.SetCallId(result.Value.CallConnection.CallConnectionId);
+                        var answeredCallId = result.Value.CallConnection.CallConnectionId;
+                        callStore.SetCallId(answeredCallId);
+
+                        // Broadcast call-started so every console client transitions Disconnected → Connecting
+                        // and subscribes to call:{answeredCallId}. Broadcast group == publish group (reviewer fix).
+                        var hub = ctx.RequestServices.GetRequiredService<IHubContext<PipelineHub>>();
+                        await hub.Clients.All.SendAsync(
+                            PipelineContract.StreamNames.CallStarted,
+                            new CallLifecycleEvent
+                            {
+                                CallId = answeredCallId,
+                                Status = "started",
+                                TimestampUtc = DateTimeOffset.UtcNow
+                            },
+                            ct);
 
                         logger.LogInformation(
                             "ACS call answered; callId={CallId} media streaming directed to {MediaUri}",
-                            result.Value.CallConnection.CallConnectionId, mediaStreamUri);
+                            answeredCallId, mediaStreamUri);
                     }
                     catch (Exception ex)
                     {
@@ -213,6 +235,7 @@ internal static class AcsEndpoints
         HttpContext ctx,
         AcsAudioSource acsSource,
         ActiveCallStore callStore,
+        IHubContext<PipelineHub> hub,
         ILogger logger)
     {
         if (!ctx.WebSockets.IsWebSocketRequest)
@@ -279,9 +302,27 @@ internal static class AcsEndpoints
         }
         finally
         {
+            // Capture the callId BEFORE Clear() so the CallEnded broadcast carries it (reviewer fix).
+            var endedCallId = callStore.CallId;
+
             // Signal end-of-stream to all ReadAsync consumers regardless of how the loop ended.
             acsSource.CompleteStream();
             callStore.Clear();  // call is over; new calls start fresh
+
+            if (!string.IsNullOrEmpty(endedCallId))
+            {
+                // Broadcast call-ended so every console client transitions back to Disconnected.
+                await hub.Clients.All.SendAsync(
+                    PipelineContract.StreamNames.CallEnded,
+                    new CallLifecycleEvent
+                    {
+                        CallId = endedCallId,
+                        Status = "ended",
+                        TimestampUtc = DateTimeOffset.UtcNow
+                    },
+                    CancellationToken.None);
+            }
+
             logger.LogInformation("ACS media-stream handler ended; audio Channel completed.");
         }
     }

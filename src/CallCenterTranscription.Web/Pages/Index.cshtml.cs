@@ -1,6 +1,7 @@
 using CallCenterTranscription.Shared.Events;
 using CallCenterTranscription.Web.Services;
 using Microsoft.AspNetCore.Mvc.RazorPages;
+using Microsoft.Extensions.Options;
 using System.Globalization;
 
 namespace CallCenterTranscription.Web.Pages;
@@ -11,11 +12,24 @@ public class IndexModel : PageModel
     private readonly PipelineApiClient _pipelineApiClient;
     private readonly List<string> _connectionIssues = [];
 
-    public IndexModel(ILogger<IndexModel> logger, PipelineApiClient pipelineApiClient)
+    public IndexModel(
+        ILogger<IndexModel> logger,
+        PipelineApiClient pipelineApiClient,
+        IOptions<BackendApiOptions> backendApiOptions,
+        IConfiguration configuration)
     {
         _logger = logger;
         _pipelineApiClient = pipelineApiClient;
+        ApiBaseUrl = (backendApiOptions.Value.BaseUrl ?? string.Empty).TrimEnd('/');
+        LiveMode = configuration.GetValue<bool>("Frontend:LiveMode");
     }
+
+    /// <summary>When true, the transcript column is driven by the live SignalR stream instead of
+    /// the scripted feed. Exposed to the browser via data attributes for live-transcript.js.</summary>
+    public bool LiveMode { get; }
+
+    /// <summary>Public base URL of the backend API, used by the browser SignalR client.</summary>
+    public string ApiBaseUrl { get; }
 
     public SessionCurrentResponse CurrentSession { get; private set; } = new();
     public SentimentFeedResponse SentimentFeed { get; private set; } = new();

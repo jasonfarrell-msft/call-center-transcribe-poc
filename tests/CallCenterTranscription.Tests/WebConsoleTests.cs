@@ -172,7 +172,8 @@ public sealed class WebConsoleTests
         });
 
         var pipelineClient = new PipelineApiClient(httpClient, options);
-        return new IndexModel(NullLogger<IndexModel>.Instance, pipelineClient);
+        var configuration = new ConfigurationBuilder().Build();
+        return new IndexModel(NullLogger<IndexModel>.Instance, pipelineClient, options, configuration);
     }
 }
 

@@ -30,6 +30,13 @@
       "files": [
         "dist/jquery.validate.unobtrusive.min.js"
       ]
+    },
+    {
+      "library": "@microsoft/signalr@8.0.7",
+      "destination": "wwwroot/lib/signalr/",
+      "files": [
+        "dist/browser/signalr.min.js"
+      ]
     }
   ]
 }

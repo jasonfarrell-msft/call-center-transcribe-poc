@@ -129,7 +129,8 @@ public sealed class SpeechTranscriptionService : BackgroundService
         {
             if (string.IsNullOrWhiteSpace(e.Result.Text)) return;
 
-            var (callId, group) = ResolveGroup();
+            if (ResolveGroup() is not { } recognizing) return;
+            var (callId, group) = recognizing;
             var seq = Interlocked.Increment(ref sequence);
 
             var evt = BuildEvent(callId, seq, e.Result.ResultId, e.Result.Text, isFinal: false);
@@ -143,7 +144,8 @@ public sealed class SpeechTranscriptionService : BackgroundService
             if (e.Result.Reason != ResultReason.RecognizedSpeech) return;
             if (string.IsNullOrWhiteSpace(e.Result.Text)) return;
 
-            var (callId, group) = ResolveGroup();
+            if (ResolveGroup() is not { } recognized) return;
+            var (callId, group) = recognized;
             var seq = Interlocked.Increment(ref sequence);
 
             var evt = BuildEvent(callId, seq, e.Result.ResultId, e.Result.Text, isFinal: true);
@@ -252,11 +254,17 @@ public sealed class SpeechTranscriptionService : BackgroundService
             ? aadToken
             : $"aad#{resourceId}#{aadToken}";
 
-    private (string callId, string group) ResolveGroup()
+    private (string callId, string group)? ResolveGroup()
     {
-        var callId = _callStore.CallId
-            ?? _config["Speech:DefaultCallId"]
-            ?? "live-call";
+        // Live mode: only publish when a real call is active, so the publish group is always
+        // identical to the callId broadcast in CallStarted (reviewer fix — no "live-call" fallback
+        // that the browser never subscribed to).
+        var callId = _callStore.CallId;
+        if (string.IsNullOrEmpty(callId))
+        {
+            return null;
+        }
+
         return (callId, PipelineContract.GroupNames.ForCall(callId));
     }
 
