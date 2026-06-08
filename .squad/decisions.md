@@ -26,6 +26,629 @@
 - **Why:** Live-demo reliability depends on compile-safe seams and predictable startup wiring before Phase 1+ integration. Validation evidence includes successful `dotnet build CallCenterTranscription.sln` and `dotnet test CallCenterTranscription.sln` (4/4 passing), so this scaffold is safe to advance.
 - **Source:** `.squad/decisions/inbox/yzak-phase-0-review.md`
 
+- **Source:** `.squad/decisions/inbox/athrun-azure-deployment-architecture.md`
+
+# 2026-06-06T15:20:19.326-04:00 — Minimal Azure deployment architecture for the Sweden Central POC
+
+- **By:** Athrun
+- **Decision proposal:** Keep the POC architecture as the thinnest viable split already accepted by Squad: **API on Azure Container Apps**, **Web on Azure App Service**, **real ACS for the live demo**, **Azure AI Speech + Translator + Language + Azure AI Foundry** for the AI path, and **mock audio** as the fallback path.
+
+## Assumptions
+
+1. The deployment target is **resource group `rg-callcentertranscribe-swc-mx01`**.
+2. Regional Azure resources should use **`swedencentral`** unless the service itself only supports **geography/global semantics**.
+3. If a required service cannot satisfy strict Sweden Central processing, that is a **named blocker/exception**, not something we silently route around.
+
+## Must-have resources
+
+1. **Azure Container Registry (Basic)** in `swedencentral`
+   - Hosts the API container image for ACA.
+2. **Azure Container Apps managed environment** in `swedencentral`
+3. **One Azure Container App** for `CallCenterTranscription.Api`
+   - Public HTTPS ingress enabled
+   - WebSockets enabled for ACS media streaming and SignalR
+   - System-assigned managed identity
+   - **Demo posture:** `minReplicas=1`, `maxReplicas=1` until the real ACS path is proven multi-replica-safe
+4. **One Linux App Service Plan** in `swedencentral`
+   - Start at a small paid SKU suitable for one demo user path
+5. **One Web App** for `CallCenterTranscription.Web`
+   - System-assigned managed identity
+6. **Azure AI Speech** in `swedencentral`
+   - Real-time STT + diarization
+7. **Azure AI Language** in `swedencentral`
+   - Sentiment only; no custom authoring assumptions
+8. **Azure AI Foundry** in `swedencentral`
+   - One **regional standard** GPT-5.x reasoning deployment
+   - One embeddings deployment if RAG embeddings stay externalized instead of purely local
+   - Exact model/version/quota must be validated before deployment
+9. **Azure Key Vault** in `swedencentral`
+   - Required for any unavoidable secrets/certificates
+   - If managed identity covers everything, it should stay nearly empty
+10. **Log Analytics workspace** in `swedencentral`
+11. **Application Insights** (workspace-based) in `swedencentral`
+12. **Azure Communication Services resource**
+   - Same resource group
+   - Use the closest valid geography configuration for the service
+13. **One ACS phone number asset**
+   - Required for the inbound PSTN demo
+14. **Event Grid subscription** from ACS `IncomingCall` to the ACA webhook
+15. **Azure AI Translator**
+   - Functionally required by the accepted translation decision
+   - See blocker below: strict Sweden Central processing is not currently achievable with Translator Text
+
+## Explicit blockers / region exceptions
+
+1. **ACS is not a normal per-datacenter regional service**
+   - The ACS resource is created against a **geography**, not a Sweden Central datacenter stamp.
+   - Microsoft documents that ACS data **may transit or be processed in other geographies**.
+   - ACS Event Grid **system topics are global** and may store event data in any Microsoft datacenter.
+2. **Translator Text does not keep Europe requests inside Sweden Central**
+   - Microsoft documents the Europe endpoint as processing within **France Central** and **West Europe**.
+   - Translation is therefore a **functional must-have** that conflicts with a **strict Sweden Central processing** requirement.
+3. **Azure AI Foundry must be pinned to an exact regional deployment**
+   - “GPT-5.x” is too vague for deployment.
+   - If the exact reasoning model or embedding model is not available as a **regional** deployment in `swedencentral`, treat that as a blocker instead of falling back to Data Zone or Global without approval.
+
+## Phase-later / explicitly deferred
+
+- Azure AI Search
+- Redis / caching tier
+- Cosmos DB / SQL DB / durable transcript persistence
+- Blob storage beyond platform defaults
+- Azure SignalR Service / Web PubSub
+- VNet integration, private endpoints, WAF, Front Door
+- Separate ACA services/jobs for pipeline subdivision
+- Provisioned Foundry throughput
+- Multi-region resiliency
+
+## Security requirements
+
+1. **Managed identity first**
+   - ACA and App Service use system-assigned managed identity by default.
+2. **No secrets in code or appsettings**
+   - Any unavoidable key/certificate lives in Key Vault.
+3. **Public ingress is allowed only where the demo requires it**
+   - ACA exposes HTTPS webhook/callback routes and WSS media-streaming routes.
+4. **Auth must be enabled in deployed environments**
+   - `Security__RequireAuth=true` is the deployment target posture for API routes and SignalR once the web-to-API auth flow is chosen.
+5. **Least privilege**
+   - Disable ACR admin user.
+   - Grant only required data-plane roles to ACA/App Service identities.
+6. **Transcript privacy**
+   - Avoid logging raw transcripts, phone numbers, or translated content into App Insights unless redacted and retention-bounded.
+
+## Resource inventory for quota checks
+
+| Resource / asset | Qty | Proposed shape | Region / scope | Quota / validation focus |
+| --- | --- | --- | --- | --- |
+| Resource group | 1 | `rg-callcentertranscribe-swc-mx01` | `swedencentral` | Subscription-level deployment access |
+| Azure Container Registry | 1 | Basic | `swedencentral` | Registry quota, image pulls, RBAC |
+| ACA managed environment | 1 | Consumption profile is sufficient to start | `swedencentral` | Environment availability |
+| ACA API app | 1 | 1 replica warm during demo | `swedencentral` | CPU/memory fit, ingress, WebSockets |
+| App Service Plan | 1 | Small paid Linux SKU | `swedencentral` | Instance quota, TLS/health-check support |
+| Web App | 1 | Single app | `swedencentral` | App settings, identity, outbound access |
+| Azure AI Speech | 1 | Standard | `swedencentral` | Real-time transcription support |
+| Azure AI Language | 1 | Standard | `swedencentral` | Sentiment API throughput only |
+| Azure AI Foundry reasoning deployment | 1 | GPT-5.x regional standard | `swedencentral` | Exact model/version availability + TPM quota |
+| Azure AI Foundry embeddings deployment | 1 | Minimal embedding model | `swedencentral` | Regional availability + TPM quota |
+| Key Vault | 1 | Standard | `swedencentral` | RBAC, secret/cert count |
+| Log Analytics workspace | 1 | Pay-as-you-go | `swedencentral` | Ingestion/retention cost |
+| Application Insights | 1 | Workspace-based | `swedencentral` | Sampling/retention |
+| ACS resource | 1 | Voice/Call Automation capable | Geography-based, same RG | Geography fit, calling eligibility |
+| ACS phone number | 1 | Inbound PSTN demo number | Service asset | Country availability, billing eligibility |
+| Event Grid subscription | 1 | ACS `IncomingCall` webhook | Global/system-topic semantics | Handshake/retry behavior |
+| Azure AI Translator | 1 | Text Translation | Europe processing geography | Accept EU processing or block deployment |
+
+## Bottom line
+
+- If the requirement means **“put every regional ARM resource in Sweden Central and keep exceptions explicit,”** this architecture is the minimal viable POC shape.
+- If the requirement means **“all data must be processed only in Sweden Central,”** the current accepted scope is blocked by **ACS** and **Translator**, and deployment should stop until the requirement or scope is changed.
+
+- **Source:** `.squad/decisions/inbox/athrun-dashboard-redesign-review.md`
+
+# Review: Agent-Assist Dashboard Visual Redesign
+
+**Date:** 2026-06-08T09:48:02.673-04:00
+**Reviewer:** Athrun (Lead / Architect)
+**Subject:** Lunamaria's visual/layout redesign — `Index.cshtml` + `site.css`
+**Verdict:** ⛔ REQUEST CHANGES
+
+---
+
+## Summary
+
+The redesign is well-crafted: the dark live-call header, speaker-turn accents, design-token system, and responsive layout are all solid work. One blocking accessibility violation prevents approval. Everything else passes.
+
+---
+
+## BLOCKING ISSUE — WCAG AA Contrast Failure
+
+**File:** `src/CallCenterTranscription.Web/wwwroot/css/site.css`
+
+**What:** `--cc-text-muted: #94a3b8` is used in multiple rules that render text on white and near-white card backgrounds. Measured contrast ratios:
+
+| Background | Ratio | Required | Result |
+|---|---|---|---|
+| `--cc-surface` (`#ffffff`) | 2.56:1 | 4.5:1 | ✗ FAIL |
+| `--cc-surface-2` (`#f6f8fc`) | 2.41:1 | 4.5:1 | ✗ FAIL |
+| `--cc-agent-bg` (`#f0fdf4`) | 2.45:1 | 4.5:1 | ✗ FAIL |
+| `--cc-cust-bg` (`#eff6ff`) | 2.36:1 | 4.5:1 | ✗ FAIL |
+
+None of the affected elements qualify as large text (all ≤ 0.85rem, most 0.7–0.78rem).
+
+**Affected CSS rules:**
+- `.transcript-speaker-block p` — speaker role label (e.g. "Customer") on transcript card bg
+- `.transcript-topline time` — timestamp on transcript card bg
+- `.sentiment-score-label` — "Score" label on white card
+- `.sentiment-meter-caption` — "0 = negative • 100 = positive" on white card
+- `.translation-label` — "Translation (English)" on `#f0f7ff` tile
+- `.panel-kicker` — feed mode badge text on `--cc-surface-2`
+- `.sentiment-details dt` — "Tone", "Trend", "Updated" on tile surface
+- `.mission-control-summary span` — summary labels on tile surface
+
+**Why:** WCAG AA (4.5:1) is non-negotiable per project accessibility standard. Supplementary/metadata text is not exempt.
+
+**Note:** `--cc-text-muted` via the `--cc-hdr-muted` rendered color on the dark navy header *does* pass (4.63–5.92:1 across the gradient range) — that usage is correct and must not be changed.
+
+**Prescribed fix (minimal):**
+Replace `color: var(--cc-text-muted)` with `color: var(--cc-text-secondary)` (`#475569`, 7.58:1 on white) in all of the light-surface rules listed above. The dark-header rules (`console-eyebrow`, `console-call-meta dt`, `console-status`) stay as-is — they use a different rendered color on the gradient and pass.
+
+Alternatively, add a second token (e.g. `--cc-text-subtle: #6b7280`, 4.83:1) for light-surface secondary labels, preserving semantic intent. Either approach is acceptable.
+
+**Assigned to: Meyrin** (per gate rule — the original author Lunamaria may not self-revise)
+
+---
+
+## PASSING CRITERIA
+
+### 1. Correctness — JS selectors ✓
+All selectors/IDs/data-attributes in `site.js` verified present in `Index.cshtml`:
+
+| Selector | Present |
+|---|---|
+| `[data-console-refresh-root='true']` | ✓ line 12 |
+| `[data-console-refresh-region]` | ✓ lines 20, 65, 235 |
+| `[data-console-nav-view='true']` | ✓ lines 16, 230 |
+| `[data-console-nav-toggle='true']` | ✓ lines 29, 242 |
+| `[data-translation-toggle='true']` | ✓ line 118 |
+| `[data-transcript-scroll='true']` | ✓ line 77 |
+| `.mission-control-scroller` | ✓ line 283 |
+| `.translation-panel` | ✓ line 147 |
+| `#representative-view` | ✓ line 16 |
+| `#mission-control-view` | ✓ line 230 |
+| `h2[tabindex='-1']` (focus mgmt) | ✓ lines 24, 239 |
+
+`data-speaker-role` is CSS-only; JS does not reference it. No breakage.
+
+Razor syntax is clean; `dotnet build` reported 0 errors / 0 warnings.
+
+### 2. Content preserved ✓
+All panels intact: live-call header, transcript feed, sentiment panel, mission control view. No copy, mock data, or features removed or altered.
+
+### 3. Accessibility — partial ✓ / ✗ (blocked above)
+- Transcript: `role="log"` + `aria-live="polite"` + `aria-relevant="additions text"` ✓
+- Connection status: `role="status"` + `aria-live="polite"` ✓
+- Status/sentiment/churn NOT conveyed by color alone — all have text state labels, DL details, score numbers alongside color ✓
+- Keyboard focus rings: `*:focus-visible` global override, plus explicit rings on scrollers, action links, nav buttons ✓
+- `prefers-reduced-motion`: `*`, `*::before`, `*::after` all covered ✓
+- Dark header text contrast: hdr-text `#e8f0fd` on gradient 10.01–14.08:1 ✓; muted rendered color on gradient 4.63–5.92:1 ✓
+- Speaker heading colors: agent (`#065f46` on `#f0fdf4`) 7.34:1 ✓; customer (`#1d4ed8` on `#eff6ff`) 6.16:1 ✓
+- **`--cc-text-muted` on light card backgrounds: 2.36–2.56:1 — FAILS AA ✗** (blocking, see above)
+
+### 4. Security ✓
+- No secrets in markup
+- No new external CDN or third-party origins — Bootstrap and jQuery served from `~/lib/` (local libman)
+- `_Layout.cshtml` unchanged
+
+### 5. Quality ✓
+- Design token system well-organized on `:root`
+- Responsive breakpoints at 1200px / 992px / 768px; `100dvh` for mobile; `clamp()` fluid typography
+- No new dependencies; system font stack is fast and correct
+- Maintainable: clear section comments, semantic variable naming
+
+---
+
+## Nice-to-haves (non-blocking, post-fix)
+
+- The `.panel-copy` descriptor text ("Diarization stays inline…") switches to `--cc-text-secondary` via the grouped rule which is correct, but visually it may feel heavier than intended once the muted bug is fixed. Consider a medium-weight token (e.g. `--cc-text-subtle: #6b7280`) as a distinct "secondary-light" tier if the design calls for visual hierarchy between labels and body copy.
+- The 295px fixed side-column width may feel tight on 13" laptops at 100dvh. Worth a quick eyeball test during Phase 1 QA.
+
+---
+
+## Next action
+
+Meyrin to fix the `--cc-text-muted` light-surface contrast failure in `site.css` and return for a re-gate by Athrun.
+
+## RE-GATE: Dashboard Redesign — Accessibility Fix Verification
+**Timestamp:** 2026-06-08T09:48:02.673-04:00
+**Reviewer:** Athrun (Lead/Architect)
+**Task:** Verify WCAG AA color contrast fix for light-card surfaces
+
+### VERIFICATION RESULTS
+
+✅ **Light-Surface Rules (CSS Color Contrast Fix):**
+All 8 required light-card selectors now use `--cc-text-secondary` (#475569, ~7.58:1 contrast):
+- `.transcript-speaker-block p` ✓
+- `.transcript-topline time` ✓
+- `.sentiment-score-label` (combined rule) ✓
+- `.sentiment-meter-caption` ✓
+- `.translation-label` ✓
+- `.panel-kicker` ✓
+- `.sentiment-details dt` ✓
+- `.mission-control-summary span` ✓
+
+✅ **Dark-Header Rules (Unchanged, Correct):**
+All 3 dark-header selectors retain `--cc-hdr-muted` (appropriate for dark gradient):
+- `.console-eyebrow` ✓
+- `.console-call-meta dt` ✓
+- `.console-status` ✓
+
+✅ **No Unintended Changes:**
+- Removed deprecated hardcoded colors (#5b6474, #475569, #64748b, etc.)
+- All additions use the new design token system (--cc-text-primary, --cc-text-secondary, --cc-text-muted)
+- No light-surface selector uses `--cc-text-muted` (#94a3b8) — the problematic token causing WCAG AA failure
+
+### VERDICT: **APPROVE** ✓
+
+The accessibility fix is complete and correct. All WCAG AA 4.5:1 contrast requirements are met for light-card surfaces. The color token swap maintains proper visual hierarchy while restoring compliance.
+
+---
+
+- **Source:** `.squad/decisions/inbox/athrun-frontend-deploy-oidc-least-privilege.md`
+
+# 2026-06-07T06:38:03.974-04:00 — Frontend deploy uses OIDC with Web App-scoped RBAC
+
+- **By:** Athrun / Coordinator
+- **Decision:** GitHub Actions frontend deployment uses Azure workload identity federation for `sp-call-center` and avoids storing a client secret. The service principal is scoped to the frontend App Service with `Website Contributor` instead of resource-group-wide `Contributor`.
+- **Why:** This satisfies the frontend-only deployment requirement while preserving least privilege and reducing credential leakage risk.
+- **Source evidence:** `.github/workflows/deploy-frontend.yml`, GitHub repository secrets/variables, Azure federated credential `github-production-frontend`.
+
+- **Source:** `.squad/decisions/inbox/bicep-specialist-azure-infra.md`
+
+# Bicep Specialist Azure Infra Decision
+
+- **When:** 2026-06-06T15:29:41.750-04:00
+- **By:** Bicep Specialist
+- **What:** Generated `infra/` Bicep for the approved Sweden Central resource group plan, but intentionally deferred Event Grid automation and Azure AI Foundry project/model deployment. The template provisions a regional Azure AI Services account now and outputs the manual follow-up steps.
+- **Why:** The current app codebase does not yet expose a validated ACS incoming-call callback/WebSocket surface, so creating Event Grid resources now would be unsafe. Azure AI project/model deployment remains safer as a post-provision step than guessing unstable resource shapes or model contracts.
+- **Impact:** Infrastructure is build-valid and ready for later `azure-validate` / deployment handoff, with explicit manual follow-up for ACS eventing, ACS data-plane RBAC, and AI model deployment.
+
+- **Source:** `.squad/decisions/inbox/copilot-directive-2026-06-06T15-18-26-672-04-00.md`
+
+### 2026-06-06T15:18:26.672-04:00: User directive
+**By:** Jason (via Copilot)
+**What:** Use a user-assigned managed identity for ACR pulls from Azure Container Apps; use the Container App system-assigned managed identity for runtime operations from ACA to other Azure services.
+**Why:** User architecture guidance for correct Azure Container Apps identity separation.
+
+- **Source:** `.squad/decisions/inbox/copilot-directive-2026-06-07T06-38-03-974-04-00.md`
+
+### 2026-06-07T06:38:03.974-04:00: User directive
+**By:** Jason (via Copilot)
+**What:** Use GitHub Actions OIDC federation for Azure deployment authentication if possible, instead of storing a service principal client secret.
+**Why:** User request — captured for team memory
+
+- **Source:** `.squad/decisions/inbox/dyakka-acs-real-call-resource-floor.md`
+
+# 2026-06-06T15:20:19.297-04:00 — ACS real-call resource floor and manual gates
+
+- **By:** Dyakka
+- **Decision proposal:** For the live ACS path, treat the deploy-now telephony set as:
+  1. **Azure Communication Services** resource for telephony / Call Automation, with residency set via **`dataLocation` in Europe**. Do **not** represent this resource as Sweden-Central-hosted compute; ACS is a global/geography-scoped service.
+  2. **Azure Container Apps environment + API app** in **`swedencentral`** with external HTTPS ingress for the Event Grid / Call Automation webhook endpoints and a real **WSS** endpoint for ACS media streaming.
+  3. **Event Grid subscription** for `IncomingCall` routed to the API webhook. Because the ACS source is global, the corresponding **system topic is global**, not Sweden Central.
+  4. **Managed identity** on the API host (system-assigned is fine; user-assigned only if the team wants a reusable principal) with direct RBAC on the ACS resource.
+  5. **Sweden-Central observability** for the API path (for example, Log Analytics / Application Insights) so webhook failures, media-streaming startup, and Event Grid delivery issues are diagnosable.
+- **Why this matters to team:** This keeps the squad's Option-A telephony topology intact while preventing a bad compliance story. The team can keep all region-bound compute and diagnostics in Sweden Central without overstating ACS/Event Grid location semantics.
+- **Manual gate / prerequisite:** The demo depends on acquiring a **Swedish ACS phone number** (local or toll-free) on a **paid** Azure subscription whose **billing location** is one of Microsoft's eligible countries for Sweden numbers. Number search/purchase can be portal-driven or API-driven, but special-order / regulatory handling may still be manual.
+- **Security / ops note:** The current API has no ACS webhook or media-streaming routes yet. When they are added, secure Event Grid delivery beyond `SubscriptionValidationEvent` (Microsoft Entra-protected webhook or shared secret), validate ACS mid-call JWTs, and keep the telephony API at **`minReplicas = 1`** during demo windows so a 30-second ringing call is not lost to cold start.
+- **Source evidence:** `.squad/decisions.md`, `.azure/deployment-plan.md`, `src/CallCenterTranscription.Api/Program.cs`, `src/CallCenterTranscription.Telephony/IAudioSource.cs`, `https://learn.microsoft.com/en-us/azure/communication-services/concepts/privacy`, `https://learn.microsoft.com/en-us/azure/communication-services/concepts/authentication`, `https://learn.microsoft.com/en-us/azure/communication-services/how-tos/managed-identity`, `https://learn.microsoft.com/en-us/azure/communication-services/concepts/call-automation/incoming-call-notification`, `https://learn.microsoft.com/en-us/azure/communication-services/how-tos/call-automation/secure-webhook-endpoint`, `https://learn.microsoft.com/en-us/azure/communication-services/concepts/call-automation/audio-streaming-concept`, `https://learn.microsoft.com/en-us/azure/communication-services/concepts/numbers/phone-number-management-for-sweden`, `https://learn.microsoft.com/en-us/azure/communication-services/quickstarts/telephony/get-phone-number`, `https://learn.microsoft.com/en-us/azure/event-grid/security-authentication`, `https://learn.microsoft.com/en-us/azure/container-apps/ingress-overview`, `https://learn.microsoft.com/en-us/azure/container-apps/scale-app`, `https://learn.microsoft.com/en-us/azure/templates/microsoft.communication/communicationservices`.
+
+- **Source:** `.squad/decisions/inbox/identity-split-fixer-aca-acr-uami.md`
+
+# Decision: Split ACA identities (UAMI for ACR pull, system MI for runtime)
+
+- **Date:** 2026-06-06T16:30:27.949-04:00
+- **Requested by:** Jason
+- **Scope:** Azure Container Apps identity design for deployment recovery
+
+## Context
+`azd provision --no-prompt` previously stalled with `ca-api-cctrans-kdarok` in `InProgress` and no ready revision. The API Container App was configured with system-assigned identity for both runtime operations and ACR pulls, while also provisioning with a public placeholder image.
+
+## Decision
+1. Introduce a **user-assigned managed identity (UAMI)** in Sweden Central dedicated to ACR pulls.
+2. Configure API Container App identity as **`SystemAssigned,UserAssigned`**.
+3. Keep **runtime service-to-service RBAC** (Key Vault, Cognitive Services, ACS-later) on the API Container App **system-assigned** principal.
+4. Grant **`AcrPull`** at ACR scope to the **UAMI principal** only.
+5. Make ACA `registries` auth **conditional**:
+   - If `apiContainerImage` uses deployment ACR login server, bind `registries.identity` to UAMI resource ID.
+   - Otherwise (placeholder/public image), keep `registries` empty to avoid unnecessary auth wiring during bootstrap.
+
+## Why
+- Enforces least-privilege identity boundaries by separating runtime Azure access from container image pull auth.
+- Aligns with user directive and reduces risk of ACA revision readiness issues during placeholder-image provisioning.
+- Preserves safe bootstrap defaults (`apiContainerImage` placeholder and `enableApiHealthProbes=false`).
+
+## Implementation Notes
+- `infra/main.bicep` updated with:
+  - New `Microsoft.ManagedIdentity/userAssignedIdentities` resource for ACR pull.
+  - API Container App dual identity attachment.
+  - Conditional `registries` block using UAMI only for ACR-hosted images.
+  - AcrPull role assignment module invocation switched to UAMI principal.
+  - Outputs/manual post-provision guidance updated for identity split.
+- `infra/modules/acr-pull-role-assignment.bicep` retained as-is (already generic).
+
+## Recovery Guidance
+- Do **not** run `azd provision` until validation is rerun and deployment window is approved.
+- On next provision/deploy cycle, ensure API image reference is either:
+  - placeholder public image (no ACR registries binding), or
+  - `${ACR_LOGIN_SERVER}/api:<tag>` (registries uses UAMI for pull).
+
+## Validation Requirements
+- Required local checks after this change:
+  - `az bicep build --file infra/main.bicep --stdout`
+  - `dotnet build CallCenterTranscription.sln --nologo`
+  - `dotnet test CallCenterTranscription.sln --no-build --nologo`
+- `azure-validate` must be rerun before any `azure-deploy`.
+
+- **Source:** `.squad/decisions/inbox/lacus-swedencentral-ai-resource-floor.md`
+
+# 2026-06-06T15:20:19.363-04:00 — Sweden Central AI resource floor for the POC
+
+- **By:** Lacus
+- **Decision proposal:** For the current POC, keep the Azure AI deploy-now set to:
+  1. **Azure AI Speech** single-service resource in `swedencentral` for real-time STT, diarization, and language detection.
+  2. **Microsoft Foundry** resource in `swedencentral`, with one project and one **regional** mid-tier reasoning deployment behind `IReasoningClient` (default to a quota-approved `gpt-5-mini`; keep MAI swap-ready later). Fall back to **DataZone EU** only if Sweden Central regional quota blocks the POC.
+  3. **Azure Translator** single-service resource on the **Global** endpoint for non-English text normalization, because Translator regional endpoints do not support Microsoft Entra authentication.
+- **Why this matters to team:** This preserves the accepted Speech + Translator + Foundry direction, keeps the mocked-RAG POC lean, and avoids paying for AI Search / extra model deployments before grounded churn and next-best-action flows are validated end to end.
+- **Auth / ops note:** API and Web should use system-assigned managed identities. Grant the API managed identity **Cognitive Services User** on Speech, Foundry, and Translator. Speech keyless auth also requires a custom domain. Only feed **final/coalesced** transcript turns into `IReasoningClient`; sending interim hypotheses will inflate Foundry quota usage and trace volume.
+- **Deferred for now:** Azure AI Search, separate embedding deployment, Azure AI Language sentiment resource, Custom Speech, Content Safety, and Document Translation.
+- **Caveat:** The clean keyless Translator path uses the **Global** endpoint, so it is not Sweden-Central-scoped processing. If strict in-region translation becomes mandatory, the team must explicitly choose between a regional Translator + Key Vault-backed key exception or deferring translation until the platform supports a regional keyless path.
+- **Source evidence:** `.squad/decisions.md`, `.azure/deployment-plan.md`, `src/CallCenterTranscription.Ai/IReasoningClient.cs`, `src/CallCenterTranscription.Ai/MockReasoningClient.cs`, `src/CallCenterTranscription.Shared/Events/TranscriptEvent.cs`, `https://learn.microsoft.com/en-us/azure/ai-services/speech-service/regions`, `https://learn.microsoft.com/en-us/azure/ai-services/speech-service/how-to-configure-azure-ad-auth`, `https://learn.microsoft.com/en-us/azure/ai-services/multi-service-resource`, `https://learn.microsoft.com/en-us/azure/foundry/how-to/create-projects`, `https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure-region-availability`, `https://learn.microsoft.com/en-us/azure/ai-services/translator/how-to/create-translator-resource`, `https://learn.microsoft.com/en-us/azure/ai-services/translator/how-to/microsoft-entra-id-auth`.
+
+- **Source:** `.squad/decisions/inbox/lunamaria-dashboard-redesign.md`
+
+# Decision: Agent-Assist Dashboard Visual Redesign
+
+**Date:** 2026-06-08T09:48:02.673-04:00  
+**Author:** Lunamaria (Frontend Dev)  
+**Status:** Implemented
+
+---
+
+## Context
+
+The initial rep-console (`Index.cshtml`) shipped with solid semantics and a functional two-column layout, but the visual language was plain — uniform white cards, no speaker differentiation in the transcript, no live-call signal in the header, and a sentiment meter that didn't command immediate attention. The task was a visual redesign with no content changes.
+
+---
+
+## Research: Patterns from Real Agent-Desktop Products
+
+Reference products surveyed: Salesforce Service Cloud / Einstein, Zendesk Agent Workspace, Genesys Cloud, Five9, Cresta, Observe.AI, Talkdesk, Gladly, Intercom Fin.
+
+### 4 patterns adopted and why:
+
+**1. Dark "live call" header bar (Genesys Cloud, Salesforce Service Console)**  
+Genesys and Salesforce both use a visually distinct header zone to signal "you are actively on a call." A dark-navy gradient (`#0c1e4a → #1a3380`) on the call-context card achieves this — the agent can't mistake the current call state. The call meta tiles (Call ID / Customer / Connected) sit inside frosted-glass-style tiles on the dark background, reading as data-dense but calm.
+
+**2. Speaker-turn visual differentiation (Cresta, Observe.AI, Talkdesk)**  
+Every serious transcript UI distinguishes customer vs. agent turns by more than a name badge. Cresta uses color-coded left border accents. I adopted:  
+- Customer turns: blue left border (`#2563eb`) + light blue bg (`#eff6ff`)  
+- Agent turns: green left border (`#059669`) + light green bg (`#f0fdf4`)  
+This lets a rep scan "who said what" in one glance without reading names.
+
+**3. Calm status-by-color-AND-icon-AND-text system (Intercom Fin, Gladly)**  
+Intercom Fin uses a minimal color palette with near-no saturation on non-status content. Status always gets color + icon/shape + text — never color alone. My token system codifies this: `--cc-ok/warn/danger` plus semantic `-light`/`-text` variants, applied to meter bars, alert states, and speaker accents. The sentiment meter uses these same tokens so there's no invented palette.
+
+**4. Live pulse on active state (Observe.AI, Cresta)**  
+A small animated dot (`.console-status::before`) pulses green while the call is connected — the agent gets a constant peripheral confirmation the stream is live. Animation respects `prefers-reduced-motion`.
+
+---
+
+## Decisions Made
+
+| Decision | Rationale |
+|---|---|
+| Dark navy header, light card body | Clear "live call" signal without theming the whole page |
+| CSS custom properties design-token set on `:root` | Single source of truth; easy to update brand later |
+| Speaker-role via `data-speaker-role` HTML attribute | Structural change only — no content change, no JS impact |
+| Removed `border-left`/`padding-left` from `.console-side-column` | The sentiment `.card-shell` provides its own chrome; the separator was visual noise |
+| `panel-header` gets `border-bottom` separator | Separates panel heading from content without adding a new wrapper element |
+| Kept Bootstrap loaded | Used only for `.visually-hidden`, `.btn`, `.mb-0` — Bootstrap handles its own concerns; our token system handles the console look |
+| No external fonts or CDNs added | System font stack (`-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui`) is fast, zero dependency, and matches native OS rendering |
+
+---
+
+## Files Changed
+
+- `src/CallCenterTranscription.Web/wwwroot/css/site.css` — complete token-based rewrite
+- `src/CallCenterTranscription.Web/Pages/Index.cshtml` — added `data-speaker-role` attribute to transcript `<li>` items
+
+## Files Verified Unchanged (JS hooks intact)
+
+All `site.js` data-attribute selectors confirmed present in post-edit Index.cshtml:
+`data-console-refresh-root`, `data-console-refresh-region` (header/columns/mission), `data-console-nav-view`, `data-console-nav-toggle`, `data-translation-toggle`, `data-transcript-scroll`, `.mission-control-scroller`, `.translation-panel`, `#representative-view`, `#mission-control-view`.
+
+## Build Result
+
+`dotnet build CallCenterTranscription.sln` → **Build succeeded. 0 Warning(s). 0 Error(s).** (12.4s)
+
+- **Source:** `.squad/decisions/inbox/lunamaria-frontend-deploy-workflow.md`
+
+# 2026-06-07T06:29:29.980-04:00 — Frontend-only App Service deploy workflow
+
+- **By:** Lunamaria
+- **Decision proposal:** Standardize frontend-only deployment on `.github/workflows/deploy-frontend.yml` with push-to-`main` path filters and manual dispatch. Build/publish only `src/CallCenterTranscription.Web/CallCenterTranscription.Web.csproj`, then deploy the artifact to the existing App Service using GitHub OIDC federation and repo-scoped Azure identifiers instead of hardcoded values.
+- **Why this matters to team:** It lets UI-only changes ship without touching ACA/API resources, keeps the frontend pipeline small and fast, and reduces accidental infrastructure churn while backend deployment remains separate.
+- **Operational note:** The workflow verifies the target App Service exists in the configured resource group before deployment. It expects `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, and `AZURE_SUBSCRIPTION_ID` repository secrets, plus `AZURE_WEBAPP_NAME` and `AZURE_RESOURCE_GROUP` repository variables.
+- **Source evidence:** `azure.yaml`, `src/CallCenterTranscription.Web/CallCenterTranscription.Web.csproj`, `infra/main.bicep`, `README.md`, `.github/workflows/deploy-frontend.yml`
+
+- **Source:** `.squad/decisions/inbox/meyrin-azd-api-docker-context.md`
+
+# 2026-06-06T15:29:41.673-04:00 — AZD API Docker context set to repo root
+
+- **By:** Meyrin
+- **Decision proposal:** Keep `azure.yaml` API service as `project: src/CallCenterTranscription.Api` with `docker.path: ./Dockerfile`, and set `docker.context: ../..` so Docker builds from repository root.
+- **Why this matters to team:** `CallCenterTranscription.Api` depends on sibling projects (`Shared`, `Ai`, `Telephony`), so project-local Docker contexts cannot copy all build inputs. Root context keeps restore/publish deterministic for local and CI `azd` workflows.
+- **Operational note:** API Dockerfile publishes .NET 9 app on port `8080` and runs as non-root runtime user (`USER $APP_UID`).
+- **Source evidence:** `azure.yaml`, `src/CallCenterTranscription.Api/Dockerfile`, `src/CallCenterTranscription.Api/CallCenterTranscription.Api.csproj`.
+
+- **Source:** `.squad/decisions/inbox/meyrin-contrast-fix.md`
+
+# 2026-06-08T09:48:02.673-04:00 — Meyrin contrast fix
+
+Swapped `color: var(--cc-text-muted)` (#94a3b8, fails WCAG AA 4.5:1) → `color: var(--cc-text-secondary)` (#475569, 7.58:1) on light-card rules `.panel-kicker`, `.translation-label`, `.sentiment-score-label`, `.sentiment-meter-caption`, `.sentiment-details dt`, `.mission-control-summary span`, `.transcript-speaker-block p`, and `.transcript-topline time`; dark-header rules (`.console-eyebrow`, `.console-call-meta dt`, `.console-status`) left untouched on `--cc-hdr-muted`; resolves Athrun's a11y gate.
+
+- **Source:** `.squad/decisions/inbox/meyrin-deployment-artifacts-aca-appservice.md`
+
+# 2026-06-06T15:20:19.390-04:00 — Deployment artifact split (ACA API + App Service Web)
+
+- **By:** Meyrin
+- **Decision proposal:** For the current POC hosting direction, standardize deployment packaging as:
+  1. **API (`CallCenterTranscription.Api`)** on **Azure Container Apps** via container image (Dockerfile required).
+  2. **Web (`CallCenterTranscription.Web`)** on **Azure App Service** via source/package deploy (no Web Dockerfile required for now).
+- **Why this matters to team:** This locks CI/CD and IaC shape for Lunamaria/Lacus integration points and avoids running two container supply chains when only API needs ACA.
+- **Operational note:** API already has `/healthz`; Web currently has no health endpoint, so add one before enabling App Service Health Check.
+- **Security follow-up (required):** `Security__RequireAuth=true` is not deployment-ready until the team chooses and implements a concrete auth model (for example, Entra-authenticated Web and JWT bearer validation on API/SignalR) plus corresponding app settings.
+- **Source evidence:** `src/CallCenterTranscription.Api/Program.cs`, `src/CallCenterTranscription.Web/Program.cs`, `src/CallCenterTranscription.Web/Services/BackendApiOptions.cs`, `.squad/decisions.md`.
+
+- **Source:** `.squad/decisions/inbox/meyrin-healthcheck-forwarded-headers.md`
+
+# 2026-06-06T15:29:41.673-04:00 — Health checks must bypass HTTPS redirect behind Azure proxies
+
+- **By:** Meyrin
+- **Decision proposal:** For API and Web hosted behind Azure reverse proxies (Container Apps/App Service), apply forwarded headers middleware before HTTPS redirection and exempt `/healthz` from redirect.
+- **Why this matters to team:** This keeps platform health probes deterministic (direct 200 on `/healthz`) while preserving HTTPS redirect behavior for user-facing routes.
+- **Operational note:** Both services now configure `X-Forwarded-For` and `X-Forwarded-Proto` handling in startup and keep `/healthz` mapped as an anonymous minimal endpoint.
+- **Source evidence:** `src/CallCenterTranscription.Api/Program.cs`, `src/CallCenterTranscription.Web/Program.cs`.
+
+- **Source:** `.squad/decisions/inbox/rbac-idempotency-fixer-role-assignment-guid-seeds.md`
+
+# Decision: RBAC Role Assignment GUID Seeds Must Include Principal ID
+
+- **Decision ID:** rbac-idempotency-fixer-role-assignment-guid-seeds
+- **Date:** 2026-06-06T16:36:28.287-04:00
+- **Requester:** Jason
+- **Revision Author:** rbac-idempotency-fixer
+
+## Context
+Security/deployment review rejected the prior revision because role assignment names were seeded with principal/resource names instead of principal IDs. This is not recovery-safe when managed identities are recreated and receive new principal IDs.
+
+## Decision
+1. Runtime role assignments in `infra/main.bicep` now use:
+   - `guid(scope.id, apiContainerApp.identity.principalId, roleDefinitionId)`
+2. `infra/modules/acr-pull-role-assignment.bicep` now seeds role assignment name with:
+   - `guid(registry.id, principalId, acrPullRoleDefinitionId)`
+3. The module parameter `principalName` is removed; callers pass only `principalId`.
+
+## Constraints Preserved
+- ACA **user-assigned** identity remains dedicated to ACR pulls.
+- ACA **system-assigned** identity remains dedicated to runtime Key Vault/Cognitive/ACS RBAC.
+- No secrets added.
+- No resource deletion.
+
+## Expected Outcome
+Role assignment resources become idempotent and recovery-safe across identity recreation events because GUID seeds now track the effective principal object ID.
+
+## Validation State
+- Bicep compile/build/test commands rerun in this revision.
+- Full `azure-validate` remains pending; deployment plan status is set to **Ready for Re-Validation**.
+
+- **Source:** `.squad/decisions/inbox/revision-engineer-deployment-readiness-fixes.md`
+
+# Revision Engineer — Deployment Readiness Fixes
+
+- **When:** 2026-06-06T15:55:10-0400
+- **By:** Revision Engineer
+- **What:** Updated Azure deployment artifacts to make ACA bootstrap safe with `enableApiHealthProbes=false` by default, tightened Key Vault firewall posture to `defaultAction=Deny` (`bypass=AzureServices`), and removed ACS live readiness claims by deferring Event Grid/callback/media automation until API routes are implemented.
+- **Why:** Security review rejected prior artifacts for unsafe placeholder-health coupling, implied ACS live readiness without routes, and permissive Key Vault firewall defaults.
+- **Impact:** Infrastructure remains provisionable for POC resource floor while avoiding false ACS-live readiness claims; post-provision gate now explicitly requires real API image deployment and `/healthz` verification before enabling ACA probes.
+
+- **Source:** `.squad/decisions/inbox/yzak-azure-deployment-readiness.md`
+
+# Yzak Review — Azure Deployment Readiness
+
+**Date:** 2026-06-06T15:20:19.350-04:00  
+**Reviewer:** Yzak  
+**Verdict:** REJECT
+
+## What I reviewed
+
+- Established Squad decisions in `.squad/decisions.md`
+- Current planning artifact in `.azure/deployment-plan.md`
+- Current app/runtime seams in:
+  - `src/CallCenterTranscription.Api/Program.cs`
+  - `src/CallCenterTranscription.Api/appsettings.json`
+  - `src/CallCenterTranscription.Web/Program.cs`
+  - `tests/CallCenterTranscription.Tests/ApiWiringSmokeTests.cs`
+
+## Bottom line
+
+The Azure direction itself is still fine: backend on Azure Container Apps, frontend on App Service, real ACS in the final demo, and mock audio as the fallback.  
+What is **not** fine is pretending the deployment plan is ready. Right now it is just a placeholder checklist plus RG/region. That is nowhere near enough for a live-demo gate.
+
+## Evidence behind the rejection
+
+1. **The deployment plan is skeletal, not a deployment direction you can trust.**
+   - `.azure/deployment-plan.md` only records planning status, resource group, location, and an unchecked checklist.
+   - It does **not** define service topology details, auth choices, secrets posture, health strategy, validation gates, rollback criteria, or demo runbook checkpoints.
+
+2. **Security posture is not defined where it matters.**
+   - Squad decisions and agent history consistently require managed identity and no secrets in code.
+   - The plan does not say which identities exist, which Azure roles they need, which services use direct Entra auth, or when Key Vault is required for unavoidable secrets.
+   - `src/CallCenterTranscription.Api/appsettings.json` still defaults `Security:RequireAuth` to `false`, and the plan does not define the production override or front-end/back-end auth approach.
+
+3. **Health coverage is too thin for a live demo.**
+   - `src/CallCenterTranscription.Api/Program.cs` has a basic `/healthz` endpoint.
+   - `src/CallCenterTranscription.Web/Program.cs` exposes no explicit health endpoint at all.
+   - The plan does not define readiness/liveness expectations for ACA, warmup/health behavior for App Service, or dependency-aware checks for ACS callback/media flow.
+
+4. **ACS callback/WebSocket reliability is not gated.**
+   - Squad decisions require public callback/WebSocket endpoints on ACA for the real ACS path.
+   - The plan does not define validation for inbound callback reachability, Event Grid handshake, media WebSocket behavior, reconnect handling, or the dress-rehearsal sequence for the rep/customer call flow.
+
+5. **Validation gates are incomplete.**
+   - Current baseline is good: `dotnet build CallCenterTranscription.sln` passed and `dotnet test CallCenterTranscription.sln --no-build` passed (4/4).
+   - But those only prove scaffold health. They do not prove Azure runtime readiness, managed identity access, public ingress behavior, or demo survivability.
+
+## Required changes before this gets out of QA jail
+
+1. **Document the production auth + secret model**
+   - State that ACA and App Service use managed identity by default.
+   - List required RBAC per service (ACS, Azure AI Speech, Translator, AI Foundry, Key Vault if used).
+   - State explicitly that connection strings/API keys are forbidden in code and appsettings; if any secret is unavoidable, it must come from Key Vault.
+   - Define the production setting that enables auth for API routes/hub and how the web app authenticates to the API.
+
+2. **Add a real health strategy**
+   - Define API liveness/readiness beyond a static `200 OK`.
+   - Define an explicit frontend health endpoint or warmup probe strategy for App Service.
+   - Define what “ready” means for the live demo path: API up, SignalR negotiate works, ACS callback endpoint reachable, media WebSocket reachable.
+
+3. **Add live-demo reliability gates**
+   - Require one smoke path with `MockAudioSource` so the demo still runs if ACS flakes.
+   - Require one real-ACS dress rehearsal covering inbound answer, media streaming start, rep add, and visible transcript updates.
+   - Define clear go/no-go criteria and fallback steps.
+
+4. **Add post-deploy validation gates**
+   - Web health check
+   - API health check
+   - SignalR negotiate smoke test
+   - ACS callback validation
+   - Media WebSocket validation
+   - Mock-audio end-to-end transcript smoke test
+
+5. **Add operational guardrails**
+   - Minimum warm instances / anti-cold-start posture for the demo window
+   - Logging/telemetry checkpoints needed to debug a failed rehearsal fast
+   - Cost/budget note for ACS + AI service usage so the POC does not surprise-bill itself during repeated rehearsals
+
+## Reviewer note
+
+If this were only an architecture-direction checkpoint, I could live with **APPROVE-WITH-CHANGES**.  
+As a **deployment readiness** checkpoint, this stays **REJECT** until the missing security, health, and validation gates are written down.
+
+Second-pass devil's-advocate review agreed with that call: the missing items are core acceptance criteria, not cleanup.
+
+
 ## Governance
 
 - All meaningful changes require team consensus
