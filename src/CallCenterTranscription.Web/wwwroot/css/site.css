@@ -126,7 +126,7 @@ body {
   min-height: 0;
   height: 100dvh;
   max-width: none;
-  padding: clamp(0.6rem, 1.2vw, 1.1rem);
+  padding: 0;
 }
 
 /* ── Root Console ───────────────────────────────────────────── */
@@ -134,12 +134,10 @@ body {
   display: flex;
   flex: 1;
   flex-direction: column;
-  gap: var(--s3);
+  gap: 0;
   height: 100%;
   min-height: 0;
   width: 100%;
-  max-width: 1920px;
-  margin: 0 auto;
 }
 
 /* ── View Shells ────────────────────────────────────────────── */
@@ -152,10 +150,12 @@ body {
 .console-view--representative {
   flex-direction: column;
   gap: var(--s3);
+  padding: clamp(0.6rem, 1.2vw, 1.1rem);
 }
 
 .console-view--mission {
   min-height: 0;
+  padding: clamp(0.6rem, 1.2vw, 1.1rem);
 }
 
 /* ── Card Shell ─────────────────────────────────────────────── */
@@ -381,6 +381,48 @@ body {
 
 .console-view--mission .console-mission-link:focus-visible {
   outline-color: var(--cc-accent);
+}
+
+/* ── Screen Navigation Bar ──────────────────────────────────── */
+.screen-nav {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  flex-shrink: 0;
+  padding: 0.5rem 1rem;
+  background: var(--cc-hdr-from);
+  border-bottom: 1px solid rgba(255,255,255,.1);
+}
+
+.screen-nav-btn {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.35rem 1rem;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  font-size: 0.82rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  color: var(--cc-hdr-text);
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+  white-space: nowrap;
+}
+
+.screen-nav-btn[aria-current="page"] {
+  background: rgba(255,255,255,.15);
+  border-color: rgba(255,255,255,.35);
+}
+
+.screen-nav-btn:hover:not([aria-current="page"]) {
+  background: rgba(255,255,255,.07);
+  border-color: rgba(255,255,255,.2);
+}
+
+.screen-nav-btn:focus-visible {
+  outline: 2px solid rgba(255,255,255,.7);
+  outline-offset: 2px;
 }
 
 /* Translation toggle link */
@@ -793,6 +835,7 @@ body {
   display: flex;
   flex-direction: column;
   gap: var(--s4);
+  flex: 1;
   min-height: 0;
   width: 100%;
   overflow: hidden;
@@ -893,8 +936,18 @@ body {
 }
 
 @media (max-width: 767.98px) {
-  .console-page-shell {
+  .console-view--representative,
+  .console-view--mission {
     padding: 0.5rem;
+  }
+
+  .screen-nav {
+    padding: 0.35rem 0.75rem;
+  }
+
+  .screen-nav-btn {
+    padding: 0.25rem 0.65rem;
+    font-size: 0.77rem;
   }
 
   .card-shell {
