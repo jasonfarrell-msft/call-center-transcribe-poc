@@ -117,4 +117,100 @@ public sealed class ApiWiringSmokeTests(WebApplicationFactory<Program> factory)
         Assert.Contains(missionControl.Components, component =>
             component.ComponentId == "acs-media-routes" && component.Status == "deferred");
     }
+
+    [Fact]
+    public async Task ApiHost_RequiresAuthenticationForSessionRoute_WhenRequireAuthEnabled()
+    {
+        using var envScope = new EnvironmentVariableScope(new Dictionary<string, string?>
+        {
+            ["Security__RequireAuth"] = "true",
+            ["Security__Auth__Authority"] = "https://login.microsoftonline.com/contoso.onmicrosoft.com/v2.0",
+            ["Security__Auth__Audience"] = "api://call-center-transcription-api",
+            ["DemoSafety__DataMode"] = "Mock"
+        });
+        using var authFactory = new WebApplicationFactory<Program>();
+        using var client = authFactory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            AllowAutoRedirect = false
+        });
+
+        var response = await client.GetAsync("/api/session/current");
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task ApiHost_RequiresAuthenticationForPipelineNegotiate_WhenRequireAuthEnabled()
+    {
+        using var envScope = new EnvironmentVariableScope(new Dictionary<string, string?>
+        {
+            ["Security__RequireAuth"] = "true",
+            ["Security__Auth__Authority"] = "https://login.microsoftonline.com/contoso.onmicrosoft.com/v2.0",
+            ["Security__Auth__Audience"] = "api://call-center-transcription-api",
+            ["DemoSafety__DataMode"] = "Mock"
+        });
+        using var authFactory = new WebApplicationFactory<Program>();
+        using var client = authFactory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            AllowAutoRedirect = false
+        });
+
+        using var content = new StringContent(string.Empty);
+        var response = await client.PostAsync("/hubs/pipeline/negotiate?negotiateVersion=1", content);
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    [Fact]
+    public void ApiHost_RequireAuthWithoutAuthorityAndAudience_FailsFast()
+    {
+        using var envScope = new EnvironmentVariableScope(new Dictionary<string, string?>
+        {
+            ["Security__RequireAuth"] = "true",
+            ["Security__Auth__Authority"] = "",
+            ["Security__Auth__Audience"] = "",
+            ["DemoSafety__DataMode"] = "Mock"
+        });
+        using var invalidFactory = new WebApplicationFactory<Program>();
+
+        var exception = Assert.Throws<InvalidOperationException>(() => invalidFactory.CreateClient());
+        Assert.Contains("Security:RequireAuth=true", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ApiHost_NonMockDataMode_FailsFast()
+    {
+        using var envScope = new EnvironmentVariableScope(new Dictionary<string, string?>
+        {
+            ["DemoSafety__DataMode"] = "Live"
+        });
+        using var invalidFactory = new WebApplicationFactory<Program>();
+
+        var exception = Assert.Throws<InvalidOperationException>(() => invalidFactory.CreateClient());
+        Assert.Contains("DemoSafety:DataMode", exception.Message, StringComparison.Ordinal);
+    }
+
+    private sealed class EnvironmentVariableScope : IDisposable
+    {
+        private readonly Dictionary<string, string?> originalValues;
+
+        public EnvironmentVariableScope(IReadOnlyDictionary<string, string?> values)
+        {
+            originalValues = values
+                .ToDictionary(static pair => pair.Key, static pair => Environment.GetEnvironmentVariable(pair.Key));
+
+            foreach (var (key, value) in values)
+            {
+                Environment.SetEnvironmentVariable(key, value);
+            }
+        }
+
+        public void Dispose()
+        {
+            foreach (var (key, value) in originalValues)
+            {
+                Environment.SetEnvironmentVariable(key, value);
+            }
+        }
+    }
 }
