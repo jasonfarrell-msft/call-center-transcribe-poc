@@ -1,245 +1,303 @@
-﻿@page
+@page
 @model IndexModel
 @{
     ViewData["Title"] = "Representative Console";
-    var hasSession = !string.IsNullOrWhiteSpace(Model.CurrentSession.Call.CallId);
-    var hasSentiment = !string.IsNullOrWhiteSpace(Model.SentimentFeed.CallId);
+    ViewData["MainContainerClass"] = "console-page-shell";
+    ViewData["BodyClass"] = "console-body";
+    ViewData["MainClass"] = "console-main";
+    ViewData["HideSiteChrome"] = true;
 }
 
-<div class="rep-console">
-    <section class="console-context card-shell" aria-labelledby="console-heading">
-        <h1 id="console-heading" class="mb-3">Call-Center Representative Console</h1>
-        <p class="status-strip" role="status" aria-live="polite">@Model.ConnectionSummary</p>
-        @if (Model.HasConnectionIssues)
-        {
-            <div class="alert alert-warning" role="alert">
-                <p class="mb-2"><strong>Backend API connection issues detected.</strong></p>
-                <ul class="mb-0">
-                    @foreach (var issue in Model.ConnectionIssues)
-                    {
-                        <li>@issue</li>
-                    }
-                </ul>
-            </div>
-        }
-        <dl class="context-grid">
-            <div>
-                <dt>Call ID</dt>
-                <dd>@(string.IsNullOrWhiteSpace(Model.CurrentSession.Call.CallId) ? "Not connected" : Model.CurrentSession.Call.CallId)</dd>
-            </div>
-            <div>
-                <dt>Session</dt>
-                <dd>@(string.IsNullOrWhiteSpace(Model.CurrentSession.Call.SessionId) ? "Not connected" : Model.CurrentSession.Call.SessionId)</dd>
-            </div>
-            <div>
-                <dt>Customer</dt>
-                <dd>@(string.IsNullOrWhiteSpace(Model.CurrentSession.Call.CustomerName) ? "Not connected" : Model.CurrentSession.Call.CustomerName)</dd>
-            </div>
-            <div>
-                <dt>Representative</dt>
-                <dd>@(string.IsNullOrWhiteSpace(Model.CurrentSession.Call.AgentName) ? "Not connected" : Model.CurrentSession.Call.AgentName)</dd>
-            </div>
-            <div>
-                <dt>Queue</dt>
-                <dd>@(string.IsNullOrWhiteSpace(Model.CurrentSession.Call.QueueName) ? "Not connected" : Model.CurrentSession.Call.QueueName)</dd>
-            </div>
-            <div>
-                <dt>State</dt>
-                <dd>@(hasSession ? IndexModel.ToDisplayLabel(Model.CurrentSession.Call.State) : "Not connected")</dd>
-            </div>
-            <div>
-                <dt>Started</dt>
-                <dd>@(hasSession ? Model.CurrentSession.Call.StartedAtUtc.ToLocalTime().ToString("g") : "Not connected")</dd>
-            </div>
-            <div>
-                <dt>Scenario</dt>
-                <dd>@(string.IsNullOrWhiteSpace(Model.CurrentSession.Call.ScenarioName) ? "Not connected" : Model.CurrentSession.Call.ScenarioName)</dd>
-            </div>
-        </dl>
-        @if (!string.IsNullOrWhiteSpace(Model.CurrentSession.Notes))
-        {
-            <p class="supporting-copy mb-0">@Model.CurrentSession.Notes</p>
-        }
-    </section>
+<div class="rep-console"
+     data-console-refresh-root="true"
+     data-console-refresh-interval-ms="4000">
+    <h1 class="visually-hidden">Call-Center Representative Console</h1>
 
-    <nav class="console-nav" aria-label="Console sections">
-        <button type="button"
-                class="btn btn-primary btn-sm"
-                data-console-nav-toggle="true"
-                data-console-nav-target="representative-view"
-                aria-controls="representative-view"
-                aria-pressed="true">
-            Representative view
-        </button>
-        <button type="button"
-                class="btn btn-outline-primary btn-sm"
-                data-console-nav-toggle="true"
-                data-console-nav-target="mission-control-view"
-                aria-controls="mission-control-view"
-                aria-pressed="false">
-            Mission Control
-        </button>
-    </nav>
+    <section id="representative-view"
+             class="console-view console-view--representative"
+             data-console-nav-view="true"
+             aria-labelledby="console-heading">
+        <header class="card-shell console-header" data-console-refresh-region="header">
+            <div class="console-header-top">
+                <div>
+                    <p class="console-eyebrow">Representative console</p>
+                    <h2 id="console-heading" tabindex="-1">@Model.RepresentativeDisplayName</h2>
+                    <p class="console-status" role="status" aria-live="polite">@Model.ConnectionSummary</p>
+                </div>
+                <button type="button"
+                        class="btn btn-link console-mission-link"
+                        data-console-nav-toggle="true"
+                        data-console-nav-target="mission-control-view"
+                        aria-controls="mission-control-view">
+                    Mission
+                </button>
+            </div>
 
-    <section id="representative-view" class="console-view" data-console-nav-view="true">
-        <div class="console-columns">
-            <section class="card-shell console-main-column" aria-labelledby="transcript-heading">
-                <h2 id="transcript-heading">Live transcript, diarization, and translation</h2>
-                @if (!string.IsNullOrWhiteSpace(Model.TranscriptWarning))
-                {
-                    <p class="mb-0 text-warning">@Model.TranscriptWarning</p>
-                }
-                else if (Model.TranscriptTimeline.Count == 0)
-                {
-                    <p class="mb-0">No transcript events yet.</p>
-                }
-                else
-                {
-                    <ol class="transcript-list">
-                        @foreach (var item in Model.TranscriptTimeline)
+            @if (Model.HasConnectionIssues)
+            {
+                <div class="console-alert" role="alert">
+                    <strong>Backend API connection issues detected.</strong>
+                    <ul>
+                        @foreach (var issue in Model.ConnectionIssues)
                         {
-                            <li class="transcript-item">
-                                <article aria-labelledby="turn-@item.Sequence">
-                                    <header class="transcript-header">
-                                        <h3 id="turn-@item.Sequence">Turn @item.Sequence — @item.SpeakerDisplayLabel</h3>
-                                        <p class="mb-0">
-                                            <span class="badge text-bg-light">@item.SpeakerRoleLabel</span>
-                                            <span class="badge text-bg-secondary">@item.SpeakerSourceLabel</span>
-                                            <span class="badge text-bg-info">@item.DetectedLanguageCode.ToUpperInvariant() · @item.DetectedLanguageLabel</span>
-                                            <span class="badge text-bg-dark">@item.SourceIndicator</span>
-                                        </p>
-                                    </header>
-                                    <p class="meta-line">
-                                        <time datetime="@item.TimestampUtc.ToString("O")">@item.TimestampDisplay</time>
-                                    </p>
-                                    @if (item.IsNonEnglish)
-                                    {
-                                        <p lang="@item.LanguageAttribute">@item.Text</p>
-                                    }
-                                    else
-                                    {
-                                        <p>@item.Text</p>
-                                    }
+                            <li>@issue</li>
+                        }
+                    </ul>
+                </div>
+            }
 
-                                    @if (item.IsNonEnglish)
-                                    {
-                                        @if (item.HasTranslation)
+            <dl class="console-call-meta" aria-label="Current call details">
+                <div>
+                    <dt>Call ID</dt>
+                    <dd>@Model.CallIdDisplay</dd>
+                </div>
+                <div>
+                    <dt>Customer</dt>
+                    <dd>@Model.CustomerDisplayName</dd>
+                </div>
+                <div>
+                    <dt>Connected</dt>
+                    <dd>@Model.ConnectionTimeDisplay</dd>
+                </div>
+            </dl>
+        </header>
+
+        <div class="console-columns" data-console-refresh-region="columns">
+            <section class="card-shell console-main-column" aria-labelledby="transcript-heading">
+                <div class="panel-header">
+                    <div>
+                        <h2 id="transcript-heading">Transcript</h2>
+                        <span class="visually-hidden">Live transcript, diarization, and translation</span>
+                        <p class="panel-copy">Diarization stays inline, and translation appears inside the live transcript.</p>
+                    </div>
+                    <p class="panel-kicker">@Model.FeedModeLabel</p>
+                </div>
+
+                <div class="transcript-scroller"
+                     data-transcript-scroll="true"
+                     tabindex="0"
+                     role="log"
+                     aria-live="polite"
+                     aria-relevant="additions text"
+                     aria-label="Live transcript feed">
+                    @if (!string.IsNullOrWhiteSpace(Model.TranscriptWarning))
+                    {
+                        <p class="console-empty-state">@Model.TranscriptWarning</p>
+                    }
+                    else if (Model.TranscriptTimeline.Count == 0)
+                    {
+                        <p class="console-empty-state">Waiting for transcript activity.</p>
+                    }
+                    else
+                    {
+                        <ol class="transcript-list">
+                            @foreach (var item in Model.TranscriptTimeline)
+                            {
+                                var translationPanelId = $"translation-{item.EventId}";
+                                var translationContext = !string.IsNullOrWhiteSpace(item.SpeakerDisplayLabel)
+                                    ? $"{item.SpeakerDisplayLabel} turn {item.Sequence}"
+                                    : $"turn {item.Sequence}";
+                                var showTranslationLabel = $"Show English translation for {translationContext}";
+                                var hideTranslationLabel = $"Hide English translation for {translationContext}";
+                                <li class="transcript-item">
+                                    <article aria-labelledby="turn-@item.Sequence">
+                                        <div class="transcript-topline">
+                                            <div class="transcript-speaker-block">
+                                                <h3 id="turn-@item.Sequence">@item.SpeakerDisplayLabel</h3>
+                                                <p>@item.SpeakerRoleLabel</p>
+                                            </div>
+                                            <time datetime="@item.TimestampUtc.ToString("O")">@item.TimestampDisplay</time>
+                                        </div>
+
+                                        <p class="transcript-tags">
+                                            <span>@item.SpeakerSourceLabel</span>
+                                            <span>@item.SourceIndicator</span>
+                                            <span>@item.DetectedLanguageCode.ToUpperInvariant() · @item.DetectedLanguageLabel</span>
+                                            @if (item.IsNonEnglish && item.HasTranslation)
+                                            {
+                                                <button type="button"
+                                                        class="btn btn-link transcript-action-link"
+                                                        data-translation-toggle="true"
+                                                        data-translation-target="@translationPanelId"
+                                                        data-show-label="@showTranslationLabel"
+                                                        data-hide-label="@hideTranslationLabel"
+                                                        aria-controls="@translationPanelId"
+                                                        aria-expanded="false"
+                                                        aria-label="@showTranslationLabel">
+                                                    @showTranslationLabel
+                                                </button>
+                                            }
+                                            else if (item.IsNonEnglish)
+                                            {
+                                                <span class="transcript-action-disabled">Translation unavailable</span>
+                                            }
+                                        </p>
+
+                                        @if (item.IsNonEnglish)
                                         {
-                                            var translationPanelId = $"translation-{item.EventId}";
-                                            <button type="button"
-                                                    class="btn btn-outline-primary btn-sm"
-                                                    data-translation-toggle="true"
-                                                    data-translation-target="@translationPanelId"
-                                                    aria-controls="@translationPanelId"
-                                                    aria-expanded="false"
-                                                    aria-label="@item.TranslationButtonLabel">
-                                                Reveal English translation
-                                            </button>
+                                            <p class="transcript-body" lang="@item.LanguageAttribute">@item.Text</p>
+                                        }
+                                        else
+                                        {
+                                            <p class="transcript-body">@item.Text</p>
+                                        }
+
+                                        @if (item.IsNonEnglish && item.HasTranslation)
+                                        {
                                             <section id="@translationPanelId"
                                                      class="translation-panel"
                                                      aria-label="Translation"
                                                      hidden>
-                                                <p class="mb-1"><strong>Translation (@item.TranslationTargetLanguageLabel):</strong></p>
+                                                <p class="translation-label">Translation (@item.TranslationTargetLanguageLabel)</p>
                                                 <p lang="en" class="mb-0">@item.TranslationText</p>
                                             </section>
                                         }
-                                        else if (!item.HasTranslation)
-                                        {
-                                            <button type="button"
-                                                    class="btn btn-outline-secondary btn-sm"
-                                                    disabled
-                                                    aria-label="@item.TranslationButtonLabel">
-                                                Translation unavailable
-                                            </button>
-                                        }
-                                    }
-                                </article>
-                            </li>
-                        }
-                    </ol>
-
-                    @if (!string.IsNullOrWhiteSpace(Model.TranslationWarning))
-                    {
-                        <p class="mb-0 text-warning">@Model.TranslationWarning</p>
+                                    </article>
+                                </li>
+                            }
+                        </ol>
                     }
+                </div>
+
+                @if (!string.IsNullOrWhiteSpace(Model.TranslationWarning))
+                {
+                    <p class="panel-footnote">@Model.TranslationWarning</p>
                 }
             </section>
 
-            <aside class="console-side-column">
-                <section class="card-shell" aria-labelledby="sentiment-heading">
-                    <h2 id="sentiment-heading">Sentiment indicator</h2>
+            <aside class="console-side-column" aria-labelledby="sentiment-heading">
+                <section class="card-shell sentiment-panel">
+                    <div class="panel-header panel-header--stacked">
+                        <div>
+                            <h2 id="sentiment-heading">Customer sentiment</h2>
+                            <span class="visually-hidden">Sentiment indicator</span>
+                            <span class="visually-hidden">Representative awareness</span>
+                            <p class="panel-copy">A compact view of current customer tone.</p>
+                        </div>
+                    </div>
+
                     @if (!string.IsNullOrWhiteSpace(Model.SentimentWarning))
                     {
-                        <p class="mb-0 text-warning">@Model.SentimentWarning</p>
+                        <p class="console-empty-state">@Model.SentimentWarning</p>
                     }
-                    else if (!hasSentiment)
+                    else if (!Model.Sentiment.HasData)
                     {
-                        <p class="mb-0">No sentiment updates yet.</p>
+                        <p class="console-empty-state">Waiting for sentiment.</p>
                     }
                     else
                     {
-                        <p><strong>Current tone:</strong> @IndexModel.ToDisplayLabel(Model.SentimentFeed.Summary.OverallLabel)</p>
-                        <p><strong>Trend:</strong> @IndexModel.ToDisplayLabel(Model.SentimentFeed.Summary.Trend)</p>
-                        @if (!string.IsNullOrWhiteSpace(Model.SentimentFeed.Summary.SummaryText))
+                        @if (Model.Sentiment.ScorePercent is int sentimentScore)
                         {
-                            <p>@Model.SentimentFeed.Summary.SummaryText</p>
-                        }
-                        <p class="mb-0">
-                            <strong>Updated:</strong>
-                            @Model.SentimentFeed.Summary.UpdatedAtUtc.ToLocalTime().ToString("g")
-                        </p>
-                    }
-                </section>
+                            <div class="sentiment-score-block">
+                                <p class="sentiment-score-label">Score</p>
+                                <p class="sentiment-score-value">
+                                    @sentimentScore<span>/100</span>
+                                </p>
+                                <p class="sentiment-score-state">@Model.Sentiment.ScoreStateLabel</p>
+                            </div>
 
-                <section class="card-shell" aria-labelledby="awareness-heading">
-                    <h2 id="awareness-heading">Representative awareness</h2>
-                    <p><strong>Connection:</strong> @Model.ConnectionSummary</p>
-                    <p><strong>Live turn count:</strong> @Model.TranscriptTimeline.Count</p>
-                    <p><strong>Feed mode:</strong> @(Model.CurrentSession.IsMockFeedActive ? "Mock feed active" : "Live feed active")</p>
-                    <p class="mb-0"><strong>Call state:</strong> @(hasSession ? IndexModel.ToDisplayLabel(Model.CurrentSession.Call.State) : "Not connected")</p>
+                            <div class="sentiment-meter" aria-hidden="true">
+                                <span class="@Model.Sentiment.ScoreVisualClass" style="width:@sentimentScore%"></span>
+                            </div>
+                            <p class="sentiment-meter-caption">0 = negative • 100 = positive</p>
+                        }
+
+                        <dl class="sentiment-details">
+                            <div>
+                                <dt>Tone</dt>
+                                <dd>@Model.Sentiment.ToneLabel</dd>
+                            </div>
+                            <div>
+                                <dt>Trend</dt>
+                                <dd>@Model.Sentiment.TrendLabel</dd>
+                            </div>
+                            <div>
+                                <dt>Updated</dt>
+                                <dd>@Model.Sentiment.UpdatedDisplay</dd>
+                            </div>
+                        </dl>
+
+                        @if (!string.IsNullOrWhiteSpace(Model.Sentiment.SummaryText))
+                        {
+                            <p class="sentiment-summary">@Model.Sentiment.SummaryText</p>
+                        }
+                    }
                 </section>
             </aside>
         </div>
     </section>
 
-    <section id="mission-control-view" class="console-view" data-console-nav-view="true" hidden>
-        <section class="card-shell" aria-labelledby="mission-control-heading">
-            <h2 id="mission-control-heading">Mission Control health</h2>
+    <section id="mission-control-view"
+             class="console-view console-view--mission"
+             data-console-nav-view="true"
+             aria-labelledby="mission-control-heading"
+             hidden>
+        <section class="card-shell mission-control-panel" data-console-refresh-region="mission">
+            <div class="mission-control-header">
+                <div>
+                    <p class="console-eyebrow">Mission</p>
+                    <h2 id="mission-control-heading" tabindex="-1">Mission Control</h2>
+                    <span class="visually-hidden">Mission Control health</span>
+                </div>
+                <button type="button"
+                        class="btn btn-link console-mission-link"
+                        data-console-nav-toggle="true"
+                        data-console-nav-target="representative-view"
+                        aria-controls="representative-view">
+                    Back to console
+                </button>
+            </div>
+
             @if (!string.IsNullOrWhiteSpace(Model.MissionControlWarning))
             {
-                <p class="mb-0 text-warning">@Model.MissionControlWarning</p>
+                <p class="console-empty-state">@Model.MissionControlWarning</p>
             }
             else
             {
-                <p><strong>Overall status:</strong> @IndexModel.ToDisplayLabel(Model.MissionControlHealth.OverallStatus)</p>
+                <div class="mission-control-summary">
+                    <div>
+                        <span>Overall</span>
+                        <strong>@IndexModel.ToDisplayLabel(Model.MissionControlHealth.OverallStatus)</strong>
+                    </div>
+                    <div>
+                        <span>Mode</span>
+                        <strong>@(Model.MissionControlHealth.IsMockFeedActive ? "Mock feed active" : "Live feed active")</strong>
+                    </div>
+                    <div>
+                        <span>Checked</span>
+                        <strong>@Model.MissionControlHealth.GeneratedAtUtc.ToLocalTime().ToString("h:mm tt")</strong>
+                    </div>
+                </div>
+
                 @if (!string.IsNullOrWhiteSpace(Model.MissionControlHealth.Summary))
                 {
-                    <p>@Model.MissionControlHealth.Summary</p>
+                    <p class="panel-copy mission-control-copy">@Model.MissionControlHealth.Summary</p>
                 }
 
                 @if (Model.MissionControlHealth.Components.Count == 0)
                 {
-                    <p class="mb-0">No mission control components reported yet.</p>
+                    <p class="console-empty-state">No mission control components reported yet.</p>
                 }
                 else
                 {
-                    <ul class="mission-control-list">
-                        @foreach (var component in Model.MissionControlHealth.Components)
-                        {
-                            var modeLabel = component.IsLive ? "Live" : "Mock/Deferred";
-                            <li>
-                                <h3>@component.DisplayName</h3>
-                                <p><strong>Status:</strong> @IndexModel.ToDisplayLabel(component.Status)</p>
-                                <p><strong>Mode:</strong> @modeLabel</p>
-                                <p><strong>Readiness:</strong> @IndexModel.ToDisplayLabel(component.Readiness)</p>
-                                <p><strong>Evidence:</strong> @component.Evidence</p>
-                                <p class="mb-0">
-                                    <strong>Checked:</strong>
-                                    @(component.LastCheckedUtc == default ? "Not available" : component.LastCheckedUtc.ToLocalTime().ToString("g"))
-                                </p>
-                            </li>
-                        }
-                    </ul>
+                    <div class="mission-control-scroller" tabindex="0" aria-label="Mission Control components">
+                        <ul class="mission-control-grid">
+                            @foreach (var component in Model.MissionControlHealth.Components)
+                            {
+                                <li>
+                                    <article class="mission-component-card">
+                                        <div class="mission-component-topline">
+                                            <h3>@component.DisplayName</h3>
+                                            <span>@IndexModel.ToDisplayLabel(component.Status)</span>
+                                        </div>
+                                        <p><strong>Mode:</strong> @(component.IsLive ? "Live" : "Mock/Deferred")</p>
+                                        <p><strong>Readiness:</strong> @IndexModel.ToDisplayLabel(component.Readiness)</p>
+                                        <p class="mb-0">@component.Evidence</p>
+                                    </article>
+                                </li>
+                            }
+                        </ul>
+                    </div>
                 }
             }
         </section>

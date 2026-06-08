@@ -29,6 +29,19 @@ public class IndexModel : PageModel
     public string? MissionControlWarning { get; private set; }
     public bool HasConnectionIssues => _connectionIssues.Count > 0;
     public IReadOnlyList<string> ConnectionIssues => _connectionIssues;
+    public bool HasActiveCall => !string.IsNullOrWhiteSpace(CurrentSession.Call.CallId);
+    public string RepresentativeDisplayName => string.IsNullOrWhiteSpace(CurrentSession.Call.AgentName)
+        ? "Representative"
+        : CurrentSession.Call.AgentName;
+    public string CallIdDisplay => HasActiveCall ? CurrentSession.Call.CallId : "Waiting for call";
+    public string CustomerDisplayName => HasActiveCall && !string.IsNullOrWhiteSpace(CurrentSession.Call.CustomerName)
+        ? CurrentSession.Call.CustomerName
+        : "Waiting for call";
+    public string ConnectionTimeDisplay => HasActiveCall
+        ? CurrentSession.Call.StartedAtUtc.ToLocalTime().ToString("h:mm tt")
+        : "Waiting for call";
+    public string FeedModeLabel => CurrentSession.IsMockFeedActive ? "Mock feed" : "Live feed";
+    public SentimentPresentation Sentiment { get; private set; } = SentimentPresentation.Waiting;
 
     public async Task OnGetAsync()
     {
@@ -75,6 +88,7 @@ public class IndexModel : PageModel
 
         TranscriptTimeline = BuildTranscriptTimeline(transcriptEvents, translationEvents);
         ConnectionSummary = BuildConnectionSummary(currentSessionResult);
+        Sentiment = BuildSentimentPresentation(SentimentFeed);
     }
 
     private static IReadOnlyList<TranscriptTimelineItem> BuildTranscriptTimeline(
@@ -131,6 +145,73 @@ public class IndexModel : PageModel
                 };
             })
             .ToArray();
+    }
+
+    private static SentimentPresentation BuildSentimentPresentation(SentimentFeedResponse sentimentFeed)
+    {
+        var summaryLabel = ToDisplayLabel(sentimentFeed.Summary.OverallLabel);
+        var trendLabel = ToDisplayLabel(sentimentFeed.Summary.Trend);
+        var updatedAt = sentimentFeed.Summary.UpdatedAtUtc != default
+            ? sentimentFeed.Summary.UpdatedAtUtc
+            : sentimentFeed.Events.OrderByDescending(item => item.TimestampUtc).FirstOrDefault()?.TimestampUtc ?? default;
+        var latestEvent = sentimentFeed.Events
+            .OrderByDescending(item => item.TimestampUtc)
+            .ThenByDescending(item => item.RelatedTranscriptSequence ?? long.MinValue)
+            .FirstOrDefault();
+
+        if (latestEvent is null)
+        {
+            if (string.IsNullOrWhiteSpace(sentimentFeed.CallId) && string.IsNullOrWhiteSpace(sentimentFeed.Summary.CallId))
+            {
+                return SentimentPresentation.Waiting;
+            }
+
+            return new SentimentPresentation
+            {
+                HasData = true,
+                ToneLabel = summaryLabel,
+                TrendLabel = trendLabel,
+                SummaryText = sentimentFeed.Summary.SummaryText,
+                UpdatedDisplay = updatedAt == default ? "Awaiting update" : updatedAt.ToLocalTime().ToString("h:mm tt")
+            };
+        }
+
+        var clampedScore = Math.Clamp(latestEvent.Score, -1d, 1d);
+        var scorePercent = (int)Math.Round(((clampedScore + 1d) / 2d) * 100d, MidpointRounding.AwayFromZero);
+
+        return new SentimentPresentation
+        {
+            HasData = true,
+            ScorePercent = scorePercent,
+            ToneLabel = summaryLabel,
+            TrendLabel = trendLabel,
+            SummaryText = sentimentFeed.Summary.SummaryText,
+            UpdatedDisplay = updatedAt == default ? latestEvent.TimestampUtc.ToLocalTime().ToString("h:mm tt") : updatedAt.ToLocalTime().ToString("h:mm tt"),
+            ScoreStateLabel = GetSentimentScoreState(scorePercent),
+            ScoreVisualClass = GetSentimentScoreVisualClass(scorePercent)
+        };
+    }
+
+    private static string GetSentimentScoreState(int scorePercent)
+    {
+        return scorePercent switch
+        {
+            <= 30 => "Escalation risk",
+            < 55 => "Needs recovery",
+            < 75 => "Stabilizing",
+            _ => "Positive momentum"
+        };
+    }
+
+    private static string GetSentimentScoreVisualClass(int scorePercent)
+    {
+        return scorePercent switch
+        {
+            <= 30 => "sentiment-meter-bar sentiment-meter-bar--negative",
+            < 55 => "sentiment-meter-bar sentiment-meter-bar--caution",
+            < 75 => "sentiment-meter-bar sentiment-meter-bar--steady",
+            _ => "sentiment-meter-bar sentiment-meter-bar--positive"
+        };
     }
 
     private string BuildConnectionSummary(ApiFetchResult<SessionCurrentResponse> currentSessionResult)
@@ -292,5 +373,19 @@ public class IndexModel : PageModel
         public string TranslationButtonLabel { get; init; } = string.Empty;
         public string TranslationTargetLanguageLabel { get; init; } = "English";
         public string TranslationText { get; init; } = string.Empty;
+    }
+
+    public sealed record SentimentPresentation
+    {
+        public static SentimentPresentation Waiting { get; } = new();
+
+        public bool HasData { get; init; }
+        public int? ScorePercent { get; init; }
+        public string ToneLabel { get; init; } = "Waiting for call";
+        public string TrendLabel { get; init; } = "Awaiting sentiment";
+        public string SummaryText { get; init; } = string.Empty;
+        public string UpdatedDisplay { get; init; } = "Waiting for call";
+        public string ScoreStateLabel { get; init; } = "Awaiting sentiment";
+        public string ScoreVisualClass { get; init; } = "sentiment-meter-bar sentiment-meter-bar--steady";
     }
 }
