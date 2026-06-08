@@ -50,3 +50,7 @@ Reviewed Lunamaria's token-based CSS rewrite + `data-speaker-role` addition in I
 2. **WCAG AA is non-negotiable even for metadata/supplementary text.** Role labels, timestamps, score labels, and DT captions are not exempt. If it's visible text, it passes or we fix it.
 3. **Otherwise the redesign approach was sound:** speaker-role attribution via `data-speaker-role` is clean, JS selectors all intact, no content removed, no CDN additions, `prefers-reduced-motion` honored, color never sole status indicator.
 4. **Gate rule exercised:** Revision assigned to Meyrin (not original author Lunamaria) per the reviewer gate policy.
+
+### 2026-06-08 — Mission Control screen-split review (Lunamaria)
+
+APPROVED. Two full-viewport screens with persistent nav bar. Flex layout fills remaining height correctly (`.rep-console` column flex, `.console-view` flex:1, `.screen-nav` flex-shrink:0). JS `setActiveView` correctly manages `hidden`+`aria-hidden` and `aria-current` on nav buttons. Selectors all resolve. WCAG AA contrast passes for nav text (`#e8f0fd` on `#0c1e4a`). No content removed, no secrets, no new external assets.

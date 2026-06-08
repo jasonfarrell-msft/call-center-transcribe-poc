@@ -12,6 +12,168 @@ Any time you need to build a live-assist dashboard for a call-center agent (or s
 
 ---
 
+## Pattern: Full-Viewport Multi-Screen (Two-Screen Split)
+
+Use this when a single-page app needs two distinct operational modes (e.g., live agent assist vs. supervisor/mission overview) that each require the full viewport — no scroll, no centering, no wasted margins.
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  SCREEN NAV BAR  (dark, full-width, ~3rem tall)               │
+│  [● Agent Console]  [Mission Control]                         │
+└──────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│  ACTIVE SCREEN (fills remaining height × full width)         │
+│  Only one screen visible at a time                           │
+│  (hidden + aria-hidden on inactive)                          │
+└──────────────────────────────────────────────────────────────┘
+```
+
+### CSS Recipe
+
+```css
+/* Shell — zero padding, full viewport */
+.console-page-shell {
+  display: flex;
+  height: 100dvh;
+  padding: 0;        /* no wrapper margins */
+}
+
+/* Root container — no max-width centering */
+.rep-console {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 0;
+  height: 100%;
+  min-height: 0;
+  width: 100%;
+  /* NO max-width, NO margin: auto */
+}
+
+/* Persistent nav strip */
+.screen-nav {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-shrink: 0;
+  padding: 0.5rem 1rem;
+  background: var(--cc-hdr-from);   /* dark navy — matches call context bar */
+  border-bottom: 1px solid rgba(255,255,255,.1);
+}
+
+.screen-nav-btn {
+  padding: 0.35rem 1rem;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: var(--cc-hdr-text);   /* always full contrast — WCAG AA */
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.screen-nav-btn[aria-current="page"] {
+  background: rgba(255,255,255,.15);
+  border-color: rgba(255,255,255,.35);
+}
+
+.screen-nav-btn:focus-visible {
+  outline: 2px solid rgba(255,255,255,.7);
+  outline-offset: 2px;
+}
+
+/* Each screen fills remaining height; internal padding managed per-screen */
+.console-view {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.console-view--screen-a {
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: clamp(0.6rem, 1.2vw, 1.1rem);
+}
+
+.console-view--screen-b {
+  padding: clamp(0.6rem, 1.2vw, 1.1rem);
+}
+```
+
+### HTML Recipe
+
+```html
+<!-- Two nav buttons use existing data-console-nav-toggle hook -->
+<nav class="screen-nav" aria-label="Switch screen">
+  <button type="button"
+          class="screen-nav-btn"
+          data-console-nav-toggle="true"
+          data-console-nav-target="screen-a"
+          aria-current="page"
+          aria-controls="screen-a">
+    Screen A
+  </button>
+  <button type="button"
+          class="screen-nav-btn"
+          data-console-nav-toggle="true"
+          data-console-nav-target="screen-b"
+          aria-controls="screen-b">
+    Screen B
+  </button>
+</nav>
+
+<!-- Default active screen — no hidden attr -->
+<section id="screen-a" class="console-view console-view--screen-a"
+         data-console-nav-view="true" aria-labelledby="screen-a-heading">
+  ...
+</section>
+
+<!-- Inactive screen — both hidden AND aria-hidden -->
+<section id="screen-b" class="console-view console-view--screen-b"
+         data-console-nav-view="true" aria-labelledby="screen-b-heading"
+         hidden aria-hidden="true">
+  ...
+</section>
+```
+
+### JS Extension (extend setActiveView)
+
+```javascript
+function setActiveView(targetId, shouldFocusHeading) {
+    getConsoleViews().forEach((view) => {
+        if (view.id === targetId) {
+            view.removeAttribute("hidden");
+            view.removeAttribute("aria-hidden");
+            // ... focus heading if needed
+        } else {
+            view.setAttribute("hidden", "");
+            view.setAttribute("aria-hidden", "true");
+        }
+    });
+
+    // Sync aria-current on all nav-toggle buttons
+    document.querySelectorAll("[data-console-nav-toggle='true']").forEach((btn) => {
+        if (!(btn instanceof HTMLElement)) { return; }
+        if (btn.getAttribute("data-console-nav-target") === targetId) {
+            btn.setAttribute("aria-current", "page");
+        } else {
+            btn.removeAttribute("aria-current");
+        }
+    });
+}
+```
+
+### Key Rules
+
+- **Never use `max-width` + `margin: auto` on the root container** — this letterboxes screens on wide displays.
+- **Padding belongs inside the screen, not on the shell** — moves to `.console-view--*` so each screen is independently inset.
+- **`hidden` + `aria-hidden="true"` on inactive screens** — belt-and-suspenders: `hidden` → `display:none` removes from layout; `aria-hidden` removes from accessibility tree.
+- **Nav button text always uses full contrast color** — differentiate active/inactive with background/border only, never by making inactive text low-contrast.
+- **`flex-shrink: 0` on the nav strip** — prevents it from being crushed when screens need all available height.
+
+---
+
 ## Pattern: Three-Zone Agent Desktop
 
 ```

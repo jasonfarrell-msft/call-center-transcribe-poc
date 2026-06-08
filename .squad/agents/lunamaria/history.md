@@ -12,7 +12,14 @@
 
 (append component patterns, streaming approach, and key file paths here)
 
-- **2026-06-08 — Dashboard visual redesign:**
+- **2026-06-08 — Two-screen full-viewport split (Mission Control):**
+  - **Architecture:** Two `.console-view` sections (`#representative-view`, `#mission-control-view`) remain siblings inside `.rep-console` (flex column). Only one is visible at a time via `hidden` + `aria-hidden="true"` on the inactive screen. The visible view gets `flex: 1` and fills all remaining height.
+  - **Full-viewport sizing:** `.console-page-shell` padding is now `0`. `.rep-console` loses `max-width` and `margin: 0 auto` (was `1920px`/centered). Internal padding (`clamp(0.6rem, 1.2vw, 1.1rem)`) moved into `.console-view--representative` and `.console-view--mission` so each screen manages its own inset. Mission control's `.mission-control-panel` gains `flex: 1` so the card-shell fills the full view height.
+  - **Shared screen nav:** A `<nav class="screen-nav">` strip sits at the top of `.rep-console` (before the views). Two `<button>` elements carry `data-console-nav-toggle="true"` (same selector the existing JS click handler uses). Default active button gets `aria-current="page"`.
+  - **JS extension (`setActiveView`):** Extended to: (1) set `aria-hidden="true"` on hidden views and remove it from the shown view; (2) iterate all `[data-console-nav-toggle]` buttons and set `aria-current="page"` on the one pointing to the active view, removing it from others.
+  - **Removed:** Per-view "Mission" and "Back to console" pill buttons — the persistent nav bar makes them redundant. All other content/hooks preserved.
+  - **New IDs/classes:** `.screen-nav`, `.screen-nav-btn`, `aria-current="page"` on active nav btn.
+  - **Responsive:** `@media (max-width: 767.98px)` padding override moved from `.console-page-shell` to `.console-view--representative, .console-view--mission`; `.screen-nav` and `.screen-nav-btn` get compact padding overrides.
   - **Layout architecture:** Two-zone grid (`minmax(0,1fr) 295px`) inside a flex-column rep-console. Dark navy header card (call-context bar, `linear-gradient(130deg, #0c1e4a, #1a3380)`) sits above the columns as its own flex item. Sentiment panel is a `card-shell` that fills the right column naturally — no `border-left` separator needed.
   - **Design tokens:** CSS custom properties on `:root` — prefix `--cc-` for colors/text/semantic, `--s1…s6` for spacing, `--r/r-sm/r-lg` for radius, `--sh-sm/sh/sh-lg` for elevation. Token names: `--cc-bg`, `--cc-surface`, `--cc-surface-2`, `--cc-border`, `--cc-border-strong`, `--cc-text-primary/secondary/muted`, `--cc-accent/accent-hover/accent-light`, `--cc-ok/warn/danger` with `-light/-text` variants, `--cc-hdr-from/to/text/muted/tile-bg/tile-border`.
   - **Speaker turn differentiation:** Added `data-speaker-role="@item.SpeakerRoleLabel.ToLowerInvariant()"` to each `<li class="transcript-item">` in `Index.cshtml`. CSS uses `[data-speaker-role="agent"]` (green left accent `#059669`, `#f0fdf4` bg) and `[data-speaker-role="customer"]` (blue left accent `#2563eb`, `#eff6ff` bg). Heading color also changes per role.
