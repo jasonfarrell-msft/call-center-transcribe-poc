@@ -24,6 +24,9 @@ param speechCandidateLanguages string = 'en-US,sv-SE,de-DE,fr-FR'
 @description('Placeholder Azure AI deployment name until a model is deployed post-provision.')
 param foundryDeploymentName string = 'post-provision-model-deployment'
 
+@description('Minimum replicas for the API Container App. Set to 1 for demo reliability (WebSocket statefulness — a cold replica would drop an inbound call).')
+param apiMinReplicas int = 1
+
 @description('Optional additional tags applied to all resources.')
 param tags object = {}
 
@@ -69,6 +72,14 @@ var cognitiveServicesUserRoleDefinitionId = subscriptionResourceId(
 var acrPullRoleDefinitionId = subscriptionResourceId(
   'Microsoft.Authorization/roleDefinitions',
   '7f951dda-4ed3-4680-a7ca-43fe172d538d'
+)
+// Communication Services Contributor — minimum viable built-in role for Call Automation
+// AnswerCall + StartMediaStreaming. No narrower role covers both operations. Accepted for
+// POC because the assignment is resource-scoped to ACS only and the identity is a
+// system-assigned MI with no external exposure.
+var communicationServicesContributorRoleDefinitionId = subscriptionResourceId(
+  'Microsoft.Authorization/roleDefinitions',
+  '2b4609a5-7812-4aba-b5e3-076e6a078419'
 )
 
 var speechEndpoint = 'https://${speechCustomSubdomainName}.cognitiveservices.azure.com/'
@@ -285,6 +296,14 @@ resource apiContainerApp 'Microsoft.App/containerApps@2024-03-01' = {
               name: 'Acs__Endpoint'
               value: acsEndpoint
             }
+            {
+              name: 'AudioSource__Mode'
+              // 'Mock' keeps DI wired to MockAudioSource (default). Set to 'Acs' after the
+              // ACS phone number and Event Grid subscription are provisioned to activate the
+              // live AcsAudioSource — no image rebuild required (Dyakka reads AudioSource:Mode
+              // via IConfiguration; double-underscore maps to the colon-separated key).
+              value: 'Mock'
+            }
           ]
           probes: enableApiHealthProbes ? [
             {
@@ -317,7 +336,7 @@ resource apiContainerApp 'Microsoft.App/containerApps@2024-03-01' = {
         }
       ]
       scale: {
-        minReplicas: 0
+        minReplicas: apiMinReplicas
         maxReplicas: 1
       }
     }
@@ -423,6 +442,19 @@ module apiToAiServicesRoleAssignment 'modules/acr-pull-role-assignment.bicep' = 
   }
 }
 
+// ACS data-plane RBAC: Communication Services Contributor scoped to the ACS resource only.
+// Allows Call Automation AnswerCall + StartMediaStreaming via DefaultAzureCredential (system MI).
+// Scope is the single ACS resource, not the resource group — least-privilege for a POC.
+module apiToAcsRoleAssignment 'modules/acr-pull-role-assignment.bicep' = {
+  name: 'apiToAcsRoleAssignment'
+  params: {
+    scopeType: 'communicationServices'
+    scopeName: communicationService.name
+    principalId: apiContainerApp.identity.principalId
+    roleDefinitionId: communicationServicesContributorRoleDefinitionId
+  }
+}
+
 // TODO(event-grid): Deliberately deferred. The codebase does not yet expose a verified
 // ACS incoming-call webhook and media-streaming route surface, so this template avoids
 // creating an invalid or unusable Event Grid system topic/subscription until those routes
@@ -489,7 +521,8 @@ output manualPostProvisionSteps array = [
   'After deploying the real API image, set enableApiHealthProbes=true and re-apply infrastructure once ${apiBaseUrl}/healthz returns healthy responses from the API runtime.'
   'Implement and validate the ACS incoming-call webhook at ${apiBaseUrl}/api/events/acs/incoming-call before adding Event Grid.'
   'Implement and validate the ACS media WebSocket endpoint at wss://${apiFqdn}/api/calls/media-stream before enabling live ACS automation.'
-  'If API code needs ACS data-plane access, assign the appropriate Azure Communication Services built-in role after the exact operation surface is confirmed.'
+  'ACS data-plane RBAC (Communication Services Contributor) is already assigned to the API Container App system-assigned identity, scoped to the ACS resource. No manual role assignment needed.'
+  'To activate live ACS audio, set AudioSource__Mode=Acs on the Container App env vars after provisioning the ACS phone number and Event Grid subscription.'
   'Create the Azure AI project/model deployment against ${aiServicesAccount.name} and then set Foundry__DeploymentName to the final deployed model name.'
   'If App Service Linux does not yet accept DOTNETCORE|9.0 in the target stamp, switch linuxFxVersion to the latest supported .NET runtime during first deployment.'
 ]

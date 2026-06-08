@@ -26,6 +26,9 @@
     "foundryDeploymentName": {
       "value": "post-provision-model-deployment"
     },
+    "apiMinReplicas": {
+      "value": 1
+    },
     "tags": {
       "value": {
         "project": "CallCenterTranscription"

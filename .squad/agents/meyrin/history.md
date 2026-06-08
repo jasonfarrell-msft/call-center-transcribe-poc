@@ -46,4 +46,26 @@
 - **2026-06-05T16:20:08.868-04:00 — Phase 0 security seam:** API scaffold adds optional auth gating with `Security:RequireAuth` in `src/CallCenterTranscription.Api/appsettings.json`, so Phase 1 can enable policy enforcement without redesigning routes/hub wiring.
 - **2026-06-05T20:38:22Z — Scribe merge note:** Phase 0 decision inbox was merged into `.squad/decisions/decisions.md` and the inbox files were cleared.
 - **2026-06-08T13:48:02Z — Dashboard contrast fix:** Fixed WCAG AA color contrast failure in Lunamaria's dashboard redesign by swapping `--cc-text-muted` (#94a3b8, 2.36–2.56:1) → `--cc-text-secondary` (#475569, 7.58:1) on 8 light-card CSS rules (`.transcript-speaker-block p`, `.transcript-topline time`, `.sentiment-score-label`, `.sentiment-meter-caption`, `.translation-label`, `.panel-kicker`, `.sentiment-details dt`, `.mission-control-summary span`). Dark-header rules (`.console-eyebrow`, `.console-call-meta dt`, `.console-status`) unchanged and compliant. Build: 0 errors, 0 warnings. Approved by Athrun re-gate.
-- **2026-06-08T12:58:45Z — Mission Control separate-page regression fix:** Lunamaria's nav-toggle removal accidentally deleted the `const translationButton` declaration in site.js click handler, causing ReferenceError on every translation toggle click. Fixed by restoring the missing const line and realigning `case "transcript-scroller":` indentation in `restoreFocus`. Both `node --check` and `dotnet build` pass clean. Approved on Athrun re-gate.
+- **2026-06-08T14:05:26.535-04:00 — ACS Option C Bicep infra (RBAC, minReplicas, AudioSource__Mode env var):**
+
+  **ACS RBAC role assignment:**
+  - Role: `Communication Services Contributor` (GUID `2b4609a5-7812-4aba-b5e3-076e6a078419`).
+  - Scope: the single `Microsoft.Communication/communicationServices` resource (not RG/sub).
+  - Principal: `apiContainerApp.identity.principalId` — the ACA Container App **system-assigned** managed identity.
+  - Pattern: extended `modules/acr-pull-role-assignment.bicep` with a `'communicationServices'` scopeType following the identical `cognitiveServices` branch pattern — existing resource reference + conditional `Microsoft.Authorization/roleAssignments@2022-04-01` with `name: guid(communicationServicesAccount.id, principalId, roleDefinitionId)`, `principalType: 'ServicePrincipal'`, `scope: communicationServicesAccount`.
+  - Called from `main.bicep` as `module apiToAcsRoleAssignment` after the other role-assignment modules.
+  - Idempotent: deterministic `guid()` name means re-deploying is safe.
+  - Justification captured in comments: no narrower built-in covers Call Automation AnswerCall + StartMediaStreaming; resource-scoped + system MI mitigates the broad-ish role for the POC.
+
+  **minReplicas param:**
+  - Added `param apiMinReplicas int = 1` (with description per Athrun's spec).
+  - Wired into `scale.minReplicas` of the ACA Container App (`minReplicas: apiMinReplicas`).
+  - Was `minReplicas: 0` (hardcoded); now param-driven, default 1. `maxReplicas` confirmed at 1 — left unchanged.
+  - `main.parameters.json` updated with `"apiMinReplicas": { "value": 1 }`.
+
+  **AudioSource__Mode env var:**
+  - Added `AudioSource__Mode = 'Mock'` to the ACA container `env` array (after `Acs__Endpoint`).
+  - Comment explains: flip to `'Acs'` after ACS phone number + Event Grid subscription provisioned — no rebuild required (Dyakka reads `AudioSource:Mode` via `IConfiguration`; double-underscore maps to colon-separated key).
+
+  **Bicep build:** `az bicep build infra/main.bicep` — **0 errors, 0 warnings**.
+ Lunamaria's nav-toggle removal accidentally deleted the `const translationButton` declaration in site.js click handler, causing ReferenceError on every translation toggle click. Fixed by restoring the missing const line and realigning `case "transcript-scroller":` indentation in `restoreFocus`. Both `node --check` and `dotnet build` pass clean. Approved on Athrun re-gate.
