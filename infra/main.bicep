@@ -290,6 +290,14 @@ resource apiContainerApp 'Microsoft.App/containerApps@2024-03-01' = {
               value: speechCandidateLanguages
             }
             {
+              name: 'Speech__Region'
+              value: speechAccount.location
+            }
+            {
+              name: 'Speech__ResourceId'
+              value: speechAccount.id
+            }
+            {
               name: 'Translator__Endpoint'
               value: translatorEndpoint
             }
