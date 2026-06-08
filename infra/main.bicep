@@ -89,6 +89,8 @@ var communicationServiceOwnerRoleDefinitionId = subscriptionResourceId(
   '09976791-48a7-449e-bb21-39d1a415f350'
 )
 
+var eventGridSystemTopicName = 'evgt-acs-${uniqueSuffix}'
+
 var speechEndpoint = 'https://${speechCustomSubdomainName}.cognitiveservices.azure.com/'
 var translatorEndpoint = 'https://${translatorCustomSubdomainName}.cognitiveservices.azure.com/'
 var aiServicesEndpoint = 'https://${aiServicesCustomSubdomainName}.cognitiveservices.azure.com/'
@@ -462,10 +464,52 @@ module apiToAcsRoleAssignment 'modules/acr-pull-role-assignment.bicep' = {
   }
 }
 
-// TODO(event-grid): Deliberately deferred. The codebase does not yet expose a verified
-// ACS incoming-call webhook and media-streaming route surface, so this template avoids
-// creating an invalid or unusable Event Grid system topic/subscription until those routes
-// are implemented and validated.
+// Event Grid System Topic scoped to the ACS resource.
+// Delivery auth: plain webhook — SubscriptionValidationEvent handshake handled by
+// POST /api/events/acs/incoming-call. Per Athrun go-live sign-off (2026-06-08): Entra
+// delivery auth is explicitly deferred for this non-production POC; a forged IncomingCall
+// POST yields only a failed ACS AnswerCall — no data leak, no billing, no state corruption.
+// Residual risk accepted: rate-limited by ACA public ingress; abuse is visible in ACA logs.
+// Entra delivery auth is a hard requirement before any production promotion.
+resource acsEventGridSystemTopic 'Microsoft.EventGrid/systemTopics@2022-06-15' = {
+  name: eventGridSystemTopicName
+  location: 'global'
+  tags: mergedTags
+  properties: {
+    source: communicationService.id
+    topicType: 'Microsoft.Communication.CommunicationServices'
+  }
+}
+
+// Event Grid event subscription: IncomingCall only, webhook delivery, default retry.
+// ⚠️  ACTIVATION ORDER: the API image with the /api/events/acs/incoming-call handler MUST
+// be deployed to ACA before this subscription is active. Event Grid fires a
+// SubscriptionValidationEvent handshake at creation time — the endpoint must be live and
+// return the validation response or subscription creation will fail.
+// Default retry: 30 attempts, exponential backoff, 24 h TTL (eventTimeToLiveInMinutes=1440).
+// No dead-letter for POC — missed calls are observable in ACA diagnostic logs.
+resource acsIncomingCallSubscription 'Microsoft.EventGrid/systemTopics/eventSubscriptions@2022-06-15' = {
+  name: 'sub-incoming-call'
+  parent: acsEventGridSystemTopic
+  properties: {
+    destination: {
+      endpointType: 'WebHook'
+      properties: {
+        endpointUrl: '${apiBaseUrl}/api/events/acs/incoming-call'
+      }
+    }
+    filter: {
+      includedEventTypes: [
+        'Microsoft.Communication.IncomingCall'
+      ]
+    }
+    eventDeliverySchema: 'EventGridSchema'
+    retryPolicy: {
+      maxDeliveryAttempts: 30
+      eventTimeToLiveInMinutes: 1440
+    }
+  }
+}
 
 // TODO(ai-foundry-project): Deliberately deferred. A regional Azure AI Services account is
 // provisioned now, but project/model deployment should be completed as a post-provision step
@@ -485,12 +529,14 @@ output resourceNames object = {
   speechAccount: speechAccount.name
   translatorAccount: translatorAccount.name
   aiServicesAccount: aiServicesAccount.name
+  eventGridSystemTopic: acsEventGridSystemTopic.name
 }
 
 output serviceEndpoints object = {
   apiBaseUrl: apiBaseUrl
   apiHealthUrl: '${apiBaseUrl}/healthz'
-  acsLiveAutomationStatus: 'Deferred until API ACS callback/media routes are implemented and validated.'
+  acsEventGridWebhookEndpoint: '${apiBaseUrl}/api/events/acs/incoming-call'
+  acsLiveAutomationStatus: 'Event Grid system topic provisioned. Subscription live after API image with webhook handler is deployed to ACA.'
   webBaseUrl: 'https://${webApp.properties.defaultHostName}'
   webHealthUrl: 'https://${webApp.properties.defaultHostName}/healthz'
   keyVaultUri: keyVault.properties.vaultUri

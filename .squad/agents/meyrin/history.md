@@ -10,6 +10,34 @@
 
 ## Learnings
 
+- **2026-06-08T15:24:21.856-04:00 — Event Grid IncomingCall wiring, Speech RBAC verification, API/ACA deploy recipe:**
+
+  **Event Grid System Topic + Subscription shape (added to `infra/main.bicep`):**
+  - System Topic: `Microsoft.EventGrid/systemTopics@2022-06-15`, `location: 'global'` (required for ACS), `topicType: 'Microsoft.Communication.CommunicationServices'`, `source: communicationService.id`. Name var: `evgt-acs-${uniqueSuffix}`.
+  - Event Subscription: `Microsoft.EventGrid/systemTopics/eventSubscriptions@2022-06-15`, child of the system topic, endpoint `${apiBaseUrl}/api/events/acs/incoming-call`, filter `Microsoft.Communication.IncomingCall`, `EventGridSchema`, retry 30 attempts / 1440 min TTL, no dead-letter.
+  - Delivery auth: plain webhook per Athrun go-live sign-off. Entra delivery auth deferred for POC.
+  - **Key constraint:** The subscription resource fires a `SubscriptionValidationEvent` handshake on creation. A `azd provision` against an ACA running only the placeholder image will fail this handshake — the subscription must be created surgically AFTER the API webhook image is deployed. The system topic creation is safe anytime.
+  - Bicep build: 0 errors, 0 warnings.
+
+  **Live Speech RBAC status:**
+  - Verified `Cognitive Services User` (GUID `a97b65f3-24c7-4388-baec-2e87135dc908`) is **already assigned live** on `speech-cctrans-kdarok` scoped to ACA system MI `6edcf409-903a-49ec-ae48-aed391da1fa7`. GUID confirmed in directory. No surgical fix required.
+
+  **API/ACA deploy recipe (the key unblocker):**
+  - No API CI/CD workflow exists — only `deploy-frontend.yml` (Web/App Service). Deploy path is manual `az` commands.
+  - `azure.yaml` declares `remoteBuild: true` for the api service — ACR Tasks can build the image without local Docker.
+  - **Safe recipe:** `az acr build --registry acrcctranskdarok --image api:<tag> --file src/CallCenterTranscription.Api/Dockerfile .` (from repo root) → `az containerapp update --name ca-api-cctrans-kdarok --resource-group rg-callcentertranscribe-swc-mx01 --image acrcctranskdarok.azurecr.io/api:<tag>`.
+  - After deploy, verify `/healthz` returns 200 before creating the Event Grid subscription.
+  - `azd deploy api` is technically possible but requires reconstructing the bare `.azure/` env (only `AZURE_ENV_NAME` set) — risky and not recommended per Athrun.
+
+  **Pending live steps (ordered):**
+  1. Lacus merges `SpeechTranscriptionService` + `DemoSafety` guard removal → API image ready
+  2. `az acr build` → `az containerapp update` (image deploy)
+  3. `curl /healthz` confirms webhook live
+  4. `az eventgrid system-topic create` (topic only, safe)
+  5. `az eventgrid system-topic event-subscription create` (triggers handshake — must be AFTER step 3)
+  6. Coordinator flips `minReplicas=1` + `AudioSource__Mode=Acs` via `az containerapp update`
+  7. Dyakka end-to-end call test + demo runbook
+
 - **2026-06-08T15:05:37-04:00 — ACS RBAC role GUID correction (infra/main.bicep):**
   - **Problem:** The variable `communicationServicesContributorRoleDefinitionId` referenced GUID `2b4609a5-7812-4aba-b5e3-076e6a078419` ("Communication Services Contributor"), which does not exist in the target directory (`TSJasonFarrell-Sub`). A future `azd provision` would have failed with `RoleDefinitionDoesNotExist`.
   - **Fix — Location 1 (line ~82–89, variable definition):** Renamed var to `communicationServiceOwnerRoleDefinitionId`; updated GUID to `09976791-48a7-449e-bb21-39d1a415f350`; updated comment to reflect "Communication and Email Service Owner" (only available Communication built-in role in this directory; broader than ideal but resource-scoped, POC-acceptable; reassess if Microsoft ships a narrower ACS data-plane role).
