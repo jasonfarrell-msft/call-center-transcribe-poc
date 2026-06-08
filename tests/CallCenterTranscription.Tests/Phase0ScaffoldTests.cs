@@ -3,6 +3,7 @@ using CallCenterTranscription.Ai;
 using CallCenterTranscription.Api;
 using CallCenterTranscription.Shared.Events;
 using CallCenterTranscription.Telephony;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace CallCenterTranscription.Tests;
@@ -57,7 +58,9 @@ public sealed class Phase0ScaffoldTests
     public void ApiServiceRegistration_ResolvesCorePipelineAbstractions()
     {
         var services = new ServiceCollection();
-        services.AddCallCenterServices();
+        services.AddLogging();
+        // No configuration → AudioSource:Mode defaults to "Mock"; Acs:Endpoint absent.
+        services.AddCallCenterServices(new ConfigurationBuilder().Build());
 
         using var provider = services.BuildServiceProvider();
 

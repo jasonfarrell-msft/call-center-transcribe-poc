@@ -59,7 +59,7 @@ builder.Services.AddAuthorization(options =>
 {
     options.AddPolicy("AgentAssistAccess", policy => policy.RequireAuthenticatedUser());
 });
-builder.Services.AddCallCenterServices();
+builder.Services.AddCallCenterServices(builder.Configuration);
 
 var app = builder.Build();
 
@@ -68,6 +68,7 @@ if (app.Environment.IsDevelopment())
     app.MapOpenApi();
 }
 
+app.UseWebSockets(); // Required before route execution for WebSocket upgrade support.
 app.UseAuthentication();
 app.UseAuthorization();
 
@@ -106,6 +107,10 @@ if (requireAuth)
 {
     pipelineHub.RequireAuthorization("AgentAssistAccess");
 }
+
+// ACS call-path routes: IncomingCall webhook + media-stream WebSocket.
+// Always mapped; dormant when AudioSource:Mode=Mock (no calls answered in mock mode).
+app.MapAcsRoutes();
 
 app.Run();
 

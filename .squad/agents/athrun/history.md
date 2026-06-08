@@ -70,3 +70,20 @@ REQUEST CHANGES. Architecture is sound (real Razor Page, tag helpers resolve, co
 ### 2026-06-08 — Mission Control separate-page RE-GATE (Meyrin regression fix)
 
 APPROVED. Meyrin fixed the `translationButton` ReferenceError (restored missing const declaration) and realigned `case "transcript-scroller":` indentation in `restoreFocus`. Both fixes verified; `node --check` clean, build 0 errors. No regressions. Gate APPROVE.
+
+### 2026-06-08 — /lib asset provisioning + HTML no-cache middleware review (Meyrin)
+
+APPROVED. Reviewed libman.json (bootstrap 5.3.3, jQuery 3.7.1, jquery-validation 1.21.0, jquery-validation-unobtrusive 4.0.0) — destination paths align exactly with `_Layout.cshtml` and `_ValidationScriptsPartial.cshtml` `~/lib/…` references. dotnet-tools.json pins libman CLI to 3.0.71. Workflow step is a plain `run:` in the build job between restore and publish — correct ordering, no new action, SHA pins unchanged. Cache middleware uses `OnStarting` with `Content-Type.StartsWith("text/html")` guard — static assets, /healthz, and APIs unaffected. Middleware order preserved. Build 0 errors; publish output confirmed all 5 assets at real sizes (87–232 KB). Supply chain acceptable: versions pinned exact, provider is well-known jsdelivr CDN.
+
+### 2026-06-08 — ACS Option C Architecture & Security Sign-Off
+
+APPROVE TO BUILD. Signed off Dyakka's ACS assessment + Jason's Option C selection with binding implementation decisions:
+
+1. **RBAC role:** `Communication Services Contributor` (`2b4609a5-7812-4aba-b5e3-076e6a078419`) scoped to the ACS resource only. No narrower built-in role exists for Call Automation + media streaming. Residual risk documented (management-plane access); mitigated by resource-level scope + system-assigned identity isolation.
+2. **Webhook auth:** SubscriptionValidationEvent handshake + schema validation only this round. Entra-protected delivery auth deferred to Event Grid wiring round (next). No HMAC, no secrets.
+3. **WS topology / minReplicas:** New Bicep param `apiMinReplicas` default 1. maxReplicas stays 1 (already set). Single replica = no affinity needed. Dropped WebSocket = end-of-stream (no reconnect in POC).
+4. **DI seam:** `AudioSource:Mode` config key (`"Mock"` default | `"Acs"`). Env var swap, no rebuild. MockAudioSource remains default.
+5. **Scope IN:** AcsAudioSource, IncomingCall webhook, media-stream WS, DI swap, Bicep RBAC + minReplicas + env var. **OUT:** PSTN number, Event Grid subscription, Entra webhook auth, audio→Speech consumer (immediate NEXT round, not this one).
+6. **SDK:** `Azure.Communication.CallAutomation` (GA), `DefaultAzureCredential` auth. Zero connection strings.
+
+Key file: `.squad/decisions/inbox/athrun-acs-option-c-signoff.md`
