@@ -64,6 +64,7 @@
         getConsoleViews().forEach((view) => {
             if (view.id === targetId) {
                 view.removeAttribute("hidden");
+                view.removeAttribute("aria-hidden");
                 if (shouldFocusHeading) {
                     const heading = view.querySelector("h2[tabindex='-1']");
                     if (isHtmlElement(heading)) {
@@ -72,6 +73,16 @@
                 }
             } else {
                 view.setAttribute("hidden", "");
+                view.setAttribute("aria-hidden", "true");
+            }
+        });
+
+        document.querySelectorAll(consoleNavToggleSelector).forEach((btn) => {
+            if (!isHtmlElement(btn)) { return; }
+            if (btn.getAttribute("data-console-nav-target") === targetId) {
+                btn.setAttribute("aria-current", "page");
+            } else {
+                btn.removeAttribute("aria-current");
             }
         });
     }

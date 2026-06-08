@@ -32,10 +32,14 @@ public sealed class ApiWiringSmokeTests(WebApplicationFactory<Program> factory)
         Assert.IsType<MockReasoningClient>(reasoningClient);
         Assert.Contains("/healthz", routePatterns);
         Assert.Contains("/api/session/current", routePatterns);
+        Assert.Contains("/api/session/current-state", routePatterns);
         Assert.Contains("/api/mission-control/health", routePatterns);
         Assert.Contains("/api/events/transcript", routePatterns);
         Assert.Contains("/api/events/translation", routePatterns);
         Assert.Contains("/api/events/sentiment", routePatterns);
+        Assert.Contains("/api/events/churn-risk", routePatterns);
+        Assert.Contains("/api/events/knowledge-cards", routePatterns);
+        Assert.Contains("/api/events/next-best-action", routePatterns);
         Assert.Contains("/hubs/pipeline", routePatterns);
         Assert.Contains("/hubs/pipeline/negotiate", routePatterns);
     }
@@ -98,6 +102,47 @@ public sealed class ApiWiringSmokeTests(WebApplicationFactory<Program> factory)
         Assert.Equal("call-propane-retention-0001", sentiment.CallId);
         Assert.Equal("improving", sentiment.Summary.Trend);
         Assert.Equal(3, sentiment.Events.Count);
+    }
+
+    [Fact]
+    public async Task ApiHost_ExposesChurnKnowledgeAndNextBestActionEvents()
+    {
+        using var client = factory.CreateClient();
+
+        var churnRisk = await client.GetFromJsonAsync<List<ChurnRiskEvent>>("/api/events/churn-risk");
+        var knowledgeCards = await client.GetFromJsonAsync<List<KnowledgeCardEvent>>("/api/events/knowledge-cards");
+        var nextBestActions = await client.GetFromJsonAsync<List<NextBestActionEvent>>("/api/events/next-best-action");
+
+        Assert.NotNull(churnRisk);
+        Assert.NotNull(knowledgeCards);
+        Assert.NotNull(nextBestActions);
+        Assert.NotEmpty(churnRisk);
+        Assert.NotEmpty(knowledgeCards);
+        Assert.NotEmpty(nextBestActions);
+        Assert.All(churnRisk, item => Assert.Equal("call-propane-retention-0001", item.CallId));
+        Assert.All(knowledgeCards, item => Assert.Equal("call-propane-retention-0001", item.CallId));
+        Assert.All(nextBestActions, item => Assert.Equal("call-propane-retention-0001", item.CallId));
+        Assert.Equal("evt-transcript-0003", churnRisk[0].RelatedTranscriptEventId);
+        Assert.Equal("evt-transcript-0003", knowledgeCards[0].RelatedTranscriptEventId);
+        Assert.Equal("evt-transcript-0003", nextBestActions[0].RelatedTranscriptEventId);
+    }
+
+    [Fact]
+    public async Task ApiHost_ExposesCurrentStateReplayPayload()
+    {
+        using var client = factory.CreateClient();
+
+        var currentState = await client.GetFromJsonAsync<PipelineCurrentStateResponse>("/api/session/current-state");
+
+        Assert.NotNull(currentState);
+        Assert.Equal("call-propane-retention-0001", currentState.Call.CallId);
+        Assert.Equal("full_history_for_active_call", currentState.StreamReplayPolicy);
+        Assert.Equal(5, currentState.TranscriptEvents.Count);
+        Assert.Single(currentState.TranslationEvents);
+        Assert.Equal(3, currentState.SentimentEvents.Count);
+        Assert.NotEmpty(currentState.ChurnRiskEvents);
+        Assert.NotEmpty(currentState.KnowledgeCardEvents);
+        Assert.NotEmpty(currentState.NextBestActionEvents);
     }
 
     [Fact]

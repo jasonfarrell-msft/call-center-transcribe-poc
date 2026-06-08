@@ -40,3 +40,17 @@
 2. **Named regional blockers:** strict Sweden Central processing is incompatible with two accepted POC elements as currently defined — **ACS** is geography/global-event based, and **Translator Text** Europe processing runs in **France Central / West Europe** rather than Sweden Central.
 3. **Demo reliability posture:** keep the ACA backend warm on a single replica during rehearsals/demo until the real ACS callback/media path is proven replica-safe; public HTTPS/WSS ingress is required for callbacks and media streaming.
 - **2026-06-07T00:18:14Z — Frontend mission-control planning pass:** Participated in the cross-agent planning batch for transcript diarization, ad hoc translation, sentiment, and mission-control health.
+
+### 2026-06-08 — Dashboard visual redesign review (Lunamaria)
+
+Reviewed Lunamaria's token-based CSS rewrite + `data-speaker-role` addition in Index.cshtml.
+
+**Lessons learned:**
+1. **Design tokens that span dark + light surfaces need two separate "muted" values.** `--cc-text-muted: #94a3b8` reads well on the dark navy header (4.63–5.92:1 against gradient) but fails WCAG AA on all white/near-white card backgrounds (2.36–2.56:1, needs 4.5:1). A single muted token cannot serve both dark and light contexts simultaneously. Solution: use `--cc-text-secondary` (#475569, 7.58:1) for light-surface secondary labels, reserve the light muted value for the dark header.
+2. **WCAG AA is non-negotiable even for metadata/supplementary text.** Role labels, timestamps, score labels, and DT captions are not exempt. If it's visible text, it passes or we fix it.
+3. **Otherwise the redesign approach was sound:** speaker-role attribution via `data-speaker-role` is clean, JS selectors all intact, no content removed, no CDN additions, `prefers-reduced-motion` honored, color never sole status indicator.
+4. **Gate rule exercised:** Revision assigned to Meyrin (not original author Lunamaria) per the reviewer gate policy.
+
+### 2026-06-08 — Mission Control screen-split review (Lunamaria)
+
+APPROVED. Two full-viewport screens with persistent nav bar. Flex layout fills remaining height correctly (`.rep-console` column flex, `.console-view` flex:1, `.screen-nav` flex-shrink:0). JS `setActiveView` correctly manages `hidden`+`aria-hidden` and `aria-current` on nav buttons. Selectors all resolve. WCAG AA contrast passes for nav text (`#e8f0fd` on `#0c1e4a`). No content removed, no secrets, no new external assets.

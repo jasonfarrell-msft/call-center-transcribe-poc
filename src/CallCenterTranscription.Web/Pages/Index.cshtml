@@ -13,6 +13,24 @@
      data-console-refresh-interval-ms="4000">
     <h1 class="visually-hidden">Call-Center Representative Console</h1>
 
+    <nav class="screen-nav" aria-label="Switch screen">
+        <button type="button"
+                class="screen-nav-btn"
+                data-console-nav-toggle="true"
+                data-console-nav-target="representative-view"
+                aria-current="page"
+                aria-controls="representative-view">
+            Agent Console
+        </button>
+        <button type="button"
+                class="screen-nav-btn"
+                data-console-nav-toggle="true"
+                data-console-nav-target="mission-control-view"
+                aria-controls="mission-control-view">
+            Mission Control
+        </button>
+    </nav>
+
     <section id="representative-view"
              class="console-view console-view--representative"
              data-console-nav-view="true"
@@ -24,13 +42,6 @@
                     <h2 id="console-heading" tabindex="-1">@Model.RepresentativeDisplayName</h2>
                     <p class="console-status" role="status" aria-live="polite">@Model.ConnectionSummary</p>
                 </div>
-                <button type="button"
-                        class="btn btn-link console-mission-link"
-                        data-console-nav-toggle="true"
-                        data-console-nav-target="mission-control-view"
-                        aria-controls="mission-control-view">
-                    Mission
-                </button>
             </div>
 
             @if (Model.HasConnectionIssues)
@@ -99,7 +110,7 @@
                                     : $"turn {item.Sequence}";
                                 var showTranslationLabel = $"Show English translation for {translationContext}";
                                 var hideTranslationLabel = $"Hide English translation for {translationContext}";
-                                <li class="transcript-item">
+                                <li class="transcript-item" data-speaker-role="@item.SpeakerRoleLabel.ToLowerInvariant()">
                                     <article aria-labelledby="turn-@item.Sequence">
                                         <div class="transcript-topline">
                                             <div class="transcript-speaker-block">
@@ -231,7 +242,8 @@
              class="console-view console-view--mission"
              data-console-nav-view="true"
              aria-labelledby="mission-control-heading"
-             hidden>
+             hidden
+             aria-hidden="true">
         <section class="card-shell mission-control-panel" data-console-refresh-region="mission">
             <div class="mission-control-header">
                 <div>
@@ -239,13 +251,6 @@
                     <h2 id="mission-control-heading" tabindex="-1">Mission Control</h2>
                     <span class="visually-hidden">Mission Control health</span>
                 </div>
-                <button type="button"
-                        class="btn btn-link console-mission-link"
-                        data-console-nav-toggle="true"
-                        data-console-nav-target="representative-view"
-                        aria-controls="representative-view">
-                    Back to console
-                </button>
             </div>
 
             @if (!string.IsNullOrWhiteSpace(Model.MissionControlWarning))

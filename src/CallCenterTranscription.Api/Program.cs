@@ -81,6 +81,8 @@ if (requireAuth)
 
 apiRoutes.MapGet("/session/current", (IScriptedScenarioFeed scriptedScenarioFeed) =>
     Results.Ok(scriptedScenarioFeed.GetCurrentSession()));
+apiRoutes.MapGet("/session/current-state", (IScriptedScenarioFeed scriptedScenarioFeed) =>
+    Results.Ok(scriptedScenarioFeed.GetCurrentState()));
 
 apiRoutes.MapGet("/mission-control/health", (IScriptedScenarioFeed scriptedScenarioFeed) =>
     Results.Ok(scriptedScenarioFeed.GetMissionControlHealth()));
@@ -92,9 +94,12 @@ eventRoutes.MapGet("/translation", (IScriptedScenarioFeed scriptedScenarioFeed) 
     Results.Ok(scriptedScenarioFeed.GetTranslationEvents()));
 eventRoutes.MapGet("/sentiment", (IScriptedScenarioFeed scriptedScenarioFeed) =>
     Results.Ok(scriptedScenarioFeed.GetSentimentFeed()));
-eventRoutes.MapGet("/churn-risk", () => Results.Ok(Array.Empty<ChurnRiskEvent>()));
-eventRoutes.MapGet("/knowledge-cards", () => Results.Ok(Array.Empty<KnowledgeCardEvent>()));
-eventRoutes.MapGet("/next-best-action", () => Results.Ok(Array.Empty<NextBestActionEvent>()));
+eventRoutes.MapGet("/churn-risk", (IScriptedScenarioFeed scriptedScenarioFeed) =>
+    Results.Ok(scriptedScenarioFeed.GetChurnRiskEvents()));
+eventRoutes.MapGet("/knowledge-cards", (IScriptedScenarioFeed scriptedScenarioFeed) =>
+    Results.Ok(scriptedScenarioFeed.GetKnowledgeCardEvents()));
+eventRoutes.MapGet("/next-best-action", (IScriptedScenarioFeed scriptedScenarioFeed) =>
+    Results.Ok(scriptedScenarioFeed.GetNextBestActionEvents()));
 
 var pipelineHub = app.MapHub<PipelineHub>("/hubs/pipeline");
 if (requireAuth)
