@@ -23,3 +23,9 @@ dotnet test CallCenterTranscription.sln
 - Target framework is `net9.0` (SDK support confirmed locally).
 - No secrets or connection strings are hardcoded; backend/frontend integration points are configuration/DI seams.
 - API auth enforcement is controlled by `Security:RequireAuth` (`false` in Phase 0 scaffold, enable in Phase 1+ with real identity wiring).
+
+## Live pipeline contract
+
+- `/api/session/current-state` returns the late-join snapshot/current-state replay payload used for initial load and reconnect.
+- `PipelineHub` supports call/session scoped subscriptions (`SubscribeToCall`, `SubscribeToSession`).
+- Contract details are captured in `docs/live-pipeline-contract.md`.
