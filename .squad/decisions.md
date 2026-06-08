@@ -899,3 +899,1015 @@ Lib provisioning paths match _Layout + _ValidationScriptsPartial exactly; libman
 
 ---
 
+# ACS Assessment and Recommended Plan
+**By:** Dyakka — ACS / Telephony Specialist  
+**Date:** 2026-06-08T14:05:26.525-04:00  
+**Type:** Decision Proposal — Assessment + Plan (no code/infra changes)  
+**Status:** Inbox — awaiting Jason's steering decisions
+
+---
+
+## 1. Where ACS Stands Today
+
+### What exists
+- **ACS resource**: Provisioned in Bicep (`Microsoft.Communication/communicationServices`, global / `dataLocation: Europe`). ✅
+- **ACS endpoint env var**: Already wired as `Acs__Endpoint` into the ACA Container App. ✅
+- **`IAudioSource` / `AudioFrame` contract**: Defined in `CallCenterTranscription.Telephony`. Clean. `IAsyncEnumerable<AudioFrame> ReadAsync(CancellationToken)`. `AudioFrame` carries `TimestampUtc`, `Encoding` ("pcm16"), `SampleRateHz` (16000), `byte[] Payload`. ✅
+- **`MockAudioSource`**: Registered in DI; yields one silent 4-byte frame. Fallback is in place. ✅
+- **ACA public HTTPS ingress**: External ingress, `transport: auto`, port 8080. WSS promoted automatically. Public URL available post-deploy. ✅
+
+### What is missing
+- **`AcsAudioSource`**: Does not exist. Zero code. No Call Automation SDK reference anywhere. ❌
+- **IncomingCall webhook route** (`POST /api/events/acs/incoming-call`): Not in `Program.cs`. ❌
+- **Media-streaming WebSocket route** (`wss://.../api/calls/media-stream`): Not in `Program.cs`. ❌
+- **Event Grid subscription**: Intentionally deferred in Bicep with a TODO comment. ❌
+- **ACS data-plane RBAC**: No role assignment from ACA system identity to ACS resource in Bicep. ❌
+- **Phone number (PSTN)**: Not provisioned. Requires portal/API purchase + billing eligibility check for Sweden. ❌
+- **`minReplicas = 1`**: ACA currently at `minReplicas = 0`. A cold start on an inbound call (30-second ring window) will drop the call. ❌
+
+### Critical hidden gap — IAudioSource is registered but never called
+`IAudioSource` is wired in DI but nothing in the API reads from it. The entire current "pipeline" is the deterministic scripted propane-retention feed (`ScriptedPropaneRetentionScenarioFeed`). `PipelineHub` is SignalR group wiring only. **There is no audio → Speech → transcript → AI flow yet.** That background service is Lacus + Meyrin territory and must be built alongside or before the full live ACS path matters end-to-end.
+
+---
+
+## 2. Target Call Path (End-to-End for Demo)
+
+```
+Customer phone call
+        │
+        ▼
+[ACS PSTN number]
+        │ IncomingCall event
+        ▼
+[Event Grid] ──── POST /api/events/acs/incoming-call ────▶ [ACA API]
+                                                                │
+                                                         Answer call
+                                                         (Call Automation SDK,
+                                                          managed identity)
+                                                                │
+                                                         Start media streaming
+                                                         → wss://<aca>/api/calls/media-stream
+                                                                │
+                                                         [WebSocket handler]
+                                                         deserialize ACS frames
+                                                                │
+                                                         AcsAudioSource.ReadAsync()
+                                                         emits AudioFrame
+                                                         (pcm16, 16kHz, mono)
+                                                                │
+                                               [Background service — Lacus+Meyrin]
+                                               feeds PCM to Azure AI Speech SDK
+                                                                │
+                                                         Transcript events
+                                                                │
+                                               AI reasoning (IReasoningClient)
+                                                                │
+                                               SignalR push → Rep dashboard
+                                                                │
+                                                        [Rep dashboard UI]
+```
+
+**Rep join options (two-party call):**
+- **(A — PSTN)** Backend calls `AddParticipant` with rep's phone number after answering. Rep gets a phone call.
+- **(B — ACS web client)** Rep joins via ACS Calling SDK in browser. No second phone number needed; heavier setup.
+
+**Audio format contract (must match Lacus's Speech SDK input):**
+- PCM 16-bit mono, **16,000 Hz**, 640 bytes/frame, 20 ms packets, 50 fps.
+- Mixed audio (all participants flattened into one stream) — per team decision as the POC starting point.
+- Unmixed (per-participant streams) is Phase 2 if diarization from the stream is needed.
+
+---
+
+## 3. Hard Prerequisites and Blockers
+
+| Prerequisite | Status | Notes |
+|---|---|---|
+| ACS resource | ✅ Provisioned | global / Europe data location |
+| ACS data-plane RBAC on ACA identity | ❌ Missing | Need `Communication Services Contributor` or narrower role in Bicep |
+| ACS phone number (PSTN) | ❌ Not purchased | Portal or API; billing eligibility for Sweden must be verified |
+| `minReplicas = 1` on ACA during demo | ❌ Currently 0 | Drop-call risk; one-line Bicep param change |
+| Event Grid system topic + subscription | ❌ Deferred | Safe to add once webhook route is implemented and validated |
+| IncomingCall webhook route + SubscriptionValidationEvent | ❌ Not coded | Must also secure endpoint (Entra webhook auth or HMAC secret via Key Vault) |
+| Media-streaming WebSocket route | ❌ Not coded | ACA `transport: auto` already promotes WSS |
+| `AcsAudioSource` class | ❌ Not coded | My deliverable |
+| Audio → Speech background service | ❌ Not coded | Lacus + Meyrin deliverable; dependency for live transcript |
+| Managed identity auth to ACS (no connection string) | ✅ Planned / no secrets in code | Must be implemented when AcsAudioSource is coded |
+
+**Cost / provisioning items that need Jason's decision:**
+- Swedish PSTN number: monthly rental fee + per-minute charges. Instant to provision in portal for US; Sweden eligibility depends on subscription billing country.
+- Event Grid delivery: minimal cost for volume of a POC.
+- ACS Call Automation + media streaming: billed per minute of call + per minute of media streaming; POC rehearsal costs are low.
+
+---
+
+## 4. Recommended Phased Plan
+
+### Phase 1 — Infra prereqs (Bicep + Portal)
+**Type:** Infra (Bicep) + manual portal action  
+**Blocks:** Everything real
+
+1. **Bicep**: Add ACS data-plane RBAC role assignment — ACA system identity → ACS resource (`Communication Services Contributor` or `Communication Services Call Automation Client`; exact role to confirm with Athrun).
+2. **Bicep param**: `minReplicas = 1` on ACA Container App (add as a param, default 0 for cost, set to 1 for demo window; or document the az CLI command to scale up before demo).
+3. **Portal / manual**: Purchase Swedish ACS phone number. (Verify billing eligibility first — if blocked, fall back to Option B or C.)
+4. **Bicep**: Add Event Grid system topic + subscription for `IncomingCall` → ACA webhook. **Gate:** only do this after Phase 2 routes are live and validated (per existing TODO in Bicep).
+
+### Phase 2 — API routes (Code)
+**Type:** Code — my coordination with Meyrin  
+**Blocks:** Real inbound call + media streaming start
+
+1. `POST /api/events/acs/incoming-call` — handle `SubscriptionValidationEvent` + `IncomingCall`. Use Call Automation SDK (managed identity) to answer the call, start media streaming to `wss://<self>/api/calls/media-stream`. Secure via Microsoft Entra-protected webhook or HMAC secret stored in Key Vault (not in code).
+2. `GET /api/calls/media-stream` — WebSocket upgrade endpoint. Accepts ACS JSON frames (`AudioMetadata`, `AudioData`), deserializes, hands PCM payload to `AcsAudioSource` channel.
+
+### Phase 3 — AcsAudioSource (Code)
+**Type:** Code — my deliverable  
+**Blocks:** Live audio into the interface (unblocks Lacus for audio→Speech wiring)
+
+- Implement `AcsAudioSource : IAudioSource` in `CallCenterTranscription.Telephony`.
+- Uses a `Channel<AudioFrame>` internally; WebSocket handler writes, `ReadAsync()` reads.
+- Deserializes ACS `AudioMetadata` (validates 16kHz/pcm16), decodes base64 `AudioData.Data` to `byte[]`, emits `AudioFrame`.
+- NuGet to add at implementation time: `Azure.Communication.CallAutomation` (current GA).
+- DI registration: config flag `AudioSource:Mode = "Acs" | "Mock"` — one swap, no rebuild.
+- No connection strings. `DefaultAzureCredential` (managed identity) for CallAutomationClient.
+
+### Phase 4 — Audio pipeline coordination (Coordination)
+**Type:** Coordination with Lacus + Meyrin; architecture sign-off from Athrun
+
+- **Lacus**: Confirm audio format handshake — mixed PCM 16kHz/16-bit/mono as Speech SDK input; confirm whether interim hypotheses should be filtered and only final results pushed downstream.
+- **Meyrin**: Background service (`IHostedService`) that calls `audioSource.ReadAsync()` and feeds `AudioFrame.Payload` bytes to Azure AI Speech SDK for real-time transcription. This service is the final link. Without it, `AcsAudioSource` is implemented but transcript events are still scripted.
+- **Athrun**: Architecture sign-off on the WebSocket host topology (single ACA instance during demo; reconnect handling if ACA restarts mid-call).
+
+---
+
+## 5. Options for How Far to Go
+
+### Option A — Full real PSTN inbound call (end-to-end)
+**What it delivers:** Customer dials a real Swedish phone number → ACS answers → media streaming → `AcsAudioSource` → Speech → transcript → dashboard.  
+**Cost:** Phone number monthly fee + per-minute call + media-streaming minutes. Low for a POC.  
+**Risk:** Swedish billing eligibility must be confirmed. Number provisioning is instant once eligibility is cleared. Everything else follows from Phases 1–4.  
+**Demo impact:** Maximum realism. Full dual-party rep+customer scenario.
+
+### Option B — ACS web call (no PSTN number)
+**What it delivers:** Both rep and customer join via the ACS Calling SDK web client in a browser. Call Automation `Connect` action attaches to the server call. Media streaming works identically.  
+**Cost:** No PSTN number cost. ACS web calling is billed differently (lower).  
+**Risk:** Requires building an ACS Calling SDK web-client join flow (more frontend work; Lunamaria involvement). More setup for the demo operator.  
+**Demo impact:** Still two real humans with real audio, just over WebRTC not PSTN. Convincing enough.
+
+### Option C — Media-streaming plumbing, mock audio active (default recommended)
+**What it delivers:** Implement `AcsAudioSource` + WebSocket handler + IncomingCall webhook code. DI stays on `MockAudioSource` until a real call is configured. Lacus + Meyrin can build and test the audio→Speech pipeline against a real interface. Demo runs reliably from the scripted feed as fallback.  
+**Cost:** Zero until a phone number is purchased.  
+**Risk:** Lowest. No Azure provisioning decisions needed immediately.  
+**Demo impact:** No live audio yet, but the full integration is code-complete and one config swap away from going live once a number is provisioned.
+
+### ✅ Recommended default: Option C → then Option A
+Build the plumbing first (Option C). This unblocks Lacus + Meyrin and lets us rehearse the full pipeline with real Speech SDK against recorded audio. Once Swedish billing eligibility is confirmed, provision the number and flip to Option A for the live demo. Keep `MockAudioSource` registered as the fallback path always.
+
+---
+
+## 6. Open Decisions Needed from Jason
+
+1. **Buy a Swedish PSTN number? (y/n)** — If yes, I need confirmation that the Azure subscription billing country is eligible for Swedish numbers. If no, do we go Option B (ACS web call) or Option C only?
+2. **Real inbound vs. ACS web call?** — Option A (PSTN) or Option B (browser-to-browser via ACS Calling SDK)? This determines whether Lunamaria needs to build a web-calling join flow.
+3. **How live should the demo be?** — Full end-to-end real audio (A or B), or plumbing-complete + mock audio (C)?
+4. **`minReplicas = 1` as a permanent Bicep default or a manual az CLI step before demo?** — Permanent is safer; adds ~$15–30/month for a tiny ACA instance.
+5. **Event Grid webhook security method** — Microsoft Entra-protected webhook (preferred; more complex to configure) or HMAC shared secret stored in Key Vault (simpler for POC)?
+6. **ACS RBAC role to assign** — `Communication Services Contributor` covers everything but is broad. Needs Athrun sign-off on which built-in role is appropriate for the POC scope.
+# ACS Option C Plumbing Built
+**By:** Dyakka — ACS / Telephony Specialist  
+**Date:** 2026-06-08T14:05:26.525-04:00  
+**Type:** Implementation Record + Residual TODOs  
+**Status:** Code Complete — Mock Stays Default
+
+---
+
+## What Was Built
+
+All Option C code deliverables per Athrun's sign-off (`athrun-acs-option-c-signoff.md`) are complete.  
+Build result: `dotnet build CallCenterTranscription.sln -c Release --nologo` → **0 errors, 0 warnings**.
+
+### 1. NuGet Packages
+
+| Package | Version | Project |
+|---------|---------|---------|
+| `Azure.Communication.CallAutomation` | 1.5.1 GA | `CallCenterTranscription.Telephony.csproj` |
+| `Azure.Identity` | 1.21.0 | `CallCenterTranscription.Api.csproj` |
+
+---
+
+### 2. AcsAudioSource : IAudioSource
+
+**File:** `src/CallCenterTranscription.Telephony/AcsAudioSource.cs`
+
+- Backed by `System.Threading.Channels.Channel<AudioFrame>` — bounded capacity 1000, `DropOldest`, `SingleReader=true`, `SingleWriter=true`.
+- `ReadAsync(CancellationToken)` → `IAsyncEnumerable<AudioFrame>` via `channel.Reader.ReadAllAsync()`. Exact IAudioSource contract match.
+- `HandleWebSocketMessageAsync(byte[], CancellationToken)` — parses ACS JSON (`AudioMetadata` = log only; `AudioData` = base64-decode PCM → `AudioFrame{pcm16, 16000Hz}` → `TryWrite`). Malformed frames skipped with warnings, never thrown.
+- `CompleteStream()` — calls `channel.Writer.TryComplete()`. No reconnect logic (POC known limitation; document before going live).
+- Audio format: PCM 16-bit mono 16,000 Hz — matches downstream IAudioSource contract defaults.
+
+---
+
+### 3. Routes Added (`AcsEndpoints.cs` → `src/CallCenterTranscription.Api/`)
+
+All routes mapped by `app.MapAcsRoutes()` called from `Program.cs`.
+
+| Route | Method | Auth | Purpose |
+|-------|--------|------|---------|
+| `/api/events/acs/incoming-call` | POST | AllowAnonymous | Event Grid webhook: SubscriptionValidationEvent handshake + IncomingCall → AnswerCall + StartMediaStreaming |
+| `/api/events/acs/callbacks` | POST | AllowAnonymous | ACS mid-call events (CallConnected, etc.); returns 200 OK |
+| `/api/calls/media-stream` | WS Upgrade | AllowAnonymous | ACS media-streaming WebSocket; feeds frames into AcsAudioSource |
+
+**Auth exclusion:** These routes are in `app.MapGroup("/api/events/acs").AllowAnonymous()` and `app.Map(...).AllowAnonymous()` — completely outside the `AgentAssistAccess` JWT policy. Event Grid and ACS cannot present Bearer tokens.
+
+**`app.UseWebSockets()`** added early in the middleware pipeline (before route execution).
+
+**SubscriptionValidationEvent handling:** Route detects `eventType: "Microsoft.EventGrid.SubscriptionValidationEvent"`, extracts `data.validationCode`, returns `{ validationResponse: "..." }`. This is the Event Grid endpoint ownership proof.
+
+**IncomingCall handling:** Answers via `CallAutomationClient` (DefaultAzureCredential, no connection strings). Sets `MediaStreamingOptions` with `MediaStreamingAudioChannel.Mixed`, `StreamingTransport.Websocket`, `MediaStreamingContent.Audio`, `StartMediaStreaming = true`, `TransportUri = wss://{host}/api/calls/media-stream`.
+
+---
+
+### 4. DI Config Swap
+
+**Config key:** `AudioSource:Mode` (env: `AudioSource__Mode`)  
+**Default:** `"Mock"` — nothing changes, MockAudioSource still resolves.
+
+```
+AudioSource__Mode=Mock  → IAudioSource = MockAudioSource  (DEFAULT)
+AudioSource__Mode=Acs   → IAudioSource = AcsAudioSource   (live path)
+```
+
+`AcsAudioSource` is **always registered as a concrete singleton** so the WebSocket handler can inject it regardless of mode (dormant in Mock mode — Channel stays empty; no calls are answered).
+
+`CallAutomationClient` is registered when `Acs:Endpoint` is configured — uses `DefaultAzureCredential`. The managed identity RBAC role assignment on ACA is Meyrin's Bicep deliverable.
+
+`AddCallCenterServices` now takes `IConfiguration` (updated in `ServiceCollectionExtensions.cs` + `Program.cs` + test file).
+
+---
+
+## What Is DORMANT Until Live Flip
+
+Everything below is code-complete and sitting in the codebase but produces no real-world effect until the flip:
+
+- `AcsAudioSource.ReadAsync()` — Channel stays empty in Mock mode; no consumers will get frames.
+- `/api/events/acs/incoming-call` — Present but never triggered (no Event Grid subscription, no PSTN number).
+- `/api/calls/media-stream` — Present but ACS never connects (no calls answered).
+- `CallAutomationClient` — Registered (when `Acs:Endpoint` configured) but never makes API calls.
+
+---
+
+## Config Flip to Go Live
+
+Flip one env var on the ACA Container App and ensure infra prerequisites are met:
+
+```
+AudioSource__Mode=Acs
+```
+
+That's the only app code change needed. Prerequisites (Meyrin + portal):
+
+1. **ACS RBAC role assignment** (Bicep): `Communication Services Contributor` on ACS resource for ACA system identity — per Athrun Decision 1.
+2. **`apiMinReplicas = 1`** (Bicep) — per Athrun Decision 3. Prevents cold-start call drops.
+3. **PSTN phone number** — portal provisioning (verify billing country eligibility).
+4. **Event Grid subscription** — `Microsoft.Communication.IncomingCall` → `POST /api/events/acs/incoming-call` (webhook). Run the SubscriptionValidationEvent handshake first.
+5. **Entra delivery authentication** on the Event Grid subscription — **blocking prerequisite for going live**. Meyrin must add this when wiring the subscription. See TODO comments in `AcsEndpoints.cs`.
+6. **`Acs__Endpoint`** — already configured in ACA; no action needed.
+
+---
+
+## Explicit Residual TODOs
+
+| Item | Owner | Status | Notes |
+|------|-------|--------|-------|
+| PSTN phone number purchase | Jason + portal | ❌ Not started | Verify Swedish billing eligibility |
+| Event Grid system topic + subscription | Meyrin | ❌ Deferred | Wait until webhook validated; then wire with Entra delivery auth |
+| Microsoft Entra delivery auth on Event Grid subscription | Meyrin | ❌ BLOCKING for live | Must be done before going live. See `AcsEndpoints.cs` TODO comment |
+| ACS RBAC role assignment (Bicep) | Meyrin | ❌ Separate deliverable | `Communication Services Contributor` on ACS resource for ACA system identity |
+| `apiMinReplicas = 1` (Bicep param) | Meyrin | ❌ Separate deliverable | Prevents cold-start call drops (30-second ring window) |
+| Audio → Speech consumer (`IHostedService`) | Lacus + Meyrin | ❌ Next round | Reads `IAudioSource.ReadAsync()` and feeds to Azure AI Speech SDK |
+| Rep join via `AddParticipant` | Dyakka (next round) | ❌ Not started | Requires phone number + live calls |
+| Reconnect logic on WebSocket drop | Dyakka (future) | ❌ POC skip | Known limitation; restart the call for demo |
+| Full ACS callback event handling | Dyakka (future) | ❌ Minimal (200 OK) | `CallConnected`, `MediaStreamingStarted` etc.; extend when needed |
+
+---
+
+## SDK Note (Azure.Communication.CallAutomation 1.5.1)
+
+`MediaStreamingOptions` constructor changed from older versions:
+```csharp
+// 1.5.1 (current):
+new MediaStreamingOptions(MediaStreamingAudioChannel.Mixed, StreamingTransport.Websocket)
+{
+    TransportUri           = new Uri("wss://host/api/calls/media-stream"),
+    MediaStreamingContent  = MediaStreamingContent.Audio,
+    StartMediaStreaming     = true
+}
+
+// OLD (pre-1.5, DO NOT USE — no longer exists):
+// new MediaStreamingOptions(uri, MediaStreamingTransport.Websocket, MediaStreamingContent.Audio, MediaStreamingAudioChannel.Mixed)
+```
+
+`MediaStreamingAudioChannel`, `MediaStreamingContent`, and `StreamingTransport` are struct-based extensible enums (not C# enums) — they have static properties like `Mixed`, `Audio`, `Websocket`.
+# US Phone Number Feasibility Advisory
+**By:** Dyakka — ACS / Telephony Specialist  
+**Date:** 2026-06-08T14:05:26.535-04:00  
+**Type:** Advisory — feasibility analysis, no code/infra changes  
+**Requested by:** Jason  
+**Status:** Inbox — for Jason's review and decision
+
+---
+
+## Jason's Question
+
+> "Will it be possible to use American based numbers? We can deploy our Comm Service to East US or East US 2 if needed."
+
+---
+
+## 1. Yes — With One Correction
+
+**Short answer: Yes, US numbers are fully supported in ACS and work with Call Automation + media streaming.**
+
+However, "deploying Comm Services to East US or East US 2" is a category error that needs clearing up. ACS is NOT a per-datacenter regional service. The ARM resource `location` is always `'global'` — there is no East US vs. West US deployment slot for ACS the way there is for ACA or App Service. Jason cannot "deploy ACS to East US."
+
+**What actually controls US number availability is `dataLocation`** — ACS's data residency setting, which is specified at resource-creation time. Our Bicep currently has:
+
+```bicep
+param communicationDataLocation string = 'Europe'
+```
+
+This means our ACS resource is locked to the Europe data geography and can only acquire European numbers (Swedish, German, etc.). To acquire US numbers, `dataLocation` must be `'United States'`.
+
+**The critical distinction:**
+
+| Concept | What Jason said | What actually matters |
+|---|---|---|
+| Compute region (ACA, App Service) | "Deploy to East US / East US 2" | Irrelevant to number availability |
+| ACS data residency | (implied as deployment region) | `dataLocation: 'United States'` — this is the switch |
+
+The rest of the stack — ACA in Sweden Central, App Service in Sweden Central — **does not need to change** at all for US numbers. Only the ACS `dataLocation` matters.
+
+---
+
+## 2. US Number Types, Requirements, and Blockers
+
+### Available US number types
+
+| Type | Inbound + Call Automation + Media Streaming | US Address Required | Regulatory Approval Wait | Demo Suitability |
+|---|---|---|---|---|
+| **Toll-free** (1-800, 1-888, etc.) | ✅ Yes | ❌ No | None — near-instant | ✅ **Best for demo** |
+| **Geographic / local** (area code) | ✅ Yes | ✅ Yes | Days–weeks (regulatory form) | ⚠️ Slower to acquire |
+
+Both types support our exact scenario: inbound PSTN → Call Automation answer → media streaming → `AcsAudioSource`. Both carry voice calling capability (not just SMS).
+
+**Recommendation: toll-free.** No US address, no regulatory wait, provisions in minutes in the portal once the resource has the right `dataLocation`. Perfectly credible for a call center demo.
+
+### Potential blockers
+
+1. **Subscription type eligibility** — This is the real risk.
+   - **Trial, free-credit, MSDN, or BizSpark subscriptions:** Typically blocked from purchasing ACS phone numbers entirely.
+   - **Pay-as-you-go (PAYG), MCA, EA:** Generally eligible.
+   - **How to verify:** In the Azure portal, navigate to the ACS resource → **Phone Numbers** → **Get Phone Number** → search for US toll-free. If the subscription is ineligible, the portal will surface an error immediately (no numbers will appear, or you'll see an explicit subscription eligibility message).
+   - I cannot see the subscription type from here — Jason must check this in the portal.
+
+2. **`dataLocation` must be `'United States'`** — Our current resource has `'Europe'`, which blocks US number purchase outright. See section 3.
+
+3. **Billing country** — For US numbers, the subscription billing country does NOT need to be US. The `dataLocation` of the ACS resource is the controlling factor. (Note: this differs from some other ACS geographies like Sweden, where billing-country eligibility is more restrictive.)
+
+---
+
+## 3. What Changes in Our Setup
+
+### `dataLocation` is IMMUTABLE
+
+Once an ACS resource is created, `dataLocation` cannot be updated in place. ARM will reject the change. **There is no in-place migration from `dataLocation: 'Europe'` to `dataLocation: 'United States'`.**
+
+The path requires either:
+- **Delete and recreate the existing ACS resource** with the same name (Bicep handles this cleanly — change the param, `az resource delete` the existing resource, then `azd provision`)
+- **Or provision a new ACS resource** with a different name (creates a parallel resource; old one must be cleaned up)
+
+**Bicep change required (single-line):**
+```bicep
+// Before:
+param communicationDataLocation string = 'Europe'
+
+// After:
+param communicationDataLocation string = 'United States'
+```
+
+**Impact on the rest of the stack: zero.** ACA stays in Sweden Central. App Service stays in Sweden Central. Speech, Translator, AI Services — all unchanged. The `Acs__Endpoint` env var on ACA will automatically reflect the new ACS resource's endpoint if the resource name stays the same.
+
+**Latency note:** There will be marginally more latency for ACA (Sweden Central) to call the US-dataLocation ACS data plane vs. a Europe-dataLocation resource. For a POC demo, this is negligible — ACS's network is global and the call-path logic (answer, start media streaming) is not latency-sensitive at the millisecond level.
+
+### RBAC implication
+
+The `apiToAcsRoleAssignment` (Communication Services Contributor on ACA system identity) is already in the Bicep and uses a deterministic `guid()` name scoped to the new resource ID. On re-provision after the resource is recreated:
+- If resource name stays the same: role assignment is cleanly applied to the new resource on the same `azd provision` run.
+- If resource name changes: old role assignment is orphaned (harmless), new one is created for the new resource.
+
+No manual role assignment work needed in either case — Bicep handles it.
+
+### Event Grid
+
+Event Grid subscription is already deferred (TODO in Bicep). No impact — it was never wired to the old resource.
+
+---
+
+## 4. Recommendation for the POC
+
+**Keep building on mock for now (Option C, as chosen). When ready to go live, here is the path to a US number:**
+
+**Step-by-step:**
+
+1. **Verify subscription eligibility first** — Go to current ACS resource in portal → Phone Numbers → Get Phone Number → search for US toll-free. If you can see numbers, the subscription is eligible. If blocked, figure out the subscription type before doing anything else.
+
+2. **Update the Bicep param** — Change `communicationDataLocation` from `'Europe'` to `'United States'`. This is the only infra change needed.
+
+3. **Delete the existing ACS resource** — Because `dataLocation` is immutable, the old resource must go before reprovision. Since no phone number has been purchased and the resource is days old, there are zero sunk assets. This is the ideal time to switch.
+
+4. **Run `azd provision`** — New ACS resource comes up with `dataLocation: 'United States'`. RBAC role assignment auto-applies. `Acs__Endpoint` env var auto-updates (same naming scheme).
+
+5. **Purchase a US toll-free number** — Portal: ACS resource → Phone Numbers → Get Phone Number → Toll-free → US. Takes minutes.
+
+6. **Wire Event Grid + Entra delivery auth** — Next planned round anyway. Subscribe to `IncomingCall` on the new resource.
+
+7. **Flip `AudioSource__Mode=Acs`** — One env var change on ACA. Live demo is active.
+
+**What can block this path:**
+- Subscription eligibility (step 1 — verify now)
+- If the subscription is a trial/free tier, a paid subscription is required before buying any number
+
+---
+
+## 5. Open Items for Jason
+
+1. **Subscription eligibility check** — Go to the current ACS resource in the portal right now and attempt to search for US toll-free numbers (Phone Numbers → Get Phone Number). This will immediately tell you if the subscription can purchase numbers at all. This is the gating question.
+
+2. **US `dataLocation` confirmed?** — You mentioned East US / East US 2, which suggests US data residency is acceptable. Confirm you're comfortable re-provisioning the ACS resource with `dataLocation: 'United States'` (the old Europe-dataLocation resource gets deleted; no data to lose since it was never used).
+
+3. **Toll-free vs. local number?** — Toll-free is strongly recommended for the demo (faster, no US address needed). But if the demo scenario requires a local number (area-code realism), that's possible with a US address and a short regulatory wait. Which do you prefer?
+
+---
+
+## Summary
+
+| Question | Answer |
+|---|---|
+| Can ACS provide US PSTN numbers? | ✅ Yes |
+| Does "deploying to East US" affect this? | ❌ No — ACS has no per-region deployment; `dataLocation` is the only switch |
+| Does `dataLocation` need to be `'United States'`? | ✅ Yes — our current `'Europe'` blocks US numbers |
+| Can `dataLocation` be changed in-place? | ❌ No — immutable; requires delete + recreate |
+| Does the rest of the stack need to move? | ❌ No — ACA/App Service can stay in Sweden Central |
+| Best number type for the demo? | US toll-free (fastest, fewest hoops) |
+| Real blocker? | Subscription type eligibility — must verify in portal first |
+# Architecture & Security Sign-Off: ACS Option C Build Spec
+**By:** Athrun — Lead / Architect  
+**Date:** 2026-06-08T14:05:26.525-04:00  
+**Type:** Architecture Sign-Off + Build Spec  
+**Status:** APPROVE TO BUILD  
+**Scope:** ACS call-path plumbing (code + Bicep), mock audio default retained
+
+---
+
+## Context
+
+Jason selected **Option C**: build all ACS call-path plumbing (AcsAudioSource + IncomingCall webhook + media-streaming WebSocket route + DI config swap) and supporting Bicep infra (ACS data-plane RBAC, minReplicas), but keep audio mocked: DI default stays MockAudioSource, no PSTN number purchased, Event Grid subscription deferred until routes validated.
+
+This document provides the binding architectural decisions that Dyakka (call-path code) and Meyrin (Bicep) must follow during implementation.
+
+---
+
+## Decision 1: ACS Data-Plane RBAC Role (Least-Privilege)
+
+**Role:** `Communication Services Contributor`  
+**GUID:** `2b4609a5-7812-4aba-b5e3-076e6a078419`  
+**Scope:** The ACS resource only (not resource group)  
+**Assigned to:** ACA Container App system-assigned managed identity (`apiContainerApp.identity.principalId`)
+
+### Justification
+
+There is no narrower built-in Azure role that grants both Call Automation answer/start-media-streaming AND data-plane access without management-plane permissions. The alternatives:
+- `Communication Services Reader` — read-only, cannot answer calls.
+- `Communication Services User` — client-side token operations only, not server-side Call Automation.
+
+`Communication Services Contributor` is the minimum viable built-in role for Call Automation SDK operations (AnswerCall, StartMediaStreaming). This is an accepted known gap in Azure's RBAC granularity for ACS.
+
+**Residual risk:** This role also allows management-plane operations against the ACS resource (e.g., regenerate keys, update resource properties). Mitigated by: (1) scoping to the single ACS resource, not the resource group; (2) the identity is a system-assigned managed identity with no external exposure; (3) when Microsoft releases a granular `Communication Services Call Automation Client` role, we narrow immediately.
+
+### Bicep Implementation
+
+Extend the existing role assignment module (`modules/acr-pull-role-assignment.bicep`) to support a `communicationServices` scope type, OR create a dedicated call inline. Follow the existing deterministic `guid(resource.id, principalId, roleDefinitionId)` naming pattern.
+
+```bicep
+// In main.bicep — add the role definition variable:
+var communicationServicesContributorRoleDefinitionId = subscriptionResourceId(
+  'Microsoft.Authorization/roleDefinitions',
+  '2b4609a5-7812-4aba-b5e3-076e6a078419'
+)
+
+// Add a new module invocation (after extending the module to support 'communicationServices' scope):
+module apiToAcsRoleAssignment 'modules/acr-pull-role-assignment.bicep' = {
+  name: 'apiToAcsRoleAssignment'
+  params: {
+    scopeType: 'communicationServices'
+    scopeName: communicationService.name
+    principalId: apiContainerApp.identity.principalId
+    roleDefinitionId: communicationServicesContributorRoleDefinitionId
+  }
+}
+```
+
+The existing module must be extended: add a `'communicationServices'` option to the `@allowed` decorator, add a `Microsoft.Communication/communicationServices` existing resource reference, and a corresponding conditional role assignment block. Follow the exact pattern of the existing `cognitiveServices` branch.
+
+---
+
+## Decision 2: Webhook Security for IncomingCall Endpoint
+
+**Pick:** SubscriptionValidationEvent handshake + schema validation. Entra-protected delivery auth deferred to the Event Grid wiring round.
+
+### Rationale
+
+This round, no Event Grid subscription exists and no phone number is provisioned. The endpoint is built to validate its contract, not to receive production traffic. Full Entra-protected webhook delivery authentication is the correct long-term solution but has a dependency on the Event Grid subscription (which is explicitly out of scope).
+
+### Implementation Requirements
+
+1. **Handle `SubscriptionValidationEvent`** — the route MUST detect `eventType: "Microsoft.EventGrid.SubscriptionValidationEvent"`, extract `data.validationCode`, and return it in the response body. This is the Event Grid handshake that proves endpoint ownership.
+
+2. **Validate event schema structure** — reject any POST body that doesn't conform to the expected EventGridEvent schema (check `eventType` is one of `Microsoft.EventGrid.SubscriptionValidationEvent` or `Microsoft.Communication.IncomingCall`). Return 400 for anything else. This is defense-in-depth against trivial spoofing.
+
+3. **NO secrets hardcoded. NO HMAC secret in Key Vault for this purpose.** The validation handshake is cryptographic proof of Event Grid ownership. Combined with HTTPS-only delivery, this is sufficient for a POC with no live calls.
+
+4. **Document in code comments:** When Event Grid subscription is wired (next round), Meyrin must add Microsoft Entra delivery authentication (AAD-protected webhook) at that time. This is a blocking prerequisite for going live with a real phone number.
+
+5. **No `[AllowAnonymous]` on the route if `RequireAuth` is enabled globally** — instead, the ACS event routes (`/api/events/acs/*`) must be excluded from the JWT auth policy since Event Grid cannot present a JWT Bearer token (it uses its own delivery auth). Use a separate route group without the `AgentAssistAccess` policy requirement.
+
+---
+
+## Decision 3: Media-Streaming WebSocket Topology
+
+### minReplicas
+
+**Decision:** Change `minReplicas` to a Bicep parameter, **default value = 1**.
+
+Rationale: The POC is short-lived. A forgotten scale-up before demo risks a dropped call (Dyakka's "cardinal sin"). The cost delta (~$15-30/month for an idle 0.5 vCPU container) is negligible for a POC. Make it a param so production patterns can override to 0 later.
+
+```bicep
+@description('Minimum replicas for the API Container App. Set to 1 for demo reliability (WebSocket statefulness).')
+param apiMinReplicas int = 1
+```
+
+### maxReplicas & Affinity
+
+**Decision:** Keep `maxReplicas = 1` (already the current value). Single replica for the POC.
+
+With maxReplicas=1, session affinity is moot — all traffic lands on the same instance. The IncomingCall webhook, the media-streaming WebSocket, and the AcsAudioSource Channel all coexist on the single replica by design. No sticky sessions configuration needed.
+
+### Reconnect / Drop Handling
+
+For the POC:
+- If the WebSocket drops mid-call, the `AcsAudioSource` Channel should complete (signal end-of-stream to consumers via channel completion). No automatic reconnect.
+- Log a warning-level event on unexpected disconnection.
+- The consumer (future audio→Speech service) treats channel completion as end-of-audio-stream.
+- **Do NOT** implement reconnect logic this round. A dropped stream in a POC rehearsal = restart the call. Document this as a known limitation.
+
+---
+
+## Decision 4: DI Swap Contract
+
+**Config key:** `AudioSource:Mode`  
+**Values:** `"Mock"` (default) | `"Acs"`  
+**Default:** `"Mock"` — nothing changes for existing demo/dev workflows.
+
+### Implementation
+
+Replace the current hardcoded registration:
+
+```csharp
+// BEFORE (current):
+services.AddSingleton<IAudioSource, MockAudioSource>();
+
+// AFTER:
+var audioSourceMode = configuration.GetValue<string>("AudioSource:Mode") ?? "Mock";
+if (string.Equals(audioSourceMode, "Acs", StringComparison.OrdinalIgnoreCase))
+{
+    services.AddSingleton<IAudioSource, AcsAudioSource>();
+}
+else
+{
+    services.AddSingleton<IAudioSource, MockAudioSource>();
+}
+```
+
+The `AddCallCenterServices` method needs an `IConfiguration` parameter passed through (or use the builder pattern). Both `MockAudioSource` and `AcsAudioSource` are Singleton lifetime — the Channel inside AcsAudioSource is long-lived per-process.
+
+**No rebuild required to swap** — environment variable `AudioSource__Mode=Acs` on the ACA Container App flips it. This matches the existing env-var injection pattern (`Security__RequireAuth`, `Acs__Endpoint`, etc.).
+
+---
+
+## Decision 5: Scope Guard — IN / OUT
+
+### IN this round (Option C deliverables)
+
+| Item | Owner | Type |
+|------|-------|------|
+| `AcsAudioSource : IAudioSource` with internal `Channel<AudioFrame>` | Dyakka | Code |
+| `POST /api/events/acs/incoming-call` route (validation handshake + IncomingCall handler) | Dyakka | Code |
+| `GET /api/calls/media-stream` WebSocket upgrade route | Dyakka | Code |
+| DI config swap (`AudioSource:Mode`) | Dyakka | Code |
+| NuGet: `Azure.Communication.CallAutomation` added to Telephony project | Dyakka | Code |
+| Bicep: ACS RBAC role assignment (Contributor, scoped to ACS resource) | Meyrin | Infra |
+| Bicep: `apiMinReplicas` param (default 1) | Meyrin | Infra |
+| Bicep: Add `AudioSource__Mode` env var to ACA (value: `Mock`) | Meyrin | Infra |
+| Extend role assignment module for `communicationServices` scope type | Meyrin | Infra |
+
+### OUT this round (explicitly deferred)
+
+| Item | Why |
+|------|-----|
+| PSTN phone number purchase | No number needed while DI defaults to Mock |
+| Event Grid system topic + subscription | Deferred until webhook routes are validated (per existing TODO) |
+| Entra-protected webhook delivery auth | Blocked on Event Grid subscription (wired together) |
+| Audio → Speech background consumer service (`IHostedService`) | Lacus + Meyrin pipeline work; separate deliverable |
+| Real audio flowing through the pipeline | DI stays Mock; Acs path is code-complete but not activated |
+| Rep join via `AddParticipant` | Depends on phone number + live calls |
+| ACS web-client calling SDK (Option B) | Not selected |
+
+### Audio → Speech Consumer Recommendation
+
+**NOT this round. Immediate next round.**
+
+The audio → Speech consumer service (the `IHostedService` that calls `audioSource.ReadAsync()` and feeds bytes to Azure AI Speech SDK) is Lacus + Meyrin's deliverable. It should begin as soon as the `AcsAudioSource` interface implementation lands (it can develop against `MockAudioSource` with a richer mock that yields real PCM frames). But it is NOT a prerequisite for THIS round's deliverables and including it would expand scope beyond the call-path plumbing Jason approved.
+
+**Sequence:** This round lands → Lacus+Meyrin start the consumer service immediately after (can overlap) → Event Grid wiring + Entra auth is the final activation step.
+
+---
+
+## Decision 6: SDK & Auth
+
+**Package:** `Azure.Communication.CallAutomation` — current GA version (add to `CallCenterTranscription.Telephony.csproj`)
+
+**Authentication:** `DefaultAzureCredential` via `Azure.Identity`. The `CallAutomationClient` is constructed with the ACS endpoint (already available as `Acs__Endpoint` env var) and a `DefaultAzureCredential` instance. Zero connection strings. Zero secrets in code.
+
+```csharp
+// In AcsAudioSource or a factory:
+var client = new CallAutomationClient(
+    new Uri(configuration["Acs:Endpoint"]!),
+    new DefaultAzureCredential());
+```
+
+The system-assigned managed identity on the ACA Container App authenticates automatically via the RBAC role assignment from Decision 1.
+
+---
+
+## VERDICT: ✅ APPROVE TO BUILD
+
+Dyakka and Meyrin may proceed with implementation using the decisions above as binding spec. Key guardrails:
+
+1. **No secrets anywhere.** Managed identity + RBAC is the only auth path.
+2. **Mock stays default.** Flipping to Acs requires explicit env var change.
+3. **Single replica.** No multi-instance complexity this round.
+4. **No Event Grid subscription yet.** Routes are built and validated; wiring happens next round with Entra delivery auth.
+5. **No audio consumer service this round.** Frames go into the Channel; nothing reads them until Lacus+Meyrin deliver the next piece.
+
+---
+
+## Sign-Off
+
+| Role | Agent | Verdict |
+|------|-------|---------|
+| Lead / Architect | Athrun | ✅ APPROVE TO BUILD |
+# Infra Decision: ACS Option C Bicep — RBAC, minReplicas, AudioSource__Mode
+
+**By:** Meyrin — Backend Dev  
+**Date:** 2026-06-08T14:05:26.535-04:00  
+**Type:** Infrastructure Decision Record  
+**Status:** IMPLEMENTED  
+**Implements:** Athrun's ACS Option C sign-off (`athrun-acs-option-c-signoff.md`)  
+**Files changed:** `infra/main.bicep`, `infra/modules/acr-pull-role-assignment.bicep`, `infra/main.parameters.json`
+
+---
+
+## Decision 1: ACS Data-Plane RBAC Role Assignment
+
+**Role:** `Communication Services Contributor`  
+**Role Definition ID:** `2b4609a5-7812-4aba-b5e3-076e6a078419`  
+**Scope:** The single `Microsoft.Communication/communicationServices` resource (not resource group, not subscription)  
+**Principal:** `apiContainerApp.identity.principalId` — ACA Container App **system-assigned** managed identity  
+
+### Implementation
+
+Extended `modules/acr-pull-role-assignment.bicep` to support a `'communicationServices'` scopeType alongside the existing `'acr'`, `'keyVault'`, and `'cognitiveServices'` branches:
+
+- Added `'communicationServices'` to the `@allowed` decorator.
+- Added `resource communicationServicesAccount 'Microsoft.Communication/communicationServices@2025-05-01' existing = if (scopeType == 'communicationServices')`.
+- Added `resource communicationServicesScopedRoleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (scopeType == 'communicationServices')` with:
+  - `name: guid(communicationServicesAccount.id, principalId, roleDefinitionId)` — deterministic, idempotent, matches the existing cognitiveServices pattern exactly.
+  - `scope: communicationServicesAccount`
+  - `principalType: 'ServicePrincipal'`
+
+Called from `main.bicep` as:
+```bicep
+module apiToAcsRoleAssignment 'modules/acr-pull-role-assignment.bicep' = {
+  name: 'apiToAcsRoleAssignment'
+  params: {
+    scopeType: 'communicationServices'
+    scopeName: communicationService.name
+    principalId: apiContainerApp.identity.principalId
+    roleDefinitionId: communicationServicesContributorRoleDefinitionId
+  }
+}
+```
+
+### Justification (per Athrun's sign-off)
+
+No narrower Azure built-in role covers both Call Automation `AnswerCall` and `StartMediaStreaming`. The alternatives fall short:
+- `Communication Services Reader` — read-only, cannot answer calls.
+- `Communication Services User` — client-side token operations only, not server-side Call Automation.
+
+**Residual risk mitigation:**
+1. Scoped to the single ACS resource — not the resource group or subscription.
+2. Assigned to the system-assigned managed identity — no external exposure, no credential leakage.
+3. When Microsoft ships a dedicated `Communication Services Call Automation Client` role, narrow immediately.
+
+This is an accepted known gap in Azure RBAC granularity for ACS at POC stage.
+
+---
+
+## Decision 2: minReplicas = 1 (Parameter)
+
+**Before:** `minReplicas: 0` (hardcoded in scale block)  
+**After:** `minReplicas: apiMinReplicas` with `param apiMinReplicas int = 1`
+
+**Rationale:** A cold replica (0) would drop an inbound call during the demo — the ACA Container App must be warm when ACS delivers the incoming-call event. Default 1 ensures continuous availability at negligible cost (~$15–30/month for 0.5 vCPU idle). Making it a param allows production patterns to override to 0 later without a code change.
+
+`maxReplicas` confirmed at 1 — unchanged. Single replica means session affinity is moot (all traffic lands on the same instance by design).
+
+`main.parameters.json` updated with `"apiMinReplicas": { "value": 1 }`.
+
+---
+
+## Decision 3: AudioSource__Mode = Mock (Env Var)
+
+**Env var added:** `AudioSource__Mode = 'Mock'` on the ACA Container App.
+
+**Rationale:** Dyakka's DI registration reads `AudioSource:Mode` from `IConfiguration`. The double-underscore format maps to the colon-separated key under ASP.NET Core's environment variable configuration provider. Setting it to `'Mock'` preserves the existing default (`MockAudioSource`) — no behaviour change today.
+
+**Activation path (next round):** Once the ACS phone number is provisioned and the Event Grid subscription is wired, flip this env var to `'Acs'` via ACA env var update. No image rebuild required.
+
+---
+
+## Deferred (Out of scope this round — per Athrun's sign-off)
+
+| Item | Reason |
+|------|--------|
+| PSTN phone number | No number needed while DI defaults to Mock |
+| Event Grid system topic + subscription | Deferred until webhook routes are validated |
+| Entra-protected webhook delivery auth | Blocked on Event Grid subscription wiring |
+| Audio → Speech background consumer (`IHostedService`) | Lacus + Meyrin next deliverable |
+| `AudioSource__Mode` flip to `Acs` | Blocked on phone number + Event Grid |
+| ACS connection string / any new secret | Out of scope — zero secrets policy enforced |
+
+---
+
+## Bicep Validation
+
+`az bicep build infra/main.bicep` — **0 errors, 0 warnings**.
+# Infra Decision: ACS dataLocation Switched from Europe to United States
+
+**By:** Meyrin — Backend Dev  
+**Date:** 2026-06-08T14:49:06.749-04:00  
+**Type:** Infrastructure Decision Record  
+**Status:** IMPLEMENTED  
+**Requested by:** Jason ("flip it immediately")  
+**Drives:** Dyakka's advisory `dyakka-us-numbers-feasibility.md`  
+**Files changed:** `infra/main.bicep`, `infra/main.parameters.json`
+
+---
+
+## The Change
+
+Changed the ACS data residency from `'Europe'` to `'United States'` in two places (both were authoritative):
+
+| File | Line | Before | After |
+|---|---|---|---|
+| `infra/main.bicep` | param `communicationDataLocation` default | `'Europe'` | `'United States'` |
+| `infra/main.parameters.json` | `communicationDataLocation.value` | `"Europe"` | `"United States"` |
+
+The parameters file is the authoritative value that wins at provision time (`azd provision` passes it as `--parameters`). The param default was also updated for consistency. Both now read `'United States'`.
+
+A 7-line comment block was added above the param in `main.bicep` explaining the immutability constraint and the recreate-on-provision implication.
+
+---
+
+## Why This Change
+
+`dataLocation` is ACS's data residency setting. It controls which geographic phone number pools are available for purchase:
+
+- `'Europe'` → can only acquire European numbers (Swedish, German, etc.)
+- `'United States'` → can acquire US toll-free (1-800, 1-888, etc.) and US geographic numbers
+
+Jason's goal is a US toll-free number for the demo call center scenario. `'United States'` is the single switch that unlocks this.
+
+**Note:** ACS `location` stays `'global'` — this is unchanged and unrelated to data residency.
+
+---
+
+## Recreate-on-Provision Implication
+
+**`dataLocation` is IMMUTABLE.** ARM will reject an in-place update to this field. Switching from `'Europe'` to `'United States'` requires the existing ACS resource to be deleted before the next provision run.
+
+**This is safe right now because:**
+- No PSTN phone number has been purchased on the Europe resource.
+- No Event Grid subscription is wired to the resource (deferred).
+- The resource is days old and carries no production data.
+- There are zero sunk assets — ideal time to switch.
+
+The operator must delete the existing ACS resource manually before running `azd provision`. See operator steps below.
+
+---
+
+## RBAC — Unaffected
+
+The `apiToAcsRoleAssignment` module (`Communication Services Contributor` on the ACA system-assigned MI) already uses a deterministic `guid()` name:
+
+```bicep
+name: guid(communicationServicesAccount.id, principalId, roleDefinitionId)
+```
+
+On re-provision after the resource is recreated:
+- The new resource gets a new resource ID.
+- `guid()` re-computes to a new (but still deterministic) name scoped to the new resource ID.
+- Bicep applies the role assignment cleanly to the new resource in the same `azd provision` run.
+- No manual RBAC work needed.
+
+---
+
+## AudioSource__Mode — Unchanged
+
+`AudioSource__Mode = 'Mock'` on the ACA Container App env vars is unchanged. Live ACS audio activation remains deferred until the phone number and Event Grid subscription are provisioned.
+
+---
+
+## Bicep Build
+
+`az bicep build --file infra/main.bicep` — **0 errors, 0 warnings** after the change.
+
+---
+
+## Operator Steps (What Follows This Change)
+
+These steps are for Jason or whoever runs provision — not implemented here, just documented for clarity:
+
+1. **Delete the existing ACS resource** (required because `dataLocation` is immutable):
+   ```bash
+   az resource delete \
+     --resource-type Microsoft.Communication/communicationServices \
+     --name <your-acs-resource-name> \
+     --resource-group <your-rg-name>
+   ```
+   The resource name follows the pattern `acs-${shortWorkloadName}-${uniqueSuffix}`. Check `azd env get-values` or the portal to confirm the exact name.
+
+2. **Run `azd provision`** — Bicep recreates the ACS resource with `dataLocation: 'United States'`. The RBAC role assignment is applied automatically.
+
+3. **Verify the endpoint** — `Acs__Endpoint` env var on the ACA Container App auto-updates (same naming scheme, same resource name → same endpoint URL pattern). Confirm in the portal or via `az containerapp show`.
+
+4. **Purchase a US toll-free number** (portal step — Jason):
+   - ACS resource → **Phone Numbers** → **Get Phone Number** → Toll-free → US.
+   - Takes minutes. No US address or regulatory approval required for toll-free.
+   - If the subscription is ineligible, the portal will surface an error immediately (check first; subscription type is the gating risk per Dyakka's advisory).
+
+5. **Next round — Event Grid + Entra delivery auth** (Meyrin + Lacus):
+   - Wire `IncomingCall` Event Grid system topic and subscription to the new resource.
+   - Entra-protected webhook delivery auth.
+
+6. **Flip `AudioSource__Mode=Acs`** (one env var change on ACA):
+   - No image rebuild required.
+   - Live demo is active after this flip.
+
+---
+
+## Deferred
+
+| Item | Status |
+|---|---|
+| Event Grid system topic + subscription | Deferred — next round |
+| Entra webhook delivery auth | Deferred — blocked on Event Grid |
+| `AudioSource__Mode` flip to `'Acs'` | Deferred — blocked on phone number + Event Grid |
+| Any new secrets / connection strings | Out of scope — zero secrets policy enforced |
+# Reviewer Gate: ACS dataLocation EU → US Flip — APPROVED
+
+**Reviewer:** Athrun — Lead / Architect  
+**Date:** 2026-06-08T14:49:06.749-04:00  
+**Subject:** Meyrin's infra change: `communicationDataLocation` from `'Europe'` to `'United States'`  
+**Status:** ✅ **APPROVE**
+
+---
+
+## Verification Summary
+
+### 1. Effective dataLocation Reaching ACS Resource: **'United States'** ✅
+
+**Trace:**
+- **infra/main.bicep** (line 19): param default → `'United States'` (exact casing)
+- **infra/main.parameters.json** (line 15): `communicationDataLocation.value` → `"United States"` (exact casing)
+- **infra/main.bicep** (line 228): ACS resource definition → `dataLocation: communicationDataLocation` (passes param through)
+- **No azd env override detected** — parameters file is authoritative and wins
+- **Result:** ✅ Effective value is `'United States'` with correct casing; no stale `'Europe'` value that could override
+
+---
+
+### 2. ACS RBAC Role Assignment Determinism & Recreate Handling ✅
+
+**Verified:**
+- **Module:** `infra/modules/acr-pull-role-assignment.bicep` (line 73)
+- **Name generation:** `name: guid(communicationServicesAccount.id, principalId, roleDefinitionId)`
+- **Scope:** Correctly scoped to `communicationServicesAccount` (line 74)
+- **Role:** Communication Services Contributor (`2b4609a5-7812-4aba-b5e3-076e6a078419`) — correct for Call Automation AnswerCall + StartMediaStreaming
+- **Re-apply on recreate:** ✅ Deterministic guid() scoped to new resource ID ensures automatic re-application on next provision (zero manual RBAC work)
+- **Result:** ✅ RBAC role assignment will re-apply cleanly to the recreated ACS resource
+
+---
+
+### 3. AudioSource__Mode Environment Variable ✅
+
+**Verified:**
+- **infra/main.bicep** (line 311): `value: 'Mock'` (unchanged)
+- **Status:** ✅ Still set to `'Mock'` — live ACS audio activation remains deferred as intended
+- **Deferral justified:** No phone number purchased, no Event Grid subscription yet
+
+---
+
+### 4. Infra Scope, Drift, & Secrets ✅
+
+**Changed files:**
+- `infra/main.bicep` — 9 line addition (comment explaining immutability + value flip)
+- `infra/main.parameters.json` — 1 line change (value flip)
+- `.squad/agents/{dyakka,meyrin}/history.md` — agent logs only (not code)
+
+**Scope:** Limited to `dataLocation` parameter. No drift. No scope creep.
+- ✅ No other parameters modified
+- ✅ No RBAC modifications
+- ✅ No env vars modified except documented
+- ✅ **Zero secrets introduced** — confirmed by grep
+
+**Result:** ✅ Scope is precisely limited; no unrelated changes
+
+---
+
+### 5. Bicep Compilation ✅
+
+**Command:** `bicep build infra/main.bicep`  
+**Result:** ✅ **0 errors, 0 warnings**  
+Generated `infra/main.json` successfully at 2026-06-08T14:50:00 UTC
+
+---
+
+### 6. Operational Immutability Note — Captured ✅
+
+**In infra/main.bicep (lines 12–18):**
+```bicep
+// IMMUTABLE — dataLocation cannot be changed in-place after resource creation.
+// Switching from 'Europe' to 'United States' requires the ACS resource to be deleted and
+// recreated on next provision. This is intentional: enables US toll-free number acquisition;
+// there are no sunk assets (no number purchased, no Event Grid subscription wired).
+// The Communication Services Contributor role assignment re-applies automatically via its
+// deterministic guid() name scoped to the new resource id.
+```
+
+**In meyrin-acs-datalocation-us.md (lines 83–109):**
+Operator steps are clearly documented, including:
+- Delete existing ACS resource (required because immutable)
+- Run `azd provision` (Bicep recreates with US residency)
+- RBAC automatically re-applies
+- Verify endpoint updates (same name, same URL pattern)
+- Next steps: purchase US toll-free, wire Event Grid, flip AudioSource__Mode
+
+**Result:** ✅ Operator documentation is explicit and comprehensive; no risk of missed delete step
+
+---
+
+## Final Verdict
+
+### ✅ **APPROVE**
+
+**Confidence:** High
+
+**Justification:**
+1. The effective `dataLocation` value reaching the ACS resource is precisely `'United States'` with correct casing; no stale `'Europe'` value wins.
+2. RBAC role assignment (Communication Services Contributor) is deterministically named via `guid()` scoped to the resource ID and will re-apply automatically to the recreated resource.
+3. `AudioSource__Mode` remains `'Mock'` (unchanged).
+4. Scope is strictly limited to the `dataLocation` flip; no drift, no scope creep, no secrets.
+5. Bicep compiles clean (0 errors, 0 warnings).
+6. Operational note documenting the immutable-property recreate requirement is captured in code comments and decision file; operator will not hit a failed in-place update.
+
+**Ready for:** `azd provision` after operator manually deletes the existing ACS resource (per documented steps).
+
+---
+
+## Next Steps (Post-Provision)
+
+Per meyrin's decision file and Dyakka's advisory:
+1. Operator deletes existing ACS resource
+2. `azd provision` recreates with US residency
+3. Purchase US toll-free number (portal)
+4. Wire Event Grid + Entra delivery auth (Meyrin + Lacus)
+5. Flip `AudioSource__Mode=Acs` on ACA env vars (one-liner)
+
+No risk of unintended in-place update failure; all preconditions met.
