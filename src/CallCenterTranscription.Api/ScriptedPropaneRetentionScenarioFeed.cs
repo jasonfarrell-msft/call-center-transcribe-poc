@@ -5,9 +5,13 @@ namespace CallCenterTranscription.Api;
 public interface IScriptedScenarioFeed
 {
     SessionCurrentResponse GetCurrentSession();
+    PipelineCurrentStateResponse GetCurrentState();
     IReadOnlyList<TranscriptEvent> GetTranscriptEvents();
     IReadOnlyList<TranslationEvent> GetTranslationEvents();
     SentimentFeedResponse GetSentimentFeed();
+    IReadOnlyList<ChurnRiskEvent> GetChurnRiskEvents();
+    IReadOnlyList<KnowledgeCardEvent> GetKnowledgeCardEvents();
+    IReadOnlyList<NextBestActionEvent> GetNextBestActionEvents();
     MissionControlHealthResponse GetMissionControlHealth();
 }
 
@@ -174,6 +178,81 @@ public sealed class ScriptedPropaneRetentionScenarioFeed : IScriptedScenarioFeed
         }
     ];
 
+    private static readonly IReadOnlyList<ChurnRiskEvent> ChurnRiskEvents =
+    [
+        new()
+        {
+            CallId = CallId,
+            EventId = "evt-churn-risk-0001",
+            Sequence = 1,
+            UtteranceId = "utt-0003",
+            RelatedTranscriptEventId = "evt-transcript-0003",
+            RelatedTranscriptSequence = 3,
+            TimestampUtc = CallStartUtc.AddSeconds(17),
+            RiskLevel = "high",
+            RiskScore = 0.86,
+            Rationale = "Customer references a lower competitor offer after delivery and billing issues.",
+            Source = ScriptSource
+        },
+        new()
+        {
+            CallId = CallId,
+            EventId = "evt-churn-risk-0002",
+            Sequence = 2,
+            UtteranceId = "utt-0005",
+            RelatedTranscriptEventId = "evt-transcript-0005",
+            RelatedTranscriptSequence = 5,
+            TimestampUtc = CallStartUtc.AddSeconds(33),
+            RiskLevel = "moderate",
+            RiskScore = 0.42,
+            Rationale = "Customer agrees to remain after credit and budget billing are offered.",
+            Source = ScriptSource
+        }
+    ];
+
+    private static readonly IReadOnlyList<KnowledgeCardEvent> KnowledgeCardEvents =
+    [
+        new()
+        {
+            CallId = CallId,
+            EventId = "evt-knowledge-card-0001",
+            Sequence = 1,
+            UtteranceId = "utt-0003",
+            RelatedTranscriptEventId = "evt-transcript-0003",
+            RelatedTranscriptSequence = 3,
+            TimestampUtc = CallStartUtc.AddSeconds(18),
+            Source = ScriptSource,
+            Cards =
+            [
+                new()
+                {
+                    Id = "card-retention-price-match",
+                    Title = "Retention policy: competitor price concerns",
+                    Snippet = "Offer a service credit and quote budget billing before discussing cancellation.",
+                    SourceUrl = "https://contoso.example/policies/retention/price-match"
+                }
+            ]
+        }
+    ];
+
+    private static readonly IReadOnlyList<NextBestActionEvent> NextBestActionEvents =
+    [
+        new()
+        {
+            CallId = CallId,
+            EventId = "evt-nba-0001",
+            Sequence = 1,
+            UtteranceId = "utt-0003",
+            RelatedTranscriptEventId = "evt-transcript-0003",
+            RelatedTranscriptSequence = 3,
+            TimestampUtc = CallStartUtc.AddSeconds(19),
+            Action = "Offer immediate service credit and enroll customer in budget billing.",
+            Confidence = 0.91,
+            Reasoning = "Customer cites competitor pricing and a missed delivery; proactive retention offer can de-escalate.",
+            Source = ScriptSource
+        }
+    ];
+
     private static readonly SessionCurrentResponse SessionCurrent = new()
     {
         Call = new CallSessionMetadata
@@ -278,6 +357,21 @@ public sealed class ScriptedPropaneRetentionScenarioFeed : IScriptedScenarioFeed
 
     public SessionCurrentResponse GetCurrentSession() => SessionCurrent;
 
+    public PipelineCurrentStateResponse GetCurrentState() => new()
+    {
+        Call = SessionCurrent.Call,
+        SentimentSummary = SentimentSummary,
+        IsMockFeedActive = SessionCurrent.IsMockFeedActive,
+        GeneratedAtUtc = CallStartUtc.AddSeconds(35),
+        StreamReplayPolicy = "full_history_for_active_call",
+        TranscriptEvents = TranscriptEvents,
+        TranslationEvents = TranslationEvents,
+        SentimentEvents = SentimentEvents,
+        ChurnRiskEvents = ChurnRiskEvents,
+        KnowledgeCardEvents = KnowledgeCardEvents,
+        NextBestActionEvents = NextBestActionEvents
+    };
+
     public IReadOnlyList<TranscriptEvent> GetTranscriptEvents() => TranscriptEvents;
 
     public IReadOnlyList<TranslationEvent> GetTranslationEvents() => TranslationEvents;
@@ -288,6 +382,12 @@ public sealed class ScriptedPropaneRetentionScenarioFeed : IScriptedScenarioFeed
         Summary = SentimentSummary,
         Events = SentimentEvents
     };
+
+    public IReadOnlyList<ChurnRiskEvent> GetChurnRiskEvents() => ChurnRiskEvents;
+
+    public IReadOnlyList<KnowledgeCardEvent> GetKnowledgeCardEvents() => KnowledgeCardEvents;
+
+    public IReadOnlyList<NextBestActionEvent> GetNextBestActionEvents() => NextBestActionEvents;
 
     public MissionControlHealthResponse GetMissionControlHealth() => MissionControlHealth;
 }
