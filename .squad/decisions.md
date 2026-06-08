@@ -10,6 +10,167 @@
 - **2026-06-05 | Squad** — Real ACS is part of the final demo, with public callback/WebSocket endpoints on ACA and a fallback `MockAudioSource` for reliability.
 - **2026-06-05 | Squad** — ACS call topology is Option A: customer dials the ACS number, backend answers, starts media streaming, then adds the rep via `AddParticipant`; mixed audio is the POC starting point, with a Phase-2 spike to validate rep audio after join.
 - **2026-06-05 | Dyakka** — ACS dual-call/runbook work owns inbound answering, media streaming, rep join mechanics, and the repeatable demo script; Dyakka was hired mid-session to solve the two-party ACS path.
+
+
+- **2026-06-08T15:24:21-04:00 | Jason (Directive)** — US toll-free number **+18774178275** has been purchased on the recreated ACS resource (acs-cctrans-kdarok). This enables real inbound PSTN calls for the live ACS demo. Next: Event Grid IncomingCall subscription → webhook, the audio→Speech consumer, then flip AudioSource__Mode=Acs.
+
+# 2026-06-08T15:24:21-04:00 — ACS Go-Live Architecture Sign-Off
+
+**By:** Athrun (Lead/Architect)  
+**Requested by:** Jason  
+**Status:** APPROVE TO BUILD  
+**Scope:** Inbound call → live transcript on rep dashboard
+
+## Summary
+
+Go-live sequence is defined across 5 correlated decisions:
+
+1. **Event Grid IncomingCall Wiring** — Plain webhook (SubscriptionValidationEvent handshake only); Entra-protected delivery auth deferred for POC. Justification: endpoint is AllowAnonymous; forged IncomingCall POST → ACS rejects bogus context; no data exfiltration or state corruption.
+
+2. **minReplicas + AudioSource Mode Mechanism** — Surgical `az containerapp update` (lower-risk path than full `azd provision`). Critical sequencing: (1) Build+deploy consumer, (2) Verify Speech RBAC, (3) Create Event Grid system topic+subscription, (4) Flip minReplicas=1 + Mode=Acs ATOMICALLY.
+
+3. **Audio→Speech Consumer Shape** — `SpeechTranscriptionService : BackgroundService` reads IAudioSource, creates PushAudioInputStream (PCM 16-bit, 16kHz, mono), continuous recognition, emits interim (Recognizing/isFinal=false) + final (Recognized/isFinal=true) TranscriptEvents via SignalR on "stream.transcript" group. SDK: Microsoft.CognitiveServices.Speech (1.42.x+). Auth: DefaultAzureCredential → token scoped to https://cognitiveservices.azure.com/.default; formatted as aad#{resourceId}#{token}. Coexists with scripted feed (no conflict).
+
+4. **Speech Resource + RBAC** — Already provisioned (speech-cctrans-kdarok, swedencentral, SKU=S0, custom subdomain enabled). RBAC role "Cognitive Services User" (GUID a97b65f3-24c7-4388-baec-2e87135dc908) already assigned to ACA system MI on Speech resource (verified live).
+
+5. **Scope Guard** — IN: SpeechTranscriptionService, Event Grid, mode flip, RBAC verification, DemoSafety:DataMode guard removal, end-to-end test call, Bicep consistency. OUT: Entra auth, diarization, full azd provision, translation/sentiment/NBA from live audio, AddParticipant, reconnect logic, multi-replica, production error recovery.
+
+**Go-Live Sequence:**
+1. Lacus: Build SpeechTranscriptionService + remove DemoSafety:DataMode guard
+2. Lacus: Verify consumer PR passes build + test
+3. Meyrin: Verify Speech RBAC + ACS RBAC live (az role assignment list)
+4. Meyrin: Build + deploy new API image to ACA (includes consumer)
+5. Meyrin: Create Event Grid system topic + subscription (surgical az)
+6. Meyrin: az containerapp update: minReplicas=1, AudioSource__Mode=Acs, Speech__Region, Speech__ResourceId
+7. Dyakka: Test call to +18774178275 → verify call connects, audio streams, transcript appears
+8. Dyakka: Document demo runbook + fallback (flip AudioSource__Mode=Mock if live path fails)
+
+**Fallback:** MockAudioSource + scripted feed remain intact. 30-second recovery via `az containerapp update --set-env-vars AudioSource__Mode=Mock`.
+
+**Guardrails:**
+- Do NOT flip Mode=Acs until Steps 1–5 confirmed green
+- Meyrin verifies ALL role GUIDs against live subscription (lesson from ACS RBAC burn)
+- DemoSafety:DataMode guard removal code-reviewed
+- Event Grid subscription creation triggers SubscriptionValidationEvent — endpoint MUST be live at creation time
+- If Speech SDK + push stream hits blocker, fallback to REST-based batch recognition (no interim results)
+
+**Owners:** Lacus (consumer+guard), Meyrin (Event Grid+RBAC+deploy+flip), Dyakka (test+runbook), Athrun (gate review)
+
+**VERDICT: APPROVE TO BUILD**
+
+# 2026-06-08T15:24:21-04:00 — Go-Live Build Review (REQUEST CHANGES → FIXED)
+
+**Date:** 2026-06-08T15:24:21-04:00  
+**Reviewer:** Athrun  
+**Artifacts reviewed:** SpeechTranscriptionService (Lacus), Event Grid Bicep + RBAC (Meyrin)  
+**Status:** REQUEST CHANGES (one blocking gap) → FIXED by Meyrin
+
+### Blocking Issue (FIXED)
+
+**File:** `infra/main.bicep` (ACA container env vars, ~lines 280–315)  
+**Gap:** `Speech__Region` and `Speech__ResourceId` were missing from ACA environment variables.  
+**Impact:** Consumer's startup guard requires both; without them, consumer logs warning and exits → zero transcription despite mode flip.  
+**Fix:** Meyrin added two env vars:
+```bicep
+{
+  name: 'Speech__Region'
+  value: location   // 'swedencentral'
+}
+{
+  name: 'Speech__ResourceId'
+  value: speechAccount.id
+}
+```
+
+### All Other Criteria: PASS ✅
+
+- **Security:** No Speech key in code/config/infra; DefaultAzureCredential → token formatted as aad#{resourceId}#{token} correct; token refresh 9min; RBAC GUID a97b65f3 verified live
+- **Consumer:** Reads IAudioSource, writes to PushAudioInputStream (PCM 16k); SignalR "stream.transcript" on TranscriptEvent DTO (no UI changes); self-gates on missing config; coexists with scripted feed
+- **Event Grid Bicep:** System topic + subscription correct; filters IncomingCall only; apiMinReplicas=1; AudioSource__Mode=Mock (not premature flip); RBAC GUID verified live
+- **Build:** `dotnet build` → 0 errors; `az bicep build` → 0 errors
+- **Deploy Sequence:** Correct order (build→update→webhook live→create topic→create subscription→flip mode); Advisory: Step 6 now includes Speech__Region + Speech__ResourceId env vars
+
+**Overall:** APPROVED (after Meyrin's Speech env vars fix).
+
+# 2026-06-08T15:24:21.856-04:00 — Speech Consumer Built — SpeechTranscriptionService
+
+**Author:** Lacus (AI Engineer)  
+**Status:** IMPLEMENTED & COMMITTED (7426ebe)  
+**Build:** `dotnet build CallCenterTranscription.sln -c Release` → 0 errors
+
+**Location:** `src/CallCenterTranscription.Api/Services/SpeechTranscriptionService.cs` + `ActiveCallStore.cs`
+
+**Design:** BackgroundService that reads IAudioSource, creates PushAudioInputStream (PCM 16-bit, 16kHz, mono), wires Recognizing→isFinal=false + Recognized→isFinal=true TranscriptEvents to SignalR "stream.transcript" group. Token refresh via PeriodicTimer (9min). No DemoSafety:DataMode guard (removed). Coexists with scripted feed (separate paths, no conflict).
+
+**Auth:** DefaultAzureCredential → scope cognitiveservices.azure.com/.default → aad#{resourceId}#{token} on SpeechConfig.FromEndpoint. No keys in code/config.
+
+**RBAC:** Cognitive Services User (a97b65f3) already on Speech resource, assigned to ACA system MI (verified live by Meyrin).
+
+**Package:** Microsoft.CognitiveServices.Speech v1.50.0 (latest GA).
+
+**Coexistence:** Mock mode yields no frames → service idles; Acs mode consumes live Channel → produces transcripts. Scripted feed REST endpoints unchanged.
+
+**Status:** Closes Step 1 of Athrun's go-live sequence. Fallback remains: flip AudioSource__Mode=Mock if live path fails during demo.
+
+# 2026-06-08T15:24:21.856-04:00 — ACS Event Grid Wiring, Speech RBAC Verification, Deploy Recipe
+
+**By:** Meyrin (Backend Dev)  
+**Requested by:** Jason  
+**Status:** READY — pending API image deploy + live subscription create
+
+### Event Grid — Bicep Added (IaC Complete)
+
+**System Topic** (evgt-acs-kdarok, global, source=communicationService.id, topicType=Microsoft.Communication.CommunicationServices)  
+**Event Subscription** (sub-incoming-call, filters IncomingCall, webhook to /api/events/acs/incoming-call, 30 retries, 1440 min TTL)  
+**Bicep build:** 0 errors. Outputs include eventGridSystemTopic + acsEventGridWebhookEndpoint.
+
+**Why Bicep is IaC-complete but NOT live activation path:** Future `azd provision` will create/upsert both; however, subscription creation fires SubscriptionValidationEvent at creation time. Safe live path is surgical `az` commands sequenced AFTER API deploy.
+
+### Speech RBAC — Verified LIVE
+
+**Verification result (live on production subscription):**
+```
+Role: Cognitive Services User
+GUID: a97b65f3-24c7-4388-baec-2e87135dc908
+Principal: ACA system MI (6edcf409-903a-49ec-ae48-aed391da1fa7)
+Scope: speech-cctrans-kdarok
+Status: PRESENT ✅
+```
+
+No surgical fix required. Consumer will auth successfully via DefaultAzureCredential.
+
+### API Deploy Recipe — Safest Path
+
+**Problem:** No API CI/CD pipeline; azd env bare (only AZURE_ENV_NAME set); full `azd deploy api` risky.  
+**Solution:** `az acr build` + `az containerapp update` (uses existing ACR registry, already wired to ACA via UAMI).
+
+**Go-Live Command Sequence:**
+
+1. **Build image:** `az acr build --registry acrcctranskdarok --image api:live-$(date +%Y%m%d%H%M) --file src/CallCenterTranscription.Api/Dockerfile .`
+2. **Update ACA:** `az containerapp update --name ca-api-cctrans-kdarok --resource-group rg-callcentertranscribe-swc-mx01 --image acrcctranskdarok.azurecr.io/api:<TAG>`
+3. **Verify webhook:** `curl -I https://ca-api-cctrans-kdarok.gentlegrass-79ff7e16.swedencentral.azurecontainerapps.io/healthz` (expect 200)
+4. **Create topic:** `az eventgrid system-topic create --name evgt-acs-kdarok --source /subscriptions/bb4b2781-6739-4fa1-994e-4ad6ce55c59c/resourceGroups/rg-callcentertranscribe-swc-mx01/providers/Microsoft.Communication/communicationServices/acs-cctrans-kdarok --topic-type Microsoft.Communication.CommunicationServices --location global`
+5. **Create subscription:** `az eventgrid system-topic event-subscription create --name sub-incoming-call --system-topic-name evgt-acs-kdarok --resource-group rg-callcentertranscribe-swc-mx01 --endpoint https://ca-api-cctrans-kdarok.gentlegrass-79ff7e16.swedencentral.azurecontainerapps.io/api/events/acs/incoming-call --endpoint-type webhook --included-event-types Microsoft.Communication.IncomingCall --max-delivery-attempts 30 --event-ttl 1440`
+6. **Flip (Coordinator step):** `az containerapp update --name ca-api-cctrans-kdarok --resource-group rg-callcentertranscribe-swc-mx01 --min-replicas 1 --set-env-vars AudioSource__Mode=Acs Speech__Region=swedencentral Speech__ResourceId=/subscriptions/bb4b2781-6739-4fa1-994e-4ad6ce55c59c/resourceGroups/rg-callcentertranscribe-swc-mx01/providers/Microsoft.CognitiveServices/accounts/speech-cctrans-kdarok`
+
+### Bicep Consistency
+
+Both Speech__Region + Speech__ResourceId wired in Bicep (lines ~300–315). Future `azd provision` includes them; surgical command also sets them explicitly for live instance.
+
+**Status:** Ready for Steps 1–3 (consumer built, verified); Steps 4–6 blocked on Lacus consumer PR merge + image deploy.
+
+# 2026-06-08T15:24:21.856-04:00 — Speech Env Vars Fix (Meyrin)
+
+**Status:** COMPLETE & COMMITTED (4decb78)
+
+**Fix:** Added `Speech__Region=swedencentral` + `Speech__ResourceId=<ARM ID>` to ACA container env vars in `infra/main.bicep`. These unblock managed-identity Speech auth for the consumer.
+
+**Corrected flip command:**
+```bash
+az containerapp update -n ca-api-cctrans-kdarok -g rg-callcentertranscribe-swc-mx01 --min-replicas 1 --set-env-vars AudioSource__Mode=Acs Speech__Region=swedencentral Speech__ResourceId=/subscriptions/bb4b2781-6739-4fa1-994e-4ad6ce55c59c/resourceGroups/rg-callcentertranscribe-swc-mx01/providers/Microsoft.CognitiveServices/accounts/speech-cctrans-kdarok
+```
+
+**Bicep build:** 0 errors.
 - **2026-06-05 | Squad** — Two review passes ran this session and both returned APPROVE-WITH-CHANGES; the canonical plan was updated with the required fixes before archive merge.
 
 - **2026-06-05T16:20:08.868-04:00 — Phase 0 .NET scaffold baseline and seams**

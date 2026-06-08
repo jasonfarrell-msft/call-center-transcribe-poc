@@ -75,3 +75,20 @@
 - Language auto-detect via `AutoDetectSourceLanguageConfig` candidate list — currently uses first language from `Speech:CandidateLanguages`. Full multi-language auto-detect deferred.
 - Confidence score parsing — Speech SDK returns confidence in JSON result property; not wired up for POC.
 - `BackgroundService` does not auto-restart if `ExecuteAsync` returns after Mock completes. In ACS mode this is fine (AcsAudioSource channel stays open across calls). For Mock mode, the service exits after the single zero-frame; restart requires app restart. Acceptable for POC.
+
+## 2026-06-08T19:24:21Z — Orchestration Log & Session Completion
+
+**Decision committed to decisions.md:**
+- `lacus-speech-consumer-built` — SpeechTranscriptionService consumer (commit 7426ebe) (merged to decisions.md)
+
+**Orchestration log created:**
+- `.squad/orchestration-log/2026-06-08T19-24-21Z-lacus.md` (Speech Consumer BackgroundService)
+
+**Session log created:**
+- `.squad/log/2026-06-08T19-24-21Z-acs-go-live-build.md` (PENDING: 6-step go-live sequence + fallback)
+
+**Inbox files merged & deleted:**
+- 6 inbox files merged into decisions.md (decisions.md: 120583 → 131795 bytes)
+- `.squad/decisions/inbox/` cleared
+
+**All .squad/ files committed to git** (staged via surgical `git add` per policy).

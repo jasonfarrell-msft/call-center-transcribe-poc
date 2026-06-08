@@ -145,3 +145,26 @@ Next phase: Event Grid + audio consumer (Lacus + Meyrin).
 5. **Go-live sequence:** Consumer built → Speech/ACS RBAC verified → new image deployed → Event Grid subscription created → surgical az flip (minReplicas=1 + Mode=Acs) → test call → transcript visible in UI. MockAudioSource remains the instant fallback (30-second revert via env var flip).
 
 **Key file:** `.squad/decisions/inbox/athrun-acs-go-live-signoff.md`
+
+### 2026-06-08 — Go-Live Build Review (Consumer + Event Grid + RBAC)
+
+**Verdict: REQUEST CHANGES** (1 blocker). Consumer code (Lacus) and Event Grid Bicep (Meyrin) pass security, correctness, and build criteria. **Blocker:** `Speech__Region` and `Speech__ResourceId` env vars missing from ACA container spec in `infra/main.bicep` — consumer self-disables without them. Fix assigned to Meyrin. Key file: `.squad/decisions/inbox/athrun-go-live-build-review.md`.
+
+## 2026-06-08T19:24:21Z — Orchestration Logs & Session Completion
+
+**Decisions committed to decisions.md:**
+1. `athrun-acs-go-live-signoff` — Architecture sign-off + 8-step go-live sequence + guardrails (merged to decisions.md)
+2. `athrun-go-live-build-review` — Gate review: REQUEST CHANGES → FIXED by Meyrin (merged to decisions.md)
+
+**Orchestration logs created:**
+- `.squad/orchestration-log/2026-06-08T19-24-21Z-athrun-1.md` (Go-Live Sign-Off)
+- `.squad/orchestration-log/2026-06-08T19-24-21Z-athrun-2.md` (Build Review Gate)
+
+**Session log created:**
+- `.squad/log/2026-06-08T19-24-21Z-acs-go-live-build.md` (PENDING: 6-step go-live sequence + fallback)
+
+**Inbox files merged & deleted:**
+- 6 inbox files merged into decisions.md (decisions.md: 120583 → 131795 bytes)
+- `.squad/decisions/inbox/` cleared
+
+**All .squad/ files committed to git** (staged via surgical `git add` per policy).

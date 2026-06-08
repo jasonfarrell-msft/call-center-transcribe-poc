@@ -10,6 +10,15 @@
 
 ## Learnings
 
+- **2026-06-08T15:24:21.856-04:00 — Speech env vars added to ACA Bicep (Speech__Region + Speech__ResourceId):**
+  - Added `Speech__Region` (value: `speechAccount.location` → `'swedencentral'`) and `Speech__ResourceId` (value: `speechAccount.id`) to the ACA container `env` array in `infra/main.bicep`, placed after `Speech__CandidateLanguages` and before `Translator__Endpoint`, consistent style with existing env block.
+  - These are **non-secret** values: a region string and an ARM resource ID — no keys, no secrets.
+  - Resolved Speech ARM ID (live): `/subscriptions/bb4b2781-6739-4fa1-994e-4ad6ce55c59c/resourceGroups/rg-callcentertranscribe-swc-mx01/providers/Microsoft.CognitiveServices/accounts/speech-cctrans-kdarok`
+  - These unblock managed-identity Speech auth: the consumer's startup guard requires `Speech:Region` to be non-empty, and `Speech:ResourceId` is required to format the AAD token as `aad#{resourceId}#{token}` for a custom-subdomain Speech resource.
+  - Consumer config keys confirmed (READ-ONLY review of `SpeechTranscriptionService.cs`): `Speech:Endpoint` / `Speech:Region` / `Speech:ResourceId` — map exactly to env vars `Speech__Endpoint` / `Speech__Region` / `Speech__ResourceId`.
+  - `az bicep build infra/main.bicep` → **0 errors, 0 warnings**.
+  - Updated deploy recipe (Step 6) in `meyrin-acs-eventgrid-and-deploy.md` with corrected flip command including both new Speech vars.
+
 - **2026-06-08T15:24:21.856-04:00 — Event Grid IncomingCall wiring, Speech RBAC verification, API/ACA deploy recipe:**
 
   **Event Grid System Topic + Subscription shape (added to `infra/main.bicep`):**
@@ -126,3 +135,25 @@ Updated infra/main.bicep to reflect corrected ACS RBAC role:
 Committed to main. Aligns with athrun's RBAC decision revision (role unavailable in directory, switched to available alternative).
 
 Next: Coordinate with Lacus on Event Grid + audio consumer design.
+
+## 2026-06-08T19:24:21Z — Orchestration Logs & Session Completion
+
+**Decisions committed to decisions.md:**
+1. `athrun-acs-go-live-signoff` — Architecture sign-off + 8-step go-live sequence + guardrails
+2. `athrun-go-live-build-review` — Gate review (REQUEST CHANGES: Speech__Region + Speech__ResourceId env vars) → FIXED by Meyrin
+3. `lacus-speech-consumer-built` — SpeechTranscriptionService consumer (commit 7426ebe)
+4. `meyrin-acs-eventgrid-and-deploy` — Event Grid Bicep + deploy recipe (commit 9f28cdd)
+5. `meyrin-speech-env-vars-fix` — Speech env vars added to ACA Bicep (commit 4decb78)
+
+**Orchestration logs created:**
+- `.squad/orchestration-log/2026-06-08T19-24-21Z-meyrin-1.md` (Event Grid + RBAC + deploy recipe)
+- `.squad/orchestration-log/2026-06-08T19-24-21Z-meyrin-2.md` (Speech env vars fix)
+
+**Session log created:**
+- `.squad/log/2026-06-08T19-24-21Z-acs-go-live-build.md` (PENDING: 6-step go-live sequence + fallback)
+
+**Inbox files merged & deleted:**
+- 6 inbox files merged into decisions.md (120583 → 131795 bytes)
+- `.squad/decisions/inbox/` cleared
+
+**All .squad/ files committed to git** (staged via surgical `git add` per policy).
