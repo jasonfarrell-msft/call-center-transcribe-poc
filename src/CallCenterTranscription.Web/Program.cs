@@ -16,6 +16,25 @@ if (!app.Environment.IsDevelopment())
     app.UseHsts();
 }
 
+// Force revalidation of HTML document responses to prevent stale UI after deploys.
+// The OnStarting callback checks Content-Type at response-flush time so static asset
+// responses (text/css, application/javascript, etc.) are not affected.
+app.Use(async (context, next) =>
+{
+    context.Response.OnStarting(() =>
+    {
+        var ct = context.Response.ContentType;
+        if (ct != null && ct.StartsWith("text/html", StringComparison.OrdinalIgnoreCase))
+        {
+            context.Response.Headers.CacheControl = "no-cache, no-store, must-revalidate";
+            context.Response.Headers.Pragma = "no-cache";
+            context.Response.Headers.Expires = "0";
+        }
+        return Task.CompletedTask;
+    });
+    await next();
+});
+
 app.UseRouting();
 
 app.UseAuthorization();

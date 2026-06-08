@@ -10,7 +10,20 @@
 
 ## Learnings
 
-(empty — append API contracts, ACS streaming notes, and key file paths here)
+- **2026-06-08T13:29:12.574-04:00 — /lib static-asset provisioning (libman) + HTML no-cache middleware:**
+
+  **How /lib is provisioned:**
+  - `libman.json` lives at `src/CallCenterTranscription.Web/libman.json`. Provider: `jsdelivr`. Four libraries pinned: `bootstrap@5.3.3`, `jquery@3.7.1`, `jquery-validation@1.21.0`, `jquery-validation-unobtrusive@4.0.0`. They restore into `wwwroot/lib/{name}/dist/…`.
+  - `dotnet-tools.json` at `.config/dotnet-tools.json` pins `microsoft.web.librarymanager.cli@3.0.71`.
+  - Deploy workflow (`deploy-frontend.yml`) runs `dotnet tool restore && dotnet tool run libman restore` (working-directory: `src/CallCenterTranscription.Web`) between the NuGet restore and `dotnet publish` steps. This means every CI build pulls fresh lib assets from jsdelivr, and `dotnet publish` includes them — no vendor blobs committed to git.
+  - KEY: `libman restore` must run BEFORE `dotnet publish`. The workflow step is a plain `run:` step; no new SHA-pinned action required.
+
+  **HTML no-cache middleware (Program.cs):**
+  - Added inline `app.Use` middleware placed AFTER the HSTS/exception-handler block and BEFORE `app.UseRouting()`.
+  - Uses `context.Response.OnStarting(…)` to check Content-Type at flush time. Only fires `Cache-Control: no-cache, no-store, must-revalidate` + `Pragma: no-cache` + `Expires: 0` when Content-Type starts with `"text/html"`.
+  - Static asset responses (served by `MapStaticAssets()` endpoint — Content-Type: text/css, application/javascript, etc.) are NOT affected; their `Cache-Control: public, max-age=…, immutable` fingerprint headers remain intact.
+  - Health check (`/healthz`, application/json) and any future non-HTML endpoints are also unaffected.
+  - Middleware order preserved: HSTS → html-no-cache → UseRouting → UseAuthorization → /healthz → MapStaticAssets → MapRazorPages.
 
 - **2026-06-08T12:05:43.410-04:00 — GitHub Actions Node20 → Node24 bump:**
   - **Workflows touched:** `deploy-frontend.yml` (all 5 flagged actions), plus `squad-heartbeat.yml`, `squad-issue-assign.yml`, `squad-triage.yml`, `sync-squad-labels.yml` (checkout only).

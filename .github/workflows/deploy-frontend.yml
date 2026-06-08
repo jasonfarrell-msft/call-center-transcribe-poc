@@ -44,6 +44,12 @@ jobs:
       - name: Restore web project
         run: dotnet restore ${{ env.WEB_PROJECT_PATH }}
 
+      - name: Restore client-side libraries (libman)
+        working-directory: src/CallCenterTranscription.Web
+        run: |
+          dotnet tool restore --verbosity minimal
+          dotnet tool run libman restore
+
       - name: Publish web project
         run: dotnet publish ${{ env.WEB_PROJECT_PATH }} --configuration Release --no-restore --output "${{ env.PUBLISH_PATH }}"
 
