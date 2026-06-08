@@ -54,3 +54,7 @@ Reviewed Lunamaria's token-based CSS rewrite + `data-speaker-role` addition in I
 ### 2026-06-08 — Mission Control screen-split review (Lunamaria)
 
 APPROVED. Two full-viewport screens with persistent nav bar. Flex layout fills remaining height correctly (`.rep-console` column flex, `.console-view` flex:1, `.screen-nav` flex-shrink:0). JS `setActiveView` correctly manages `hidden`+`aria-hidden` and `aria-current` on nav buttons. Selectors all resolve. WCAG AA contrast passes for nav text (`#e8f0fd` on `#0c1e4a`). No content removed, no secrets, no new external assets.
+
+### 2026-06-08 — Console 80/20 column layout review (Lunamaria)
+
+APPROVED. `grid-template-columns: 4fr 1fr` delivers the 80/20 split Jason asked for. Mission Control restyled from pill to dimmed text link with underline hover + border-bottom active. Height chain verified end-to-end (100dvh → flex → flex:1 grid → transcript-scroller overflow-y:auto). Body overflow:hidden prevents page scroll. JS untouched, all selectors resolve. WCAG AA contrast confirmed (≈5.88:1 for muted nav text). No content removed, no secrets.

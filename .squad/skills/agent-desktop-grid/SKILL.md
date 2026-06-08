@@ -196,32 +196,32 @@ function setActiveView(targetId, shouldFocusHeading) {
 .console-page-shell {
   display: flex;
   height: 100dvh;
-  padding: clamp(0.6rem, 1.2vw, 1.1rem);
+  padding: 0;
 }
 
 .rep-console {
   display: flex;
   flex-direction: column;
   flex: 1;
-  gap: 0.75rem;
+  gap: 0;
+  height: 100%;
   min-height: 0;
-  max-width: 1920px;
-  margin: 0 auto;
+  /* NO max-width, NO margin: auto */
 }
 
-/* Full-width call context bar */
+/* Full-width call context bar — must NOT flex-shrink */
 .console-header {
-  /* dark nav gradient = "live call" signal */
   background: linear-gradient(130deg, #0c1e4a 0%, #1a3380 100%);
   border-radius: 1rem;
   padding: 1rem 1.25rem;
-  flex-shrink: 0;
+  flex-shrink: 0;   /* ← critical: prevents header compression */
 }
 
-/* Two-column content area */
+/* Two-column content area — 80/20 focus split */
+/* Use 4fr 1fr, NOT fixed px — keeps ratio intact across all viewport widths */
 .console-columns {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 295px;
+  grid-template-columns: 4fr 1fr;   /* 80% transcript / 20% metadata */
   gap: 1rem;
   flex: 1;
   min-height: 0;
@@ -244,12 +244,40 @@ function setActiveView(targetId, shouldFocusHeading) {
   scroll-behavior: smooth;
 }
 
-/* Assist rail */
+/* Metadata rail — scrollable so stacked panels work */
 .console-side-column {
   display: flex;
   flex-direction: column;
   min-height: 0;
-  overflow: hidden;
+  overflow-y: auto;   /* ← scrolls when knowledge cards / churn / next-step stacks */
+  gap: 0.75rem;
+}
+```
+
+**Critical height-chain rule:** The representative view must have `overflow: hidden` to prevent page scroll bleed-through:
+
+```css
+.console-view--representative {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;   /* ← without this, inner flex children can force page scroll */
+  padding: clamp(0.6rem, 1.2vw, 1.1rem);
+}
+```
+
+### Responsive Breakpoints
+
+```css
+/* Keep 80/20 at all desktop/tablet sizes */
+@media (max-width: 991.98px) {
+  .console-columns { grid-template-columns: 4fr 1fr; }
+}
+
+/* Mobile: slightly wider metadata column for readability */
+@media (max-width: 767.98px) {
+  .console-columns { grid-template-columns: 3fr 1fr; }
 }
 ```
 
@@ -329,11 +357,18 @@ Add a `data-speaker-role` attribute to each transcript item in server-rendered H
 4. **Sentiment score must be unmissable** — `font-size: clamp(2.4rem, 5.5vw, 3.6rem)` minimum; it's the single most actionable live metric.
 5. **`prefers-reduced-motion` guard** on all animations — accessibility non-negotiable.
 6. **No external CDN dependencies** — system font stack, inline SVG or Unicode for icons.
+7. **80/20 split, not fixed px** — use `grid-template-columns: 4fr 1fr`, never a fixed `295px` sidebar. Fixed px breaks the ratio at every viewport size.
+8. **Transcript column is the focus** — 80% width, full remaining height, scrolls internally. Nothing else competes with it.
+9. **Metadata rail stacks, not fights** — side column is `overflow-y: auto` + `gap`; panels have natural content height (no `height: 100%`), ready for future additions.
 
 ---
 
 ## Gotchas
 
-- `.console-side-column` should be `display: flex; flex-direction: column; min-height: 0` — the card inside fills the column, not the wrapper.
+- `.console-side-column` should be `display: flex; flex-direction: column; min-height: 0; overflow-y: auto; gap: …` — the cards inside take natural content height and stack; the column scrolls when overflowed.
+- **Do NOT use `height: 100%` on stacked cards in the side column** — it fights the flex layout and prevents future panels from being added below.
+- **`overflow: hidden` on `.console-view--representative` is required** — without it, inner flex children can bleed out and force the page body to scroll.
+- **`flex-shrink: 0` on `.console-header`** — without it, the dark header bar can be crushed when columns need all available height.
 - `data-console-refresh-region` attributes are JS hooks for DOM-swap refresh — never rename them without updating `site.js`.
 - `aria-live="polite"` on the transcript scroller is required for screen readers.
+- **Mission Control nav button stays a `<button>`, not an `<a>`** — the JS click handler uses `target.closest("[data-console-nav-toggle='true']")` which works on any element. Switching to `<a>` would require `event.preventDefault()` in site.js.
