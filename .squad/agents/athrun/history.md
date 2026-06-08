@@ -62,3 +62,11 @@ APPROVED. `grid-template-columns: 4fr 1fr` delivers the 80/20 split Jason asked 
 ### 2026-06-08 — GitHub Actions Node20→Node24 bump review (Meyrin)
 
 APPROVED. Meyrin bumped 5 actions (checkout v5, setup-dotnet v5, upload-artifact v7, download-artifact v8, azure/login v3) across all 5 workflows to Node24-compatible releases with full 40-char SHA pins. All SHAs independently verified against upstream repos. No logic drift — only `uses:` lines changed. Non-blocking follow-up: `actions/github-script@v7` remains floating-tagged in 6 squad-workflow locations (pre-existing, not in scope of this change).
+
+### 2026-06-08 — Mission Control separate-page review (Lunamaria)
+
+REQUEST CHANGES. Architecture is sound (real Razor Page, tag helpers resolve, content correctly moved, Index console-only, build clean). **Blocker:** site.js click handler references `translationButton` without declaring it — the `const translationButton = target.closest(...)` line was accidentally deleted during nav-toggle removal. Throws ReferenceError on every click, breaking translation toggles. Minor: switch-case indentation misaligned. Fix assigned to Meyrin per reviewer gate policy.
+
+### 2026-06-08 — Mission Control separate-page RE-GATE (Meyrin regression fix)
+
+APPROVED. Meyrin fixed the `translationButton` ReferenceError (restored missing const declaration) and realigned `case "transcript-scroller":` indentation in `restoreFocus`. Both fixes verified; `node --check` clean, build 0 errors. No regressions. Gate APPROVE.

@@ -697,3 +697,122 @@ Second-pass devil's-advocate review agreed with that call: the missing items are
   4. **NO LOGIC DRIFT** ✅ — Only `uses:` lines changed; no trigger, permissions, env, step, or with-arg modifications.
 - **Non-blocking follow-ups:** `actions/github-script@v7` floating in 6 squad workflow locations (pre-existing, supply-chain hygiene follow-up); `azure/webapps-deploy@v3` monitor for Node24 release.
 - **Source:** `.squad/decisions/inbox/athrun-actions-node24-review.md`
+
+# 2026-06-08T12:58:45.624-04:00 — Decision: Mission Control Promoted to Separate Razor Page
+
+**Author:** Lunamaria (Frontend Dev)  
+**Requested by:** Jason  
+**Status:** Implemented
+
+---
+
+## Context
+
+Mission Control was previously an in-page hidden `<section>` inside `Index.cshtml`, toggled visible by a JavaScript `setActiveView` function when the user clicked a "Mission Control →" nav button. Jason confirmed the layout looked good but requested that Mission Control become a proper separate page rather than an in-page toggle.
+
+---
+
+## Decision
+
+Promote Mission Control from a JS-toggled hidden section to a real Razor Page at `/MissionControl`.
+
+---
+
+## Rationale
+
+- **Real navigation > in-page toggle:** Browser back/forward work naturally. The URL is bookmarkable. Supervisor staff can link directly to Mission Control.
+- **Cleaner code separation:** Each page owns its own data fetching (Index fetches transcript/sentiment/session; MissionControl fetches only `GetMissionControlHealthAsync`). No single page model carries both concerns.
+- **Simpler JS:** The entire `setActiveView` / `getConsoleViews` / nav-toggle click-handler block is dead weight once navigation is real routes. Removing it reduces JS surface area and eliminates a class of potential bugs.
+- **No added complexity:** Razor Pages tag helper `asp-page` does all routing. Zero new middleware, zero new JS.
+
+---
+
+## Implementation
+
+### Files created
+- `src/CallCenterTranscription.Web/Pages/MissionControl.cshtml` — view with same full-viewport shell (`console-page-shell` / `console-body` / `console-main` / `rep-console`), the Mission Control content verbatim, and a `← Agent Console` back-link.
+- `src/CallCenterTranscription.Web/Pages/MissionControl.cshtml.cs` — `MissionControlModel` PageModel; calls only `GetMissionControlHealthAsync`; includes own `ToDisplayLabel` static to avoid cross-model view dependencies.
+
+### Files modified
+- **`Index.cshtml`:** Removed `<section id="mission-control-view">` and all its content. Replaced the two `<button data-console-nav-toggle>` pills with `<span aria-current="page">Agent Console</span>` + `<a asp-page="/MissionControl">Mission Control →</a>`.
+- **`site.js`:** Removed `consoleViewSelector`, `consoleNavToggleSelector`, `getConsoleViews()`, `setActiveView()`, nav-toggle case in `getFocusRestoreKey`, `case "nav-toggle"` in `restoreFocus`, and the nav-toggle block in the global click handler. All transcript/sentiment/refresh/translation logic is intact and unchanged.
+- **`site.css`:** Added `text-decoration: none` to `.screen-nav-btn` so `<a>` elements styled with that class don't show the default browser underline.
+
+### Cross-link pattern
+```html
+<!-- Index.cshtml nav -->
+<span class="screen-nav-btn" aria-current="page">Agent Console</span>
+<a asp-page="/MissionControl" class="screen-nav-btn">Mission Control →</a>
+
+<!-- MissionControl.cshtml nav -->
+<a asp-page="/Index" class="screen-nav-btn">← Agent Console</a>
+<span class="screen-nav-btn" aria-current="page">Mission Control</span>
+```
+
+### JS selectors preserved on Agent Console
+| Selector | Purpose |
+|---|---|
+| `[data-console-refresh-root='true']` | Drives 4s DOM-swap refresh loop |
+| `[data-console-refresh-region]` | `header` + `columns` regions swapped on refresh |
+| `[data-transcript-scroll='true']` | Auto-scroll + state capture/restore |
+| `[data-translation-toggle='true']` | Per-utterance translation reveal |
+| `.translation-panel` | Expand/collapse target |
+| `.mission-control-scroller` | Scroll-state capture (no-ops gracefully on Index) |
+
+---
+
+## Trade-offs / Rejected alternatives
+
+- **Keep in-page toggle but use `<a>` with `event.preventDefault()`:** Rejected — adds JS complexity for zero benefit. Real routes are the right tool.
+- **Add `data-console-refresh-root` to MissionControl page for auto-refresh:** Deferred — not requested. The page renders fresh data on each navigation. Can be added later as a simple attribute + the existing refresh loop handles it automatically.
+- **Move `ToDisplayLabel` to a shared utility:** Reasonable refactor but out of scope for this task. Both IndexModel and MissionControlModel have their own copy; they're identical static functions. Can be extracted to a `DisplayHelpers` static class in a future cleanup pass.
+
+---
+
+## Build result
+
+`dotnet build src/CallCenterTranscription.Web/CallCenterTranscription.Web.csproj -c Release --nologo` → **Build succeeded in 9.1s. 0 errors, 0 warnings.**
+
+---
+
+# 2026-06-08T12:58:45.624-04:00 — Review: Mission Control Separate Page
+
+**Reviewer:** Athrun (Lead/Architect)  
+**Author:** Lunamaria  
+**Verdict:** REQUEST CHANGES  
+
+---
+
+## Critical Issue
+
+**`site.js` line 275 — `translationButton` is undeclared (ReferenceError on every click).**
+
+The nav-toggle removal accidentally also deleted the `const translationButton = target.closest(translationToggleSelector);` line. The surviving reference to `translationButton` in the click handler now throws `ReferenceError` on every click event on BOTH pages. This completely breaks translation toggles on the Agent Console and spams console errors on MissionControl.
+
+## Minor Issue
+
+**`site.js` line 101 — `case "transcript-scroller":` indentation is wrong** (shifted 8 spaces left vs. sibling cases after the nav-toggle case deletion). Cosmetic but should be fixed in the same pass.
+
+## Passes
+
+- ✓ MissionControl.cshtml is a real Razor Page (`@page`, `@model`, correct namespace)
+- ✓ Content moved (not duplicated); Index is console-only
+- ✓ Cross-links via `asp-page`; `_ViewImports` registers tag helpers → links resolve
+- ✓ Build 0 errors, 0 warnings
+- ✓ JS refresh loop early-exits cleanly on MissionControl (no `data-console-refresh-root`)
+- ✓ No secrets, no new external assets
+- ✓ `aria-live` on transcript preserved; no AA contrast regression
+- ✓ PageModel namespace matches project convention
+
+## Disposition
+
+Assign fix to **Meyrin** (not Lunamaria — reviewer gate policy). Fix is surgical: restore the missing `const translationButton = target.closest(translationToggleSelector);` line and realign the switch case indentation.
+
+**2026-06-08T12:58:45.624-04:00** — RE-GATE ✓ APPROVED: All fixes verified. Meyrin corrected both blocking issues. No new issues. `node --check` clean, build 0 errors.
+
+---
+
+# 2026-06-08T12:58:45.624-04:00 — Meyrin: site.js regression fix
+
+**Status:** COMPLETED  
+**What:** Restored the missing `const translationButton = target.closest(translationToggleSelector);` declaration before its `if (isHtmlElement(translationButton))` guard in the click handler (fixing the ReferenceError introduced when Lunamaria removed nav-toggle code), and re-aligned `case "transcript-scroller":` to match sibling case indentation in `restoreFocus`; `node --check` and `dotnet build` both pass clean.
