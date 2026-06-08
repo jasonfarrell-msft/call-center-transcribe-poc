@@ -649,8 +649,3 @@ As a **deployment readiness** checkpoint, this stays **REJECT** until the missin
 Second-pass devil's-advocate review agreed with that call: the missing items are core acceptance criteria, not cleanup.
 
 
-## Governance
-
-- All meaningful changes require team consensus
-- Document architectural decisions here
-- Keep history focused on work, decisions focused on direction
