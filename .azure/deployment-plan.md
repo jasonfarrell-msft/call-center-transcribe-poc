@@ -6,6 +6,88 @@ Generated: 2026-06-06T16:39:17-04:00
 
 ---
 
+## Current Change Request: [010] API Deployment + Observability Baseline (ACA + App Service)
+
+**Requested:** 2026-06-08T02:13:53Z
+
+**Status:** Baseline defined and ready for implementation.
+
+### Current Runtime State (Source of Truth)
+
+- Frontend deploy path is live via GitHub Actions workflow `.github/workflows/deploy-frontend.yml` (OIDC to Azure App Service).
+- API infrastructure is provisioned in ACA but still defaults to placeholder image (`infra/main.bicep` + `infra/main.parameters.json`: `apiContainerImage=mcr.microsoft.com/azuredocs/containerapps-helloworld:latest`).
+- ACA API probes remain intentionally disabled (`enableApiHealthProbes=false`) until the first real API image deployment is complete and verified.
+
+### Target GitHub Deployment Shape for API (Build -> ACR -> ACA)
+
+| Stage | GitHub Actions job intent | Azure access model | Output / gate |
+|------|----------------------------|--------------------|---------------|
+| Trigger | Run on `main` changes under `src/CallCenterTranscription.Api/**`, shared contracts, infra/workflow files, plus `workflow_dispatch` | N/A | Deterministic API-only deploy signal |
+| Build + package | `dotnet restore`, `dotnet publish`, then container image build from `src/CallCenterTranscription.Api/Dockerfile` | N/A | Build artifact + image metadata |
+| Azure login | `azure/login` with `id-token: write` | GitHub OIDC federation (no client secret) | Federated Azure session |
+| Push image | Push tagged API image (`<acr-login-server>/api:<tag>`) to ACR | Managed-identity-friendly Azure RBAC; no ACR admin creds | Immutable image tag published |
+| Deploy revision | Update ACA container image reference to published ACR tag and keep ACR registry binding on ACR-pull UAMI | Existing split identity model (UAMI for AcrPull, system MI for runtime services) | New ACA revision created |
+| Runtime verify | Verify API `/healthz`, mission control API, and web-to-api connectivity | Read-only Azure CLI + HTTP checks | Deploy marked complete only when health gates pass |
+
+### Required Runtime Configuration and Ownership (No Secrets in Source)
+
+| App | Setting | Owner | Requirement |
+|-----|---------|-------|-------------|
+| API | `Security__RequireAuth` | App/API owner | Keep `false` for current POC path; only set `true` with explicit auth wiring rollout |
+| API | `Speech__Endpoint` | Infra owner | Endpoint only (no key in code/config) |
+| API | `Speech__CandidateLanguages` | App/API owner | Candidate list tuned for expected calls |
+| API | `Translator__Endpoint` | Infra owner | Endpoint only (no key in code/config) |
+| API | `Foundry__Endpoint` | Infra owner | Endpoint only (no key in code/config) |
+| API | `Foundry__DeploymentName` | App/API owner | Points to approved deployed model name |
+| API | `Acs__Endpoint` | Infra owner | Endpoint only; live callback/media remains deferred until validated |
+| API + Web | `APPLICATIONINSIGHTS_CONNECTION_STRING` | Infra owner | Workspace-based App Insights wiring managed in infra; never committed as plaintext in source files |
+| Web | `BackendApi__BaseUrl` | Infra + Web owner | Must point to active ACA API ingress URL |
+| ACA infra | `apiContainerImage` | Release owner | Must be real ACR-hosted API image tag for live API deployment |
+| ACA infra | `enableApiHealthProbes` | Release owner | Must remain `false` until probe enablement checklist is complete |
+
+### Minimum Observability Baseline
+
+| Surface | Minimum telemetry/health requirement | Mission Control expectation |
+|---------|--------------------------------------|-----------------------------|
+| Web (App Service) | `/healthz` HTTP 200 and App Service health check configured | Component reported as `healthy/live` only when endpoint is passing |
+| API (ACA) | `/healthz` HTTP 200 from deployed API revision | `backend-api` is `healthy/live` only after real image deploy is verified |
+| SignalR readiness | Hub route `/hubs/pipeline` reachable + negotiate path available | `signalr-stream` `healthy/live` when route registration and negotiate path checks pass |
+| ACS readiness | Incoming call callback + media websocket routes implemented and externally reachable | `acs-media-routes` remains `deferred/not-live-ready` until callback/media validation is complete |
+| AI mode (Speech/Translator/Foundry) | Explicitly indicate whether live service calls or deterministic mock feed are active | Components must report `mock` or `deferred` when not live-validated |
+
+### Mission Control Source-of-Truth Contract
+
+- Source endpoint: `GET /api/mission-control/health` from API (`src/CallCenterTranscription.Api/Program.cs`).
+- Contract model: `MissionControlHealthResponse` and `MissionControlComponentHealth` (`src/CallCenterTranscription.Shared/Events/MissionControlHealthResponse.cs`).
+- Component status semantics:
+  - `healthy` / `live`: deployed and verified against runtime checks.
+  - `mock`: intentionally demo-safe data path, not a live Azure dependency proof.
+  - `deferred`: not yet implemented/validated for live operation.
+- Canonical component IDs at minimum: `frontend-web`, `backend-api`, `signalr-stream`, `azure-ai-speech`, `azure-ai-translator`, `acs-media-routes`, plus `mock-feed` when deterministic playback is active.
+
+### API Health Probe Enablement Criteria (Explicit Gate)
+
+Turn on ACA probes (`enableApiHealthProbes=true`) **only after all conditions below are true**:
+
+1. API GitHub workflow has published a real API image to ACR and deployed that image to ACA revision.
+2. ACA ingress responds successfully for the deployed API `/healthz` endpoint across repeated checks.
+3. Mission Control marks `backend-api` as `healthy/live` based on deployed runtime evidence (not placeholder behavior).
+4. Rollback path is documented (previous known-good image tag available).
+
+If any gate fails, keep probes disabled and remediate before retry.
+
+### Go / No-Go Checklist for First Real API Deployment
+
+- [ ] API workflow uses GitHub OIDC (`id-token: write`) and no client secret credentials.
+- [ ] API image tag is published to ACR and matches the revision deployed to ACA.
+- [ ] ACA registry binding still uses the dedicated ACR-pull UAMI (no username/password secret fallback).
+- [ ] Required API/Web runtime settings are present through environment/app settings only; no secrets added to source.
+- [ ] Web `/healthz`, API `/healthz`, and Mission Control endpoint checks pass.
+- [ ] Mission Control correctly shows live vs mock/deferred component states.
+- [ ] Probe enablement checklist is complete before toggling `enableApiHealthProbes=true`.
+
+---
+
 ## Current Change Request: Frontend Mission Control Update
 
 **Requested:** 2026-06-06T20:10:18.032-04:00
