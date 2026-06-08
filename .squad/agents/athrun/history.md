@@ -87,3 +87,32 @@ APPROVE TO BUILD. Signed off Dyakka's ACS assessment + Jason's Option C selectio
 6. **SDK:** `Azure.Communication.CallAutomation` (GA), `DefaultAzureCredential` auth. Zero connection strings.
 
 Key file: `.squad/decisions/inbox/athrun-acs-option-c-signoff.md`
+
+### 2026-06-08 — ACS RBAC Role Correction (Self-Revision)
+
+**Trigger:** Deploy-time failure — `az role assignment create` with GUID `2b4609a5-7812-4aba-b5e3-076e6a078419` ("Communication Services Contributor") returns `RoleDefinitionDoesNotExist`. The role does not exist in this directory/subscription.
+
+**Findings:**
+1. `az role definition list --query "[?contains(roleName, 'Communication')]"` returns exactly ONE built-in role: **"Communication and Email Service Owner"** (`09976791-48a7-449e-bb21-39d1a415f350`).
+2. That role grants management-plane actions on Communication and Email services (read/write/delete/ListKeys/RegenerateKey/EventGridFilters) but has an empty `dataActions` array. It is the only available built-in role for ACS in this directory.
+3. The Bicep at `infra/main.bicep` line 86–88 hardcodes the non-existent GUID — a latent defect that would cause `azd provision` to fail on any fresh deployment.
+
+**Corrected decision:** Use `09976791-48a7-449e-bb21-39d1a415f350` ("Communication and Email Service Owner") in place of the non-existent `2b4609a5-...`. Same scope (ACS resource only) and same principal (ACA system MI). Residual risk is slightly broader (includes Email Service management actions and ListKeys/RegenerateKey) but acceptable for POC: resource-scoped, system-assigned MI only, no external exposure, AudioSource__Mode is currently Mock.
+
+**Lesson:** Always verify role definition GUIDs against the TARGET subscription/directory before committing to IaC. Built-in role catalogs vary by subscription type and region availability. "Communication Services Contributor" does not exist as a built-in role (it may be documentation-only or preview-removed).
+
+## 2026-06-08 — RBAC Decision Revision
+**Status:** COMPLETED & DOCUMENTED
+
+Discovered that the original RBAC role choice ("Communication Services Contributor" GUID 2b4609a5-7812-4aba-b5e3-076e6a078419) does not exist in this Azure directory. Revised decision:
+
+- **Corrected Role:** Communication and Email Service Owner (09976791-48a7-449e-bb21-39d1a415f350)
+- **Rationale:** Only available built-in ACS role; broader than ideal but POC-acceptable
+- **Scope:** Resource-scoped to ACS; applied to ACA system MI
+- **Sign-off:** Supersedes Option C role decision
+
+Decision documented in:
+- decisions.md (merged from inbox/athrun-acs-rbac-correction.md)
+- orchestration-log/20260608T190537Z-athrun-rbac-correction.md
+
+Next phase: Event Grid + audio consumer (Lacus + Meyrin).

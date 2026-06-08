@@ -10,6 +10,20 @@
 
 ## Learnings
 
+- **2026-06-08T15:05:37-04:00 — ACS RBAC role GUID correction (infra/main.bicep):**
+  - **Problem:** The variable `communicationServicesContributorRoleDefinitionId` referenced GUID `2b4609a5-7812-4aba-b5e3-076e6a078419` ("Communication Services Contributor"), which does not exist in the target directory (`TSJasonFarrell-Sub`). A future `azd provision` would have failed with `RoleDefinitionDoesNotExist`.
+  - **Fix — Location 1 (line ~82–89, variable definition):** Renamed var to `communicationServiceOwnerRoleDefinitionId`; updated GUID to `09976791-48a7-449e-bb21-39d1a415f350`; updated comment to reflect "Communication and Email Service Owner" (only available Communication built-in role in this directory; broader than ideal but resource-scoped, POC-acceptable; reassess if Microsoft ships a narrower ACS data-plane role).
+  - **Fix — Location 2 (line ~460, role assignment params):** Updated `roleDefinitionId` reference from `communicationServicesContributorRoleDefinitionId` → `communicationServiceOwnerRoleDefinitionId`. Scope, principal, guid() naming, and principalType all unchanged.
+  - **Verification:** `grep` confirms old GUID/var absent and new GUID/var present in both spots. `az bicep build --file infra/main.bicep` → 0 errors, 0 warnings.
+  - **Impact:** Unblocks future `azd provision` — the role assignment will now resolve successfully against the subscription's actual role catalog.
+
+- **2026-06-08T14:49:06.749-04:00 — ACS dataLocation flipped Europe → United States:**
+  - **Authoritative value lives in two places:** param default in `infra/main.bicep` (line ~13) AND the `communicationDataLocation.value` in `infra/main.parameters.json`. The parameters file is what actually wins at `azd provision` time — both must be updated together.
+  - **`dataLocation` is IMMUTABLE** — ARM rejects in-place updates. Switching regions requires manually deleting the existing ACS resource before running `azd provision`. Now is the safe time (no number purchased, no Event Grid wired, no data at risk).
+  - **RBAC unaffected:** `apiToAcsRoleAssignment` uses `guid(communicationServicesAccount.id, principalId, roleDefinitionId)` — deterministic name re-computed against the new resource id on reprovision. Role assignment re-applies automatically in the same provision run.
+  - **Env var unaffected:** `AudioSource__Mode = 'Mock'` stays; flip to `'Acs'` deferred until phone number + Event Grid are wired.
+  - **Operator steps (Jason runs):** delete existing ACS resource → `azd provision` → portal acquire US toll-free → (next round) Event Grid + Entra delivery auth → flip `AudioSource__Mode=Acs`.
+
 - **2026-06-08T13:29:12.574-04:00 — /lib static-asset provisioning (libman) + HTML no-cache middleware:**
 
   **How /lib is provisioned:**
@@ -69,3 +83,18 @@
 
   **Bicep build:** `az bicep build infra/main.bicep` — **0 errors, 0 warnings**.
  Lunamaria's nav-toggle removal accidentally deleted the `const translationButton` declaration in site.js click handler, causing ReferenceError on every translation toggle click. Fixed by restoring the missing const line and realigning `case "transcript-scroller":` indentation in `restoreFocus`. Both `node --check` and `dotnet build` pass clean. Approved on Athrun re-gate.
+
+## 2026-06-08 — Bicep ACS RBAC GUID Fix
+**Status:** COMPLETED & COMMITTED
+
+Updated infra/main.bicep to reflect corrected ACS RBAC role:
+
+**Changes:**
+- Renamed var: `communicationServicesContributorRoleDefinitionId` → `communicationServiceOwnerRoleDefinitionId`
+- Updated GUID: `2b4609a5-7812-4aba-b5e3-076e6a078419` → `09976791-48a7-449e-bb21-39d1a415f350`
+- Updated references & comments to match corrected role name
+- bicep build validation: 0 errors
+
+Committed to main. Aligns with athrun's RBAC decision revision (role unavailable in directory, switched to available alternative).
+
+Next: Coordinate with Lacus on Event Grid + audio consumer design.
