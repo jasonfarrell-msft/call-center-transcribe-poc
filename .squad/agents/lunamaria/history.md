@@ -10,7 +10,27 @@
 
 ## Learnings
 
-(empty — append component patterns, streaming approach, and key file paths here)
+(append component patterns, streaming approach, and key file paths here)
+
+- **2026-06-08 — Dashboard visual redesign:**
+  - **Layout architecture:** Two-zone grid (`minmax(0,1fr) 295px`) inside a flex-column rep-console. Dark navy header card (call-context bar, `linear-gradient(130deg, #0c1e4a, #1a3380)`) sits above the columns as its own flex item. Sentiment panel is a `card-shell` that fills the right column naturally — no `border-left` separator needed.
+  - **Design tokens:** CSS custom properties on `:root` — prefix `--cc-` for colors/text/semantic, `--s1…s6` for spacing, `--r/r-sm/r-lg` for radius, `--sh-sm/sh/sh-lg` for elevation. Token names: `--cc-bg`, `--cc-surface`, `--cc-surface-2`, `--cc-border`, `--cc-border-strong`, `--cc-text-primary/secondary/muted`, `--cc-accent/accent-hover/accent-light`, `--cc-ok/warn/danger` with `-light/-text` variants, `--cc-hdr-from/to/text/muted/tile-bg/tile-border`.
+  - **Speaker turn differentiation:** Added `data-speaker-role="@item.SpeakerRoleLabel.ToLowerInvariant()"` to each `<li class="transcript-item">` in `Index.cshtml`. CSS uses `[data-speaker-role="agent"]` (green left accent `#059669`, `#f0fdf4` bg) and `[data-speaker-role="customer"]` (blue left accent `#2563eb`, `#eff6ff` bg). Heading color also changes per role.
+  - **Live pulse dot:** `.console-status::before` pseudo-element with `@keyframes cc-live-pulse` (opacity + scale oscillation, 2.2s, respects `prefers-reduced-motion`).
+  - **Key JS selectors that must be preserved:**
+    - `[data-console-refresh-root='true']` — `.rep-console` root div
+    - `[data-console-refresh-region]` — values: `header`, `columns`, `mission`
+    - `[data-console-nav-view='true']` — `#representative-view`, `#mission-control-view`
+    - `[data-console-nav-toggle='true']` — Mission / Back buttons
+    - `[data-translation-toggle='true']` — translation expand/collapse
+    - `[data-transcript-scroll='true']` — `.transcript-scroller`
+    - `.mission-control-scroller` — JS scroll-state restore
+    - `.translation-panel` — JS expand/collapse toggle
+  - **Key file paths:**
+    - `src/CallCenterTranscription.Web/Pages/Index.cshtml`
+    - `src/CallCenterTranscription.Web/wwwroot/css/site.css`
+    - `src/CallCenterTranscription.Web/wwwroot/js/site.js` (unchanged)
+    - `src/CallCenterTranscription.Web/Pages/Shared/_Layout.cshtml` (unchanged)
 
 - **Team update:** POC plan drafted; shared WebSocket event contracts cover `transcript`, `translation`, `sentiment`, `churn_risk`, `knowledge_cards`, and `next_best_action`; real-time loop uses GPT-4o, with MAI-DS-R1 reserved for optional post-call analysis.
 - **Translation UX (2026-06-05):** Recommended Option C (auto-translate inline + language badge + toggle to show original). Stronger demo beat, zero rep friction. Needs `detectedLanguage` field added to `transcript` event. Settings toggle deferred post-POC.
