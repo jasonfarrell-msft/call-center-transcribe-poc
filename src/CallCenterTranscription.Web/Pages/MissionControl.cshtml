@@ -1,0 +1,85 @@
+@page
+@model MissionControlModel
+@{
+    ViewData["Title"] = "Mission Control";
+    ViewData["MainContainerClass"] = "console-page-shell";
+    ViewData["BodyClass"] = "console-body";
+    ViewData["MainClass"] = "console-main";
+    ViewData["HideSiteChrome"] = true;
+}
+
+<div class="rep-console">
+    <h1 class="visually-hidden">Mission Control</h1>
+
+    <nav class="screen-nav" aria-label="Console navigation">
+        <a asp-page="/Index" class="screen-nav-btn">← Agent Console</a>
+        <span class="screen-nav-sep" aria-hidden="true">|</span>
+        <span class="screen-nav-btn" aria-current="page">Mission Control</span>
+    </nav>
+
+    <section class="console-view console-view--mission"
+             aria-labelledby="mission-control-heading">
+        <section class="card-shell mission-control-panel">
+            <div class="mission-control-header">
+                <div>
+                    <p class="console-eyebrow">Mission</p>
+                    <h2 id="mission-control-heading" tabindex="-1">Mission Control</h2>
+                    <span class="visually-hidden">Mission Control health</span>
+                </div>
+            </div>
+
+            @if (!string.IsNullOrWhiteSpace(Model.MissionControlWarning))
+            {
+                <p class="console-empty-state">@Model.MissionControlWarning</p>
+            }
+            else
+            {
+                <div class="mission-control-summary">
+                    <div>
+                        <span>Overall</span>
+                        <strong>@MissionControlModel.ToDisplayLabel(Model.MissionControlHealth.OverallStatus)</strong>
+                    </div>
+                    <div>
+                        <span>Mode</span>
+                        <strong>@(Model.MissionControlHealth.IsMockFeedActive ? "Mock feed active" : "Live feed active")</strong>
+                    </div>
+                    <div>
+                        <span>Checked</span>
+                        <strong>@Model.MissionControlHealth.GeneratedAtUtc.ToLocalTime().ToString("h:mm tt")</strong>
+                    </div>
+                </div>
+
+                @if (!string.IsNullOrWhiteSpace(Model.MissionControlHealth.Summary))
+                {
+                    <p class="panel-copy mission-control-copy">@Model.MissionControlHealth.Summary</p>
+                }
+
+                @if (Model.MissionControlHealth.Components.Count == 0)
+                {
+                    <p class="console-empty-state">No mission control components reported yet.</p>
+                }
+                else
+                {
+                    <div class="mission-control-scroller" tabindex="0" aria-label="Mission Control components">
+                        <ul class="mission-control-grid">
+                            @foreach (var component in Model.MissionControlHealth.Components)
+                            {
+                                <li>
+                                    <article class="mission-component-card">
+                                        <div class="mission-component-topline">
+                                            <h3>@component.DisplayName</h3>
+                                            <span>@MissionControlModel.ToDisplayLabel(component.Status)</span>
+                                        </div>
+                                        <p><strong>Mode:</strong> @(component.IsLive ? "Live" : "Mock/Deferred")</p>
+                                        <p><strong>Readiness:</strong> @MissionControlModel.ToDisplayLabel(component.Readiness)</p>
+                                        <p class="mb-0">@component.Evidence</p>
+                                    </article>
+                                </li>
+                            }
+                        </ul>
+                    </div>
+                }
+            }
+        </section>
+    </section>
+</div>

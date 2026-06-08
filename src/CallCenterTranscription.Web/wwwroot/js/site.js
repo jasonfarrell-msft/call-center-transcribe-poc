@@ -4,8 +4,6 @@
 (() => {
     const consoleRefreshRootSelector = "[data-console-refresh-root='true']";
     const consoleRefreshRegionSelector = "[data-console-refresh-region]";
-    const consoleViewSelector = "[data-console-nav-view='true']";
-    const consoleNavToggleSelector = "[data-console-nav-toggle='true']";
     const translationToggleSelector = "[data-translation-toggle='true']";
     const transcriptScrollerSelector = "[data-transcript-scroll='true']";
     const missionControlScrollerSelector = ".mission-control-scroller";
@@ -56,26 +54,6 @@
         setTranslationExpanded(button, panel, panel.hasAttribute("hidden"));
     }
 
-    function getConsoleViews() {
-        return Array.from(document.querySelectorAll(consoleViewSelector)).filter(isHtmlElement);
-    }
-
-    function setActiveView(targetId, shouldFocusHeading) {
-        getConsoleViews().forEach((view) => {
-            if (view.id === targetId) {
-                view.removeAttribute("hidden");
-                if (shouldFocusHeading) {
-                    const heading = view.querySelector("h2[tabindex='-1']");
-                    if (isHtmlElement(heading)) {
-                        heading.focus();
-                    }
-                }
-            } else {
-                view.setAttribute("hidden", "");
-            }
-        });
-    }
-
     function getFocusRestoreKey(root) {
         if (!(document.activeElement instanceof HTMLElement) || !root.contains(document.activeElement)) {
             return null;
@@ -87,13 +65,6 @@
             return {
                 type: "translation-toggle",
                 value: activeElement.getAttribute("data-translation-target")
-            };
-        }
-
-        if (activeElement.matches(consoleNavToggleSelector)) {
-            return {
-                type: "nav-toggle",
-                value: activeElement.getAttribute("data-console-nav-target")
             };
         }
 
@@ -125,11 +96,6 @@
             case "translation-toggle":
                 if (focusRestoreKey.value) {
                     target = root.querySelector(`${translationToggleSelector}[data-translation-target="${focusRestoreKey.value}"]`);
-                }
-                break;
-            case "nav-toggle":
-                if (focusRestoreKey.value) {
-                    target = root.querySelector(`${consoleNavToggleSelector}[data-console-nav-target="${focusRestoreKey.value}"]`);
                 }
                 break;
             case "transcript-scroller":
@@ -309,17 +275,6 @@
         const translationButton = target.closest(translationToggleSelector);
         if (isHtmlElement(translationButton)) {
             toggleTranslation(translationButton);
-            return;
-        }
-
-        const navButton = target.closest(consoleNavToggleSelector);
-        if (!isHtmlElement(navButton)) {
-            return;
-        }
-
-        const targetId = navButton.getAttribute("data-console-nav-target");
-        if (targetId) {
-            setActiveView(targetId, true);
         }
     });
 

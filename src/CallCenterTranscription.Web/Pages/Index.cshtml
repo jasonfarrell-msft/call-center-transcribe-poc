@@ -13,9 +13,13 @@
      data-console-refresh-interval-ms="4000">
     <h1 class="visually-hidden">Call-Center Representative Console</h1>
 
-    <section id="representative-view"
-             class="console-view console-view--representative"
-             data-console-nav-view="true"
+    <nav class="screen-nav" aria-label="Console navigation">
+        <span class="screen-nav-btn" aria-current="page">Agent Console</span>
+        <span class="screen-nav-sep" aria-hidden="true">|</span>
+        <a asp-page="/MissionControl" class="screen-nav-btn">Mission Control →</a>
+    </nav>
+
+    <section class="console-view console-view--representative"
              aria-labelledby="console-heading">
         <header class="card-shell console-header" data-console-refresh-region="header">
             <div class="console-header-top">
@@ -24,13 +28,6 @@
                     <h2 id="console-heading" tabindex="-1">@Model.RepresentativeDisplayName</h2>
                     <p class="console-status" role="status" aria-live="polite">@Model.ConnectionSummary</p>
                 </div>
-                <button type="button"
-                        class="btn btn-link console-mission-link"
-                        data-console-nav-toggle="true"
-                        data-console-nav-target="mission-control-view"
-                        aria-controls="mission-control-view">
-                    Mission
-                </button>
             </div>
 
             @if (Model.HasConnectionIssues)
@@ -99,7 +96,7 @@
                                     : $"turn {item.Sequence}";
                                 var showTranslationLabel = $"Show English translation for {translationContext}";
                                 var hideTranslationLabel = $"Hide English translation for {translationContext}";
-                                <li class="transcript-item">
+                                <li class="transcript-item" data-speaker-role="@item.SpeakerRoleLabel.ToLowerInvariant()">
                                     <article aria-labelledby="turn-@item.Sequence">
                                         <div class="transcript-topline">
                                             <div class="transcript-speaker-block">
@@ -225,81 +222,5 @@
                 </section>
             </aside>
         </div>
-    </section>
-
-    <section id="mission-control-view"
-             class="console-view console-view--mission"
-             data-console-nav-view="true"
-             aria-labelledby="mission-control-heading"
-             hidden>
-        <section class="card-shell mission-control-panel" data-console-refresh-region="mission">
-            <div class="mission-control-header">
-                <div>
-                    <p class="console-eyebrow">Mission</p>
-                    <h2 id="mission-control-heading" tabindex="-1">Mission Control</h2>
-                    <span class="visually-hidden">Mission Control health</span>
-                </div>
-                <button type="button"
-                        class="btn btn-link console-mission-link"
-                        data-console-nav-toggle="true"
-                        data-console-nav-target="representative-view"
-                        aria-controls="representative-view">
-                    Back to console
-                </button>
-            </div>
-
-            @if (!string.IsNullOrWhiteSpace(Model.MissionControlWarning))
-            {
-                <p class="console-empty-state">@Model.MissionControlWarning</p>
-            }
-            else
-            {
-                <div class="mission-control-summary">
-                    <div>
-                        <span>Overall</span>
-                        <strong>@IndexModel.ToDisplayLabel(Model.MissionControlHealth.OverallStatus)</strong>
-                    </div>
-                    <div>
-                        <span>Mode</span>
-                        <strong>@(Model.MissionControlHealth.IsMockFeedActive ? "Mock feed active" : "Live feed active")</strong>
-                    </div>
-                    <div>
-                        <span>Checked</span>
-                        <strong>@Model.MissionControlHealth.GeneratedAtUtc.ToLocalTime().ToString("h:mm tt")</strong>
-                    </div>
-                </div>
-
-                @if (!string.IsNullOrWhiteSpace(Model.MissionControlHealth.Summary))
-                {
-                    <p class="panel-copy mission-control-copy">@Model.MissionControlHealth.Summary</p>
-                }
-
-                @if (Model.MissionControlHealth.Components.Count == 0)
-                {
-                    <p class="console-empty-state">No mission control components reported yet.</p>
-                }
-                else
-                {
-                    <div class="mission-control-scroller" tabindex="0" aria-label="Mission Control components">
-                        <ul class="mission-control-grid">
-                            @foreach (var component in Model.MissionControlHealth.Components)
-                            {
-                                <li>
-                                    <article class="mission-component-card">
-                                        <div class="mission-component-topline">
-                                            <h3>@component.DisplayName</h3>
-                                            <span>@IndexModel.ToDisplayLabel(component.Status)</span>
-                                        </div>
-                                        <p><strong>Mode:</strong> @(component.IsLive ? "Live" : "Mock/Deferred")</p>
-                                        <p><strong>Readiness:</strong> @IndexModel.ToDisplayLabel(component.Readiness)</p>
-                                        <p class="mb-0">@component.Evidence</p>
-                                    </article>
-                                </li>
-                            }
-                        </ul>
-                    </div>
-                }
-            }
-        </section>
     </section>
 </div>

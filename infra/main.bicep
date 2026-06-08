@@ -9,8 +9,14 @@ param translatorLocation string = 'global'
 @description('Approved global exception for Azure Communication Services.')
 param communicationLocation string = 'global'
 
-@description('Data location for Azure Communication Services.')
-param communicationDataLocation string = 'Europe'
+// IMMUTABLE — dataLocation cannot be changed in-place after resource creation.
+// Switching from 'Europe' to 'United States' requires the ACS resource to be deleted and
+// recreated on next provision. This is intentional: enables US toll-free number acquisition;
+// there are no sunk assets (no number purchased, no Event Grid subscription wired).
+// The Communication Services Contributor role assignment re-applies automatically via its
+// deterministic guid() name scoped to the new resource id.
+@description('Data location for Azure Communication Services. Must be United States to acquire US toll-free numbers.')
+param communicationDataLocation string = 'United States'
 
 @description('Placeholder image used until the API service image is available in Azure Container Registry.')
 param apiContainerImage string = 'mcr.microsoft.com/azuredocs/containerapps-helloworld:latest'
@@ -23,6 +29,9 @@ param speechCandidateLanguages string = 'en-US,sv-SE,de-DE,fr-FR'
 
 @description('Placeholder Azure AI deployment name until a model is deployed post-provision.')
 param foundryDeploymentName string = 'post-provision-model-deployment'
+
+@description('Minimum replicas for the API Container App. Set to 1 for demo reliability (WebSocket statefulness — a cold replica would drop an inbound call).')
+param apiMinReplicas int = 1
 
 @description('Optional additional tags applied to all resources.')
 param tags object = {}
@@ -70,6 +79,17 @@ var acrPullRoleDefinitionId = subscriptionResourceId(
   'Microsoft.Authorization/roleDefinitions',
   '7f951dda-4ed3-4680-a7ca-43fe172d538d'
 )
+// Communication and Email Service Owner — only available built-in role covering ACS
+// management-plane operations (Call Automation AnswerCall + StartMediaStreaming via Entra
+// auth). No narrower built-in role exists in this directory. Accepted for POC because the
+// assignment is resource-scoped to ACS only and the identity is a system-assigned MI with
+// no external exposure. Residual: includes Email Service management actions (unused).
+var communicationServiceOwnerRoleDefinitionId = subscriptionResourceId(
+  'Microsoft.Authorization/roleDefinitions',
+  '09976791-48a7-449e-bb21-39d1a415f350'
+)
+
+var eventGridSystemTopicName = 'evgt-acs-${uniqueSuffix}'
 
 var speechEndpoint = 'https://${speechCustomSubdomainName}.cognitiveservices.azure.com/'
 var translatorEndpoint = 'https://${translatorCustomSubdomainName}.cognitiveservices.azure.com/'
@@ -270,6 +290,14 @@ resource apiContainerApp 'Microsoft.App/containerApps@2024-03-01' = {
               value: speechCandidateLanguages
             }
             {
+              name: 'Speech__Region'
+              value: speechAccount.location
+            }
+            {
+              name: 'Speech__ResourceId'
+              value: speechAccount.id
+            }
+            {
               name: 'Translator__Endpoint'
               value: translatorEndpoint
             }
@@ -284,6 +312,14 @@ resource apiContainerApp 'Microsoft.App/containerApps@2024-03-01' = {
             {
               name: 'Acs__Endpoint'
               value: acsEndpoint
+            }
+            {
+              name: 'AudioSource__Mode'
+              // 'Mock' keeps DI wired to MockAudioSource (default). Set to 'Acs' after the
+              // ACS phone number and Event Grid subscription are provisioned to activate the
+              // live AcsAudioSource — no image rebuild required (Dyakka reads AudioSource:Mode
+              // via IConfiguration; double-underscore maps to the colon-separated key).
+              value: 'Mock'
             }
           ]
           probes: enableApiHealthProbes ? [
@@ -317,7 +353,7 @@ resource apiContainerApp 'Microsoft.App/containerApps@2024-03-01' = {
         }
       ]
       scale: {
-        minReplicas: 0
+        minReplicas: apiMinReplicas
         maxReplicas: 1
       }
     }
@@ -423,10 +459,65 @@ module apiToAiServicesRoleAssignment 'modules/acr-pull-role-assignment.bicep' = 
   }
 }
 
-// TODO(event-grid): Deliberately deferred. The codebase does not yet expose a verified
-// ACS incoming-call webhook and media-streaming route surface, so this template avoids
-// creating an invalid or unusable Event Grid system topic/subscription until those routes
-// are implemented and validated.
+// ACS data-plane RBAC: Communication Services Contributor scoped to the ACS resource only.
+// Allows Call Automation AnswerCall + StartMediaStreaming via DefaultAzureCredential (system MI).
+// Scope is the single ACS resource, not the resource group — least-privilege for a POC.
+module apiToAcsRoleAssignment 'modules/acr-pull-role-assignment.bicep' = {
+  name: 'apiToAcsRoleAssignment'
+  params: {
+    scopeType: 'communicationServices'
+    scopeName: communicationService.name
+    principalId: apiContainerApp.identity.principalId
+    roleDefinitionId: communicationServiceOwnerRoleDefinitionId
+  }
+}
+
+// Event Grid System Topic scoped to the ACS resource.
+// Delivery auth: plain webhook — SubscriptionValidationEvent handshake handled by
+// POST /api/events/acs/incoming-call. Per Athrun go-live sign-off (2026-06-08): Entra
+// delivery auth is explicitly deferred for this non-production POC; a forged IncomingCall
+// POST yields only a failed ACS AnswerCall — no data leak, no billing, no state corruption.
+// Residual risk accepted: rate-limited by ACA public ingress; abuse is visible in ACA logs.
+// Entra delivery auth is a hard requirement before any production promotion.
+resource acsEventGridSystemTopic 'Microsoft.EventGrid/systemTopics@2022-06-15' = {
+  name: eventGridSystemTopicName
+  location: 'global'
+  tags: mergedTags
+  properties: {
+    source: communicationService.id
+    topicType: 'Microsoft.Communication.CommunicationServices'
+  }
+}
+
+// Event Grid event subscription: IncomingCall only, webhook delivery, default retry.
+// ⚠️  ACTIVATION ORDER: the API image with the /api/events/acs/incoming-call handler MUST
+// be deployed to ACA before this subscription is active. Event Grid fires a
+// SubscriptionValidationEvent handshake at creation time — the endpoint must be live and
+// return the validation response or subscription creation will fail.
+// Default retry: 30 attempts, exponential backoff, 24 h TTL (eventTimeToLiveInMinutes=1440).
+// No dead-letter for POC — missed calls are observable in ACA diagnostic logs.
+resource acsIncomingCallSubscription 'Microsoft.EventGrid/systemTopics/eventSubscriptions@2022-06-15' = {
+  name: 'sub-incoming-call'
+  parent: acsEventGridSystemTopic
+  properties: {
+    destination: {
+      endpointType: 'WebHook'
+      properties: {
+        endpointUrl: '${apiBaseUrl}/api/events/acs/incoming-call'
+      }
+    }
+    filter: {
+      includedEventTypes: [
+        'Microsoft.Communication.IncomingCall'
+      ]
+    }
+    eventDeliverySchema: 'EventGridSchema'
+    retryPolicy: {
+      maxDeliveryAttempts: 30
+      eventTimeToLiveInMinutes: 1440
+    }
+  }
+}
 
 // TODO(ai-foundry-project): Deliberately deferred. A regional Azure AI Services account is
 // provisioned now, but project/model deployment should be completed as a post-provision step
@@ -446,12 +537,14 @@ output resourceNames object = {
   speechAccount: speechAccount.name
   translatorAccount: translatorAccount.name
   aiServicesAccount: aiServicesAccount.name
+  eventGridSystemTopic: acsEventGridSystemTopic.name
 }
 
 output serviceEndpoints object = {
   apiBaseUrl: apiBaseUrl
   apiHealthUrl: '${apiBaseUrl}/healthz'
-  acsLiveAutomationStatus: 'Deferred until API ACS callback/media routes are implemented and validated.'
+  acsEventGridWebhookEndpoint: '${apiBaseUrl}/api/events/acs/incoming-call'
+  acsLiveAutomationStatus: 'Event Grid system topic provisioned. Subscription live after API image with webhook handler is deployed to ACA.'
   webBaseUrl: 'https://${webApp.properties.defaultHostName}'
   webHealthUrl: 'https://${webApp.properties.defaultHostName}/healthz'
   keyVaultUri: keyVault.properties.vaultUri
@@ -489,7 +582,8 @@ output manualPostProvisionSteps array = [
   'After deploying the real API image, set enableApiHealthProbes=true and re-apply infrastructure once ${apiBaseUrl}/healthz returns healthy responses from the API runtime.'
   'Implement and validate the ACS incoming-call webhook at ${apiBaseUrl}/api/events/acs/incoming-call before adding Event Grid.'
   'Implement and validate the ACS media WebSocket endpoint at wss://${apiFqdn}/api/calls/media-stream before enabling live ACS automation.'
-  'If API code needs ACS data-plane access, assign the appropriate Azure Communication Services built-in role after the exact operation surface is confirmed.'
+  'ACS data-plane RBAC (Communication Services Contributor) is already assigned to the API Container App system-assigned identity, scoped to the ACS resource. No manual role assignment needed.'
+  'To activate live ACS audio, set AudioSource__Mode=Acs on the Container App env vars after provisioning the ACS phone number and Event Grid subscription.'
   'Create the Azure AI project/model deployment against ${aiServicesAccount.name} and then set Foundry__DeploymentName to the final deployed model name.'
   'If App Service Linux does not yet accept DOTNETCORE|9.0 in the target stamp, switch linuxFxVersion to the latest supported .NET runtime during first deployment.'
 ]

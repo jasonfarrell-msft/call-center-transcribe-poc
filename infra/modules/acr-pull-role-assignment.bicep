@@ -5,6 +5,7 @@ targetScope = 'resourceGroup'
   'acr'
   'keyVault'
   'cognitiveServices'
+  'communicationServices'
 ])
 param scopeType string
 
@@ -26,6 +27,10 @@ resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' existing = if (scopeTyp
 }
 
 resource cognitiveAccount 'Microsoft.CognitiveServices/accounts@2024-10-01' existing = if (scopeType == 'cognitiveServices') {
+  name: scopeName
+}
+
+resource communicationServicesAccount 'Microsoft.Communication/communicationServices@2025-05-01' existing = if (scopeType == 'communicationServices') {
   name: scopeName
 }
 
@@ -52,6 +57,21 @@ resource keyVaultScopedRoleAssignment 'Microsoft.Authorization/roleAssignments@2
 resource cognitiveScopedRoleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (scopeType == 'cognitiveServices') {
   name: guid(cognitiveAccount.id, principalId, roleDefinitionId)
   scope: cognitiveAccount
+  properties: {
+    principalId: principalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: roleDefinitionId
+  }
+}
+
+// Communication Services role assignment.
+// No narrower built-in role covers Call Automation AnswerCall + StartMediaStreaming than
+// Communication Services Contributor. Mitigated: scoped to the single ACS resource only
+// (not RG/sub), assigned to a system-assigned MI with no external exposure. Narrow when
+// Microsoft ships a dedicated Call Automation built-in role.
+resource communicationServicesScopedRoleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (scopeType == 'communicationServices') {
+  name: guid(communicationServicesAccount.id, principalId, roleDefinitionId)
+  scope: communicationServicesAccount
   properties: {
     principalId: principalId
     principalType: 'ServicePrincipal'

@@ -34,21 +34,27 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # actions/checkout@v4
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # actions/checkout@v5
 
       - name: Setup .NET
-        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2 # actions/setup-dotnet@v5
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
 
       - name: Restore web project
         run: dotnet restore ${{ env.WEB_PROJECT_PATH }}
 
+      - name: Restore client-side libraries (libman)
+        working-directory: src/CallCenterTranscription.Web
+        run: |
+          dotnet tool restore --verbosity minimal
+          dotnet tool run libman restore
+
       - name: Publish web project
         run: dotnet publish ${{ env.WEB_PROJECT_PATH }} --configuration Release --no-restore --output "${{ env.PUBLISH_PATH }}"
 
       - name: Upload published frontend
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # actions/upload-artifact@v7
         with:
           name: frontend-web
           path: ${{ env.PUBLISH_PATH }}
@@ -66,13 +72,13 @@ jobs:
 
     steps:
       - name: Download published frontend
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # actions/download-artifact@v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # actions/download-artifact@v8
         with:
           name: frontend-web
           path: ${{ env.PUBLISH_PATH }}
 
       - name: Azure login
-        uses: azure/login@1384c340ab2dda50fed2bee3041d1d87018aa5e8 # azure/login@v2
+        uses: azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43 # azure/login@v3
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
