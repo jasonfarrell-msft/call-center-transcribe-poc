@@ -649,3 +649,22 @@ As a **deployment readiness** checkpoint, this stays **REJECT** until the missin
 Second-pass devil's-advocate review agreed with that call: the missing items are core acceptance criteria, not cleanup.
 
 
+
+# 2026-06-08T10:57:44.227-04:00 — Agent Console 80/20 Column Layout + Mission Control Link
+
+- **By:** Lunamaria
+- **Status:** APPROVED by Athrun
+- **What:** Reworked the Agent Console from equal-width columns (pill-nav) to an 80/20 split: transcript occupies 4fr (80%), metadata (sentiment, future panels) occupies 1fr (20%). Converted "Mission Control" from a competing pill button to a dimmed text link in the top nav bar with subtle active/hover styling. Moved sentiment display into the narrower right column. Ensured full remaining height (100dvh chain) with page `overflow: hidden` and internal scroll only on `.transcript-scroller`.
+- **Why:** Jason's feedback emphasized transcript focus (80% visual real estate) and reduced cognitive load (Mission Control as link, not tab). The narrower metadata column enables sentiment at a glance while keeping scrollable space for future panels (knowledge cards, churn meter, next-step guidance).
+- **Files:** `src/CallCenterTranscription.Web/wwwroot/css/site.css`, `src/CallCenterTranscription.Web/Pages/Index.cshtml`
+- **Validation:** `dotnet build ... -c Release --nologo` → 0 errors. All site.js selectors verified. WCAG AA contrast preserved (~5.88:1).
+- **Non-blocking notes:** Unicode arrow on "Mission Control →" could wrap in `<span aria-hidden>` for screen readers; mobile at `<768px` (3fr 1fr = 75%/25%) may squeeze sentiment text but not a blocker.
+- **Source:** `.squad/decisions/inbox/lunamaria-console-80-20-columns.md`
+
+# 2026-06-08T10:57:44.227-04:00 — Review: Agent Console 80/20 Column Layout + Mission Control Link
+
+- **By:** Athrun
+- **Verdict:** ✅ APPROVE
+- **Criteria:** All 7 pass: 80/20 columns (4fr 1fr), full height + internal scroll (100dvh → flex:1 views → transcript-scroller flex:1 overflow-y:auto, body overflow:hidden), Mission Control link (styled as dimmed text, underline on hover, border-bottom on active, still a button with aria-controls, :focus-visible intact), JS hook integrity (site.js untouched, all data-* verified), content preserved (sentiment/Mission Control/transcript), colors/AA (no tokens changed, ~5.88:1 contrast), security (no secrets/external assets).
+- **Why:** The change cleanly delivers Jason's requirements without regressions. Build passed, visual hierarchy is now transcript-dominant, and the console remains keyboard-accessible and screen-reader compatible.
+- **Source:** `.squad/decisions/inbox/athrun-console-80-20-review.md`
