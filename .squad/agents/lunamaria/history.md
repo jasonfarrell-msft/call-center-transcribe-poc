@@ -39,6 +39,21 @@
     - `src/CallCenterTranscription.Web/wwwroot/js/site.js` (unchanged)
     - `src/CallCenterTranscription.Web/Pages/Shared/_Layout.cshtml` (unchanged)
 
+- **2026-06-08T12:58:45.624-04:00 — Mission Control promoted to separate Razor Page:**
+  - **Architecture change:** Mission Control is now a real Razor Page at `/MissionControl` (`Pages/MissionControl.cshtml` + `MissionControl.cshtml.cs`). The in-page hidden `<section id="mission-control-view">` has been removed from `Index.cshtml`.
+  - **Cross-link pattern:** Use `<a asp-page="/MissionControl" class="screen-nav-btn">` on Index and `<a asp-page="/Index" class="screen-nav-btn">` on MissionControl. The tag helper resolves routes at render time. The active page's nav item is a `<span class="screen-nav-btn" aria-current="page">` (not a link to itself).
+  - **CSS addition:** Added `text-decoration: none` to `.screen-nav-btn` so `<a>` elements don't show the default browser underline (hover state still shows underline via existing `:hover` rule).
+  - **JS toggle code removed from site.js:** Deleted `consoleViewSelector`, `consoleNavToggleSelector`, `getConsoleViews()`, `setActiveView()`, the nav-toggle case in `getFocusRestoreKey`, the `case "nav-toggle"` in `restoreFocus`, and the nav-toggle block in the click event handler.
+  - **JS selectors the Agent Console still depends on (DO NOT REMOVE):**
+    - `[data-console-refresh-root='true']` — `.rep-console` div (drives the 4s refresh loop)
+    - `[data-console-refresh-region]` — `header`, `columns` (regions swapped on refresh)
+    - `[data-transcript-scroll='true']` — `.transcript-scroller` (auto-scroll + state capture)
+    - `[data-translation-toggle='true']` — per-utterance translation reveal buttons
+    - `.translation-panel` — JS expand/collapse target
+    - `.mission-control-scroller` — scroll-state capture (no-ops gracefully on Index since element absent; safe to keep)
+  - **MissionControl page model:** `MissionControlModel` calls only `GetMissionControlHealthAsync`; includes its own `ToDisplayLabel` static method to avoid cross-page model references in the view.
+  - **No data-console-refresh-root on MissionControl page** — Mission Control does not auto-refresh. Data is server-rendered on navigation; user reloads to refresh. The JS IIFE early-exits cleanly on pages without `[data-console-refresh-root]`.
+
 - **2026-06-08T10:57:44.227-04:00 — 80/20 column layout + Mission Control link:**
   - **80/20 split:** `.console-columns` changed from `minmax(0, 1fr) 295px` (fixed sidebar) to `grid-template-columns: 4fr 1fr` — exactly 80% transcript, 20% metadata at all viewports. Responsive: `4fr 1fr` at ≥768px, `3fr 1fr` at <768px.
   - **Full remaining height:** Height chain: `html/body (100%)` → `.console-page-shell (100dvh, flex)` → `.console-main (flex: 1)` → `.rep-console (flex: 1, flex-direction: column)` → `.screen-nav (flex-shrink: 0)` + `.console-view--representative (flex: 1, min-height: 0, overflow: hidden)` → `.console-header (flex-shrink: 0)` + `.console-columns (flex: 1, min-height: 0)` → `.transcript-scroller (flex: 1, overflow-y: auto)`. Page itself never scrolls; only the transcript list inside `.transcript-scroller` scrolls.
