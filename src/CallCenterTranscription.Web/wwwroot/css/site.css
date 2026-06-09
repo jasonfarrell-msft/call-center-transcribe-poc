@@ -843,63 +843,6 @@ body {
   border-radius: var(--r);
 }
 
-/* ── Live assist stack (churn / knowledge / NBA) ───────────────── */
-.assist-panel {
-  display: grid;
-  gap: 0.65rem;
-}
-
-.assist-kicker {
-  margin: 0;
-  font-size: 0.88rem;
-  font-weight: 700;
-  color: var(--cc-text-primary);
-}
-
-.assist-copy {
-  margin: 0;
-  font-size: 0.84rem;
-  line-height: 1.5;
-  color: var(--cc-text-secondary);
-}
-
-.assist-meta {
-  margin: 0;
-  font-size: 0.74rem;
-  color: var(--cc-text-muted);
-}
-
-.assist-list {
-  list-style: none;
-  padding: 0;
-  margin: 0;
-  display: grid;
-  gap: 0.55rem;
-}
-
-.assist-list li {
-  border: 1px solid var(--cc-border);
-  border-radius: var(--r);
-  padding: 0.55rem 0.65rem;
-  background: var(--cc-surface-2);
-}
-
-.assist-list strong {
-  display: block;
-  font-size: 0.82rem;
-  color: var(--cc-text-primary);
-}
-
-.assist-list p {
-  margin: 0.3rem 0 0;
-  font-size: 0.78rem;
-  color: var(--cc-text-secondary);
-}
-
-.assist-list a {
-  font-size: 0.75rem;
-}
-
 /* ── Mission Control ────────────────────────────────────────── */
 .mission-control-panel {
   display: flex;

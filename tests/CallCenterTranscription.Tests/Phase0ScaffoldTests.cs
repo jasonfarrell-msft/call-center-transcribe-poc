@@ -1,7 +1,6 @@
 using System.Text.Json;
 using CallCenterTranscription.Ai;
 using CallCenterTranscription.Api;
-using CallCenterTranscription.Api.Services;
 using CallCenterTranscription.Shared.Events;
 using CallCenterTranscription.Telephony;
 using Microsoft.Extensions.Configuration;
@@ -60,7 +59,7 @@ public sealed class Phase0ScaffoldTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        // No configuration → AudioSource:Mode defaults to "Acs"; live answering still waits on Acs:Endpoint.
+        // No configuration → AudioSource:Mode defaults to "Mock"; Acs:Endpoint absent.
         services.AddCallCenterServices(new ConfigurationBuilder().Build());
 
         using var provider = services.BuildServiceProvider();
@@ -68,7 +67,7 @@ public sealed class Phase0ScaffoldTests
         var audioSource = provider.GetRequiredService<IAudioSource>();
         var reasoningClient = provider.GetRequiredService<IReasoningClient>();
 
-        Assert.IsType<AcsAudioSource>(audioSource);
-        Assert.IsType<ConfiguredReasoningClient>(reasoningClient);
+        Assert.IsType<MockAudioSource>(audioSource);
+        Assert.IsType<MockReasoningClient>(reasoningClient);
     }
 }

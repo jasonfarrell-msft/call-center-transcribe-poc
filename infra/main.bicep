@@ -315,11 +315,11 @@ resource apiContainerApp 'Microsoft.App/containerApps@2024-03-01' = {
             }
             {
               name: 'AudioSource__Mode'
-              // 'Acs' keeps the customer<->rep path on the live ACS interaction default.
-              // Set to 'Mock' only when you need the deterministic scripted fallback path —
-              // no image rebuild required (Dyakka reads AudioSource:Mode
+              // 'Mock' keeps DI wired to MockAudioSource (default). Set to 'Acs' after the
+              // ACS phone number and Event Grid subscription are provisioned to activate the
+              // live AcsAudioSource — no image rebuild required (Dyakka reads AudioSource:Mode
               // via IConfiguration; double-underscore maps to the colon-separated key).
-              value: 'Acs'
+              value: 'Mock'
             }
           ]
           probes: enableApiHealthProbes ? [
@@ -413,10 +413,6 @@ resource webApp 'Microsoft.Web/sites@2024-04-01' = {
         {
           name: 'BackendApi__BaseUrl'
           value: apiBaseUrl
-        }
-        {
-          name: 'Frontend__LiveMode'
-          value: 'true'
         }
       ]
     }
@@ -587,7 +583,7 @@ output manualPostProvisionSteps array = [
   'Implement and validate the ACS incoming-call webhook at ${apiBaseUrl}/api/events/acs/incoming-call before adding Event Grid.'
   'Implement and validate the ACS media WebSocket endpoint at wss://${apiFqdn}/api/calls/media-stream before enabling live ACS automation.'
   'ACS data-plane RBAC (Communication Services Contributor) is already assigned to the API Container App system-assigned identity, scoped to the ACS resource. No manual role assignment needed.'
-  'Live customer-to-rep interaction now defaults to AudioSource__Mode=Acs with Frontend__LiveMode=true. For the deterministic scripted fallback path, set AudioSource__Mode=Mock and Frontend__LiveMode=false together.'
+  'To activate live ACS audio, set AudioSource__Mode=Acs on the Container App env vars after provisioning the ACS phone number and Event Grid subscription.'
   'Create the Azure AI project/model deployment against ${aiServicesAccount.name} and then set Foundry__DeploymentName to the final deployed model name.'
   'If App Service Linux does not yet accept DOTNETCORE|9.0 in the target stamp, switch linuxFxVersion to the latest supported .NET runtime during first deployment.'
 ]

@@ -12,7 +12,6 @@
      data-console-refresh-root="true"
      data-console-refresh-interval-ms="4000"
      data-live-mode="@(Model.LiveMode ? "true" : "false")"
-     data-rep-display-name="@Model.RepresentativeDisplayName"
      data-api-base-url="@Model.ApiBaseUrl">
     <h1 class="visually-hidden">Call-Center Representative Console</h1>
 
@@ -77,7 +76,7 @@
                             <span aria-hidden="true">🎙️</span> <span data-rep-mute-label>Mute</span>
                         </button>
                         <button type="button" class="rep-btn rep-btn--hangup" data-rep-hangup hidden>
-                            <span aria-hidden="true">⛔</span> Hang up
+                            <span aria-hidden="true">⛔</span> <span data-rep-hangup-label>Hang up</span>
                         </button>
                     </div>
                 </div>
@@ -217,144 +216,64 @@
             </section>
             }
 
-            <aside class="console-side-column" aria-labelledby="sentiment-heading" data-console-refresh-region="@(Model.LiveMode ? null : "sentiment")">
-                @if (Model.LiveMode)
-                {
-                    <section class="card-shell sentiment-panel" data-live-sentiment-panel>
-                        <div class="panel-header panel-header--stacked">
-                            <div>
-                                <h2 id="sentiment-heading">Customer sentiment</h2>
-                                <span class="visually-hidden">Sentiment indicator</span>
-                                <span class="visually-hidden">Representative awareness</span>
-                                <p class="panel-copy">A compact view of current customer tone.</p>
-                            </div>
+            <aside class="console-side-column" aria-labelledby="sentiment-heading" data-console-refresh-region="@(Model.LiveMode ? "sentiment" : null)">
+                <section class="card-shell sentiment-panel">
+                    <div class="panel-header panel-header--stacked">
+                        <div>
+                            <h2 id="sentiment-heading">Customer sentiment</h2>
+                            <span class="visually-hidden">Sentiment indicator</span>
+                            <span class="visually-hidden">Representative awareness</span>
+                            <p class="panel-copy">A compact view of current customer tone.</p>
                         </div>
-                        <p class="console-empty-state" data-live-sentiment-empty>Waiting for sentiment.</p>
-                        <div data-live-sentiment-body hidden>
+                    </div>
+
+                    @if (!string.IsNullOrWhiteSpace(Model.SentimentWarning))
+                    {
+                        <p class="console-empty-state">@Model.SentimentWarning</p>
+                    }
+                    else if (!Model.Sentiment.HasData)
+                    {
+                        <p class="console-empty-state">Waiting for sentiment.</p>
+                    }
+                    else
+                    {
+                        @if (Model.Sentiment.ScorePercent is int sentimentScore)
+                        {
                             <div class="sentiment-score-block">
                                 <p class="sentiment-score-label">Score</p>
                                 <p class="sentiment-score-value">
-                                    <span data-live-sentiment-score>--</span><span>/100</span>
+                                    @sentimentScore<span>/100</span>
                                 </p>
-                                <p class="sentiment-score-state" data-live-sentiment-state>Awaiting sentiment</p>
+                                <p class="sentiment-score-state">@Model.Sentiment.ScoreStateLabel</p>
                             </div>
+
                             <div class="sentiment-meter" aria-hidden="true">
-                                <span class="sentiment-meter-bar sentiment-meter-bar--steady" data-live-sentiment-meter style="width:0%"></span>
+                                <span class="@Model.Sentiment.ScoreVisualClass" style="width:@sentimentScore%"></span>
                             </div>
                             <p class="sentiment-meter-caption">0 = negative • 100 = positive</p>
-                            <dl class="sentiment-details">
-                                <div>
-                                    <dt>Tone</dt>
-                                    <dd data-live-sentiment-tone>Waiting for call</dd>
-                                </div>
-                                <div>
-                                    <dt>Trend</dt>
-                                    <dd data-live-sentiment-trend>Awaiting sentiment</dd>
-                                </div>
-                                <div>
-                                    <dt>Updated</dt>
-                                    <dd data-live-sentiment-updated>Waiting for call</dd>
-                                </div>
-                            </dl>
-                            <p class="sentiment-summary" data-live-sentiment-summary hidden></p>
-                        </div>
-                    </section>
+                        }
 
-                    <section class="card-shell assist-panel" aria-labelledby="churn-heading" data-live-churn-panel>
-                        <div class="panel-header panel-header--stacked">
-                            <h2 id="churn-heading">Churn risk</h2>
-                            <p class="panel-copy">Live churn guidance for the active call.</p>
-                        </div>
-                        <p class="console-empty-state" data-live-churn-empty>Waiting for churn signals.</p>
-                        <div data-live-churn-body hidden>
-                            <p class="assist-kicker" data-live-churn-level>Unknown</p>
-                            <p class="assist-copy" data-live-churn-rationale></p>
-                            <p class="assist-meta">Updated <span data-live-churn-updated>Waiting for call</span></p>
-                        </div>
-                    </section>
-
-                    <section class="card-shell assist-panel" aria-labelledby="knowledge-heading" data-live-knowledge-panel>
-                        <div class="panel-header panel-header--stacked">
-                            <h2 id="knowledge-heading">Knowledge cards</h2>
-                            <p class="panel-copy">Relevant snippets update as the call evolves.</p>
-                        </div>
-                        <p class="console-empty-state" data-live-knowledge-empty>Waiting for knowledge cards.</p>
-                        <ul class="assist-list" data-live-knowledge-list hidden></ul>
-                    </section>
-
-                    <section class="card-shell assist-panel" aria-labelledby="next-best-heading" data-live-nba-panel>
-                        <div class="panel-header panel-header--stacked">
-                            <h2 id="next-best-heading">Next best action</h2>
-                            <p class="panel-copy">Recommended move for the current moment.</p>
-                        </div>
-                        <p class="console-empty-state" data-live-nba-empty>Waiting for next-step guidance.</p>
-                        <div data-live-nba-body hidden>
-                            <p class="assist-kicker" data-live-nba-action></p>
-                            <p class="assist-copy" data-live-nba-reasoning></p>
-                            <p class="assist-meta">Confidence <span data-live-nba-confidence>--</span> • Updated <span data-live-nba-updated>Waiting for call</span></p>
-                        </div>
-                    </section>
-                }
-                else
-                {
-                    <section class="card-shell sentiment-panel">
-                        <div class="panel-header panel-header--stacked">
+                        <dl class="sentiment-details">
                             <div>
-                                <h2 id="sentiment-heading">Customer sentiment</h2>
-                                <span class="visually-hidden">Sentiment indicator</span>
-                                <span class="visually-hidden">Representative awareness</span>
-                                <p class="panel-copy">A compact view of current customer tone.</p>
+                                <dt>Tone</dt>
+                                <dd>@Model.Sentiment.ToneLabel</dd>
                             </div>
-                        </div>
+                            <div>
+                                <dt>Trend</dt>
+                                <dd>@Model.Sentiment.TrendLabel</dd>
+                            </div>
+                            <div>
+                                <dt>Updated</dt>
+                                <dd>@Model.Sentiment.UpdatedDisplay</dd>
+                            </div>
+                        </dl>
 
-                        @if (!string.IsNullOrWhiteSpace(Model.SentimentWarning))
+                        @if (!string.IsNullOrWhiteSpace(Model.Sentiment.SummaryText))
                         {
-                            <p class="console-empty-state">@Model.SentimentWarning</p>
+                            <p class="sentiment-summary">@Model.Sentiment.SummaryText</p>
                         }
-                        else if (!Model.Sentiment.HasData)
-                        {
-                            <p class="console-empty-state">Waiting for sentiment.</p>
-                        }
-                        else
-                        {
-                            @if (Model.Sentiment.ScorePercent is int sentimentScore)
-                            {
-                                <div class="sentiment-score-block">
-                                    <p class="sentiment-score-label">Score</p>
-                                    <p class="sentiment-score-value">
-                                        @sentimentScore<span>/100</span>
-                                    </p>
-                                    <p class="sentiment-score-state">@Model.Sentiment.ScoreStateLabel</p>
-                                </div>
-
-                                <div class="sentiment-meter" aria-hidden="true">
-                                    <span class="@Model.Sentiment.ScoreVisualClass" style="width:@sentimentScore%"></span>
-                                </div>
-                                <p class="sentiment-meter-caption">0 = negative • 100 = positive</p>
-                            }
-
-                            <dl class="sentiment-details">
-                                <div>
-                                    <dt>Tone</dt>
-                                    <dd>@Model.Sentiment.ToneLabel</dd>
-                                </div>
-                                <div>
-                                    <dt>Trend</dt>
-                                    <dd>@Model.Sentiment.TrendLabel</dd>
-                                </div>
-                                <div>
-                                    <dt>Updated</dt>
-                                    <dd>@Model.Sentiment.UpdatedDisplay</dd>
-                                </div>
-                            </dl>
-
-                            @if (!string.IsNullOrWhiteSpace(Model.Sentiment.SummaryText))
-                            {
-                                <p class="sentiment-summary">@Model.Sentiment.SummaryText</p>
-                            }
-                        }
-                    </section>
-                }
+                    }
+                </section>
             </aside>
         </div>
     </section>

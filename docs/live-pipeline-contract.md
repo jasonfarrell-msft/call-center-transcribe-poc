@@ -63,20 +63,16 @@ When an agent opens the console mid-call or reconnects:
 1. Client requests `/api/session/current-state`.
 2. Server returns `PipelineCurrentStateResponse` with:
    - current call/session metadata
-   - `call.startedAtUtc` captured once when the active live call starts and reused for the life of that call
    - sentiment summary
-   - accumulated events for each stream, including transcript, translation, churn risk, knowledge cards, and next-best-action already produced for the active live call
+   - accumulated events for each stream
    - `streamReplayPolicy` (currently `full_history_for_active_call`)
-   - in the default live (`AudioSource:Mode=Acs`) startup path, no scripted interaction is preloaded: before a real call starts the payload is a waiting snapshot (`callId=""`, `state="waiting"`, `source="acs-live"`) with empty event arrays
-   - scripted interaction history is returned only when mock mode is explicitly enabled with `AudioSource:Mode=Mock`
 3. Client then subscribes to `call:{callId}` and optionally `session:{sessionId}` on the hub for incremental updates.
-4. On subscribe, `PipelineHub` immediately emits `stream.currentState` plus replay events for all stream types to the subscribing caller so late join/reconnect does not wait for the next live event.
 
 ## Empty-array semantics
 
-For `/api/events/transcript`, `/api/events/translation`, `/api/events/churn-risk`, `/api/events/knowledge-cards`, and `/api/events/next-best-action`:
+For `/api/events/churn-risk`, `/api/events/knowledge-cards`, and `/api/events/next-best-action`:
 
-- Empty array means **no live interaction history or qualifying model output has been produced yet for the current call**.
+- Empty array means **no qualifying model output has been produced yet for the current call**.
 - Empty array does **not** indicate transport failure.
 - Consumers should keep the corresponding panel in a "waiting/no signal yet" state and replace it when new events arrive.
 
@@ -85,11 +81,3 @@ For `/api/events/transcript`, `/api/events/translation`, `/api/events/churn-risk
 - `isMockFeedActive` in `SessionCurrentResponse` and `PipelineCurrentStateResponse` indicates mock mode.
 - `MissionControlHealthResponse` remains the source for component-by-component live readiness.
 - UI components should read these fields to show mock/live badges without changing payload parsing logic.
-
-## Mode toggle contract
-
-- API live/default path: `AudioSource:Mode=Acs`
-- API scripted fallback: `AudioSource:Mode=Mock`
-- Web live console path: `Frontend:LiveMode=true`
-- Web scripted fallback console: `Frontend:LiveMode=false`
-- To avoid mixing live header state with scripted interaction data, switch the API and web settings together when enabling the mock fallback path.

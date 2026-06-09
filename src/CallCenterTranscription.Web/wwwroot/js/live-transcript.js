@@ -33,85 +33,12 @@
     const callIdEl = root.querySelector("[data-meta-callid]");
     const customerEl = root.querySelector("[data-meta-customer]");
     const connectedEl = root.querySelector("[data-meta-connected]");
-
-    // Live side-rail surfaces.
-    const sentimentEmptyEl = root.querySelector("[data-live-sentiment-empty]");
-    const sentimentBodyEl = root.querySelector("[data-live-sentiment-body]");
-    const sentimentScoreEl = root.querySelector("[data-live-sentiment-score]");
-    const sentimentStateEl = root.querySelector("[data-live-sentiment-state]");
-    const sentimentMeterEl = root.querySelector("[data-live-sentiment-meter]");
-    const sentimentToneEl = root.querySelector("[data-live-sentiment-tone]");
-    const sentimentTrendEl = root.querySelector("[data-live-sentiment-trend]");
-    const sentimentUpdatedEl = root.querySelector("[data-live-sentiment-updated]");
-    const sentimentSummaryEl = root.querySelector("[data-live-sentiment-summary]");
-
-    const churnEmptyEl = root.querySelector("[data-live-churn-empty]");
-    const churnBodyEl = root.querySelector("[data-live-churn-body]");
-    const churnLevelEl = root.querySelector("[data-live-churn-level]");
-    const churnRationaleEl = root.querySelector("[data-live-churn-rationale]");
-    const churnUpdatedEl = root.querySelector("[data-live-churn-updated]");
-
-    const knowledgeEmptyEl = root.querySelector("[data-live-knowledge-empty]");
-    const knowledgeListEl = root.querySelector("[data-live-knowledge-list]");
-
-    const nbaEmptyEl = root.querySelector("[data-live-nba-empty]");
-    const nbaBodyEl = root.querySelector("[data-live-nba-body]");
-    const nbaActionEl = root.querySelector("[data-live-nba-action]");
-    const nbaReasoningEl = root.querySelector("[data-live-nba-reasoning]");
-    const nbaConfidenceEl = root.querySelector("[data-live-nba-confidence]");
-    const nbaUpdatedEl = root.querySelector("[data-live-nba-updated]");
-
     const WAITING = "Waiting for call";
-    const nearBottomThreshold = 80;
-
-    const STATE_CLASSES = {
-        disconnected: "conn-status--disconnected",
-        connecting: "conn-status--connecting",
-        live: "conn-status--live",
-        ended: "conn-status--ended"
-    };
-
-    let currentCallId = null;
-    let ghostLine = null;
-    let endedTimer = null;
-    let translationPanelCounter = 0;
-    const lineByUtterance = new Map();
-    const translationByUtterance = new Map();
-    const expandedTranslationUtterances = new Set();
 
     function setText(el, value) {
         if (el) {
             el.textContent = value;
         }
-    }
-
-    function setHidden(el, hidden) {
-        if (!el) {
-            return;
-        }
-
-        if (hidden) {
-            el.setAttribute("hidden", "");
-        } else {
-            el.removeAttribute("hidden");
-        }
-    }
-
-    function toDisplayLabel(value, fallback = "Unknown") {
-        if (!value) {
-            return fallback;
-        }
-
-        return value
-            .split(/[-_\s]+/)
-            .filter((token) => token.length > 0)
-            .map((token) => token.charAt(0).toUpperCase() + token.slice(1).toLowerCase())
-            .join(" ");
-    }
-
-    function normalizeUtteranceId(value) {
-        const normalized = (value || "").trim();
-        return normalized.length > 0 ? normalized : null;
     }
 
     function resetHeader() {
@@ -121,12 +48,23 @@
         setText(connectedEl, WAITING);
     }
 
+    const STATE_CLASSES = {
+        disconnected: "conn-status--disconnected",
+        connecting: "conn-status--connecting",
+        live: "conn-status--live",
+        ended: "conn-status--ended"
+    };
+    const nearBottomThreshold = 80;
+
+    let currentCallId = null;
+    let ghostLine = null; // the single in-progress interim line element, if any
+    let endedTimer = null;
+
     function setState(state, labelText) {
         if (statusPill) {
             Object.values(STATE_CLASSES).forEach((cls) => statusPill.classList.remove(cls));
             statusPill.classList.add(STATE_CLASSES[state] || STATE_CLASSES.disconnected);
         }
-
         if (statusLabel && labelText) {
             statusLabel.textContent = labelText;
         }
@@ -138,9 +76,7 @@
 
     function autoscroll(wasNearBottom) {
         if (wasNearBottom) {
-            requestAnimationFrame(() => {
-                scroller.scrollTop = scroller.scrollHeight;
-            });
+            requestAnimationFrame(() => { scroller.scrollTop = scroller.scrollHeight; });
         }
     }
 
@@ -154,8 +90,6 @@
     function clearTranscript() {
         scroller.innerHTML = "";
         ghostLine = null;
-        lineByUtterance.clear();
-        translationByUtterance.clear();
     }
 
     function formatTime(timestampUtc) {
@@ -163,163 +97,7 @@
         if (Number.isNaN(date.getTime())) {
             return "";
         }
-
         return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" });
-    }
-
-    function getSentimentVisualClass(scorePercent) {
-        if (scorePercent <= 30) {
-            return "sentiment-meter-bar sentiment-meter-bar--negative";
-        }
-
-        if (scorePercent < 55) {
-            return "sentiment-meter-bar sentiment-meter-bar--caution";
-        }
-
-        if (scorePercent < 75) {
-            return "sentiment-meter-bar sentiment-meter-bar--steady";
-        }
-
-        return "sentiment-meter-bar sentiment-meter-bar--positive";
-    }
-
-    function getSentimentStateLabel(scorePercent) {
-        if (scorePercent <= 30) {
-            return "Escalation risk";
-        }
-
-        if (scorePercent < 55) {
-            return "Needs recovery";
-        }
-
-        if (scorePercent < 75) {
-            return "Stabilizing";
-        }
-
-        return "Positive momentum";
-    }
-
-    function isEnglishLanguage(languageCode) {
-        return !languageCode || languageCode.toLowerCase().startsWith("en");
-    }
-
-    function setTranslationExpanded(button, panel, isExpanded) {
-        const showLabel = button.getAttribute("data-show-label") || "Show translation";
-        const hideLabel = button.getAttribute("data-hide-label") || "Hide translation";
-        const label = isExpanded ? hideLabel : showLabel;
-
-        if (isExpanded) {
-            panel.removeAttribute("hidden");
-        } else {
-            panel.setAttribute("hidden", "");
-        }
-
-        button.setAttribute("aria-expanded", isExpanded ? "true" : "false");
-        button.setAttribute("aria-label", label);
-        button.textContent = label;
-    }
-
-    function registerExpandedTranslation(utteranceId, isExpanded) {
-        if (!utteranceId) {
-            return;
-        }
-
-        if (isExpanded) {
-            expandedTranslationUtterances.add(utteranceId);
-        } else {
-            expandedTranslationUtterances.delete(utteranceId);
-        }
-    }
-
-    function ensureTranslationHost(line) {
-        let host = line.querySelector("[data-live-translation-host]");
-        if (host) {
-            return host;
-        }
-
-        host = document.createElement("div");
-        host.className = "transcript-tags";
-        host.setAttribute("data-live-translation-host", "true");
-        line.appendChild(host);
-        return host;
-    }
-
-    function ensureTranslationStatus(line, message) {
-        const host = ensureTranslationHost(line);
-        let status = host.querySelector("[data-live-translation-status]");
-        if (!status) {
-            status = document.createElement("span");
-            status.className = "transcript-action-disabled";
-            status.setAttribute("data-live-translation-status", "true");
-            host.appendChild(status);
-        }
-
-        status.textContent = message;
-        return status;
-    }
-
-    function applyTranslationEventToLine(utteranceId, translationEvent) {
-        const line = lineByUtterance.get(utteranceId);
-        if (!line || !translationEvent || !translationEvent.translatedText) {
-            return;
-        }
-
-        const host = ensureTranslationHost(line);
-        host.querySelector("[data-live-translation-status]")?.remove();
-
-        let button = line.querySelector("[data-live-translation-toggle]");
-        let panel = line.querySelector("[data-live-translation-panel]");
-
-        if (!panel) {
-            translationPanelCounter += 1;
-            const panelId = `live-translation-${translationPanelCounter}`;
-
-            panel = document.createElement("section");
-            panel.id = panelId;
-            panel.className = "translation-panel";
-            panel.setAttribute("data-live-translation-panel", "true");
-            panel.setAttribute("aria-label", "Translation");
-            panel.setAttribute("hidden", "");
-
-            const label = document.createElement("p");
-            label.className = "translation-label";
-            label.textContent = `Translation (${toDisplayLabel(translationEvent.targetLanguage, "English")})`;
-            panel.appendChild(label);
-
-            const text = document.createElement("p");
-            text.setAttribute("lang", "en");
-            text.className = "mb-0";
-            panel.appendChild(text);
-
-            line.appendChild(panel);
-
-            const contextLabel = line.getAttribute("data-live-translation-context") || "this turn";
-            const showLabel = `Show English translation for ${contextLabel}`;
-            const hideLabel = `Hide English translation for ${contextLabel}`;
-
-            button = document.createElement("button");
-            button.type = "button";
-            button.className = "btn btn-link transcript-action-link";
-            button.setAttribute("data-translation-toggle", "true");
-            button.setAttribute("data-live-translation-toggle", "true");
-            button.setAttribute("data-live-utterance-id", utteranceId);
-            button.setAttribute("data-translation-target", panelId);
-            button.setAttribute("data-show-label", showLabel);
-            button.setAttribute("data-hide-label", hideLabel);
-            button.setAttribute("aria-controls", panelId);
-            button.setAttribute("aria-expanded", "false");
-            button.setAttribute("aria-label", showLabel);
-            button.textContent = showLabel;
-            host.appendChild(button);
-        }
-
-        const textEl = panel.querySelector("p.mb-0");
-        if (textEl) {
-            textEl.textContent = translationEvent.translatedText;
-        }
-
-        const shouldExpand = expandedTranslationUtterances.has(utteranceId);
-        setTranslationExpanded(button, panel, shouldExpand);
     }
 
     function buildLine(evt, isInterim) {
@@ -346,33 +124,8 @@
         text.className = "live-text";
         text.textContent = evt.text || "";
 
-        if (!isEnglishLanguage(evt.detectedLanguage)) {
-            text.setAttribute("lang", evt.detectedLanguage.toLowerCase());
-        }
-
         line.appendChild(meta);
         line.appendChild(text);
-
-        if (!isInterim) {
-            const utteranceId = normalizeUtteranceId(evt.utteranceId);
-            const contextLabel = evt.speakerDisplayLabel && evt.sequence
-                ? `${evt.speakerDisplayLabel} turn ${evt.sequence}`
-                : `turn ${evt.sequence || ""}`.trim();
-            line.setAttribute("data-live-translation-context", contextLabel || "this turn");
-
-            if (utteranceId) {
-                lineByUtterance.set(utteranceId, line);
-                if (!isEnglishLanguage(evt.detectedLanguage)) {
-                    ensureTranslationStatus(line, "Translation unavailable");
-                }
-
-                const existingTranslation = translationByUtterance.get(utteranceId);
-                if (existingTranslation) {
-                    applyTranslationEventToLine(utteranceId, existingTranslation);
-                }
-            }
-        }
-
         return line;
     }
 
@@ -380,12 +133,10 @@
         if (!evt || !evt.text) {
             return;
         }
-
         if (endedTimer) {
             clearTimeout(endedTimer);
             endedTimer = null;
         }
-
         setState("live", "● Live transcription");
         setText(summaryEl, "Live feed active • Transcribing");
         clearEmptyState();
@@ -393,13 +144,15 @@
         const wasNearBottom = isNearBottom();
 
         if (evt.isFinal) {
+            // Commit: the final text supersedes any in-progress partial. Drop the ghost and
+            // append a permanent line.
             if (ghostLine) {
                 ghostLine.remove();
                 ghostLine = null;
             }
-
             scroller.appendChild(buildLine(evt, false));
         } else if (ghostLine) {
+            // Update the single live partial in place.
             const text = ghostLine.querySelector(".live-text");
             if (text) {
                 text.textContent = evt.text;
@@ -412,173 +165,10 @@
         autoscroll(wasNearBottom);
     }
 
-    function onTranslation(evt) {
-        if (!evt) {
-            return;
-        }
-
-        const utteranceId = normalizeUtteranceId(evt.utteranceId);
-        if (!utteranceId) {
-            return;
-        }
-
-        translationByUtterance.set(utteranceId, evt);
-        applyTranslationEventToLine(utteranceId, evt);
-    }
-
-    function onSentiment(evt) {
-        if (!evt || typeof evt.score !== "number") {
-            return;
-        }
-
-        const clamped = Math.max(-1, Math.min(1, evt.score));
-        const scorePercent = Math.round(((clamped + 1) / 2) * 100);
-
-        setHidden(sentimentEmptyEl, true);
-        setHidden(sentimentBodyEl, false);
-        setText(sentimentScoreEl, String(scorePercent));
-        setText(sentimentStateEl, getSentimentStateLabel(scorePercent));
-        setText(sentimentToneEl, toDisplayLabel(evt.label, "Unknown"));
-        setText(sentimentTrendEl, toDisplayLabel(evt.trend, "Unknown"));
-        setText(sentimentUpdatedEl, formatTime(evt.timestampUtc) || "Now");
-
-        if (sentimentMeterEl) {
-            sentimentMeterEl.style.width = `${scorePercent}%`;
-            sentimentMeterEl.className = getSentimentVisualClass(scorePercent);
-        }
-
-        if (sentimentSummaryEl) {
-            const summary = `Tone is ${toDisplayLabel(evt.label, "unknown").toLowerCase()} and ${toDisplayLabel(evt.trend, "steady").toLowerCase()}.`;
-            setText(sentimentSummaryEl, summary);
-            setHidden(sentimentSummaryEl, false);
-        }
-    }
-
-    function onChurnRisk(evt) {
-        if (!evt) {
-            return;
-        }
-
-        const riskScore = Number.isFinite(evt.riskScore)
-            ? evt.riskScore <= 1
-                ? Math.round(evt.riskScore * 100)
-                : Math.round(evt.riskScore)
-            : null;
-
-        const riskLabel = toDisplayLabel(evt.riskLevel, "Unknown");
-        setHidden(churnEmptyEl, true);
-        setHidden(churnBodyEl, false);
-        setText(churnLevelEl, riskScore === null ? riskLabel : `${riskLabel} • ${riskScore}/100`);
-        setText(churnRationaleEl, evt.rationale || "No rationale available.");
-        setText(churnUpdatedEl, formatTime(evt.timestampUtc) || "Now");
-    }
-
-    function appendKnowledgeCardItem(card) {
-        if (!knowledgeListEl) {
-            return;
-        }
-
-        const item = document.createElement("li");
-
-        const title = document.createElement("strong");
-        title.textContent = card.title || "Knowledge card";
-        item.appendChild(title);
-
-        if (card.snippet) {
-            const snippet = document.createElement("p");
-            snippet.textContent = card.snippet;
-            item.appendChild(snippet);
-        }
-
-        if (card.sourceUrl) {
-            try {
-                const sourceUrl = new URL(card.sourceUrl, window.location.origin);
-                if (sourceUrl.protocol === "http:" || sourceUrl.protocol === "https:") {
-                    const link = document.createElement("a");
-                    link.href = sourceUrl.toString();
-                    link.target = "_blank";
-                    link.rel = "noopener noreferrer";
-                    link.textContent = "View source";
-                    item.appendChild(link);
-                }
-            } catch {
-                // Ignore malformed URLs from upstream mock/live feeds.
-            }
-        }
-
-        knowledgeListEl.appendChild(item);
-    }
-
-    function onKnowledgeCards(evt) {
-        if (!knowledgeListEl || !evt || !Array.isArray(evt.cards)) {
-            return;
-        }
-
-        knowledgeListEl.innerHTML = "";
-        evt.cards.forEach((card) => appendKnowledgeCardItem(card));
-
-        const hasCards = evt.cards.length > 0;
-        setHidden(knowledgeEmptyEl, hasCards);
-        setHidden(knowledgeListEl, !hasCards);
-    }
-
-    function onNextBestAction(evt) {
-        if (!evt) {
-            return;
-        }
-
-        setHidden(nbaEmptyEl, true);
-        setHidden(nbaBodyEl, false);
-        setText(nbaActionEl, evt.action || "No action available");
-        setText(nbaReasoningEl, evt.reasoning || "No reasoning available.");
-        if (typeof evt.confidence === "number" && Number.isFinite(evt.confidence)) {
-            const confidencePercent = evt.confidence <= 1
-                ? Math.round(evt.confidence * 100)
-                : Math.round(evt.confidence);
-            setText(nbaConfidenceEl, `${confidencePercent}%`);
-        } else {
-            setText(nbaConfidenceEl, "--");
-        }
-        setText(nbaUpdatedEl, formatTime(evt.timestampUtc) || "Now");
-    }
-
-    function onCurrentState(snapshot) {
-        if (!snapshot || !snapshot.call) {
-            return;
-        }
-
-        if (endedTimer) {
-            clearTimeout(endedTimer);
-            endedTimer = null;
-        }
-
-        const call = snapshot.call;
-        const callId = (call.callId || "").trim();
-        if (!callId) {
-            currentCallId = null;
-            setState("disconnected", "Disconnected — waiting for call");
-            resetHeader();
-            return;
-        }
-
-        currentCallId = callId;
-        const hasTranscriptHistory = Array.isArray(snapshot.transcriptEvents) && snapshot.transcriptEvents.length > 0;
-        setState(hasTranscriptHistory ? "live" : "connecting", hasTranscriptHistory ? "● Live transcription" : "Call connected — starting transcription…");
-        setText(summaryEl, "Live mode • Call connected");
-        setText(callIdEl, callId);
-        setText(customerEl, (call.customerName || "").trim() || "Inbound caller");
-        setText(connectedEl, call.startedAtUtc ? formatTime(call.startedAtUtc) : WAITING);
-
-        if (Array.isArray(snapshot.sentimentEvents) && snapshot.sentimentEvents.length > 0) {
-            onSentiment(snapshot.sentimentEvents[snapshot.sentimentEvents.length - 1]);
-        }
-    }
-
     async function subscribeToCall(callId) {
         if (!callId) {
             return;
         }
-
         try {
             await connection.invoke("SubscribeToCall", callId);
         } catch (err) {
@@ -591,42 +181,30 @@
         if (!callId) {
             return;
         }
-
         if (endedTimer) {
             clearTimeout(endedTimer);
             endedTimer = null;
         }
-
-        const isNewCall = !currentCallId || currentCallId !== callId;
         currentCallId = callId;
         clearTranscript();
-
-        if (isNewCall) {
-            expandedTranslationUtterances.clear();
-        }
-
         setState("connecting", "Call connected — starting transcription…");
         setText(summaryEl, "Live mode • Call connected");
         setText(callIdEl, callId);
         setText(customerEl, "Inbound caller");
         setText(connectedEl, formatTime());
-
+        // Await the group join so no early transcript is missed (reviewer fix).
         await subscribeToCall(callId);
     }
 
     function onCallEnded(evt) {
+        // Ignore stale end events for a call we are no longer tracking.
         if (evt && evt.callId && currentCallId && evt.callId !== currentCallId) {
             return;
         }
-
         setState("ended", "Call ended");
         setText(summaryEl, "Live mode • Call ended");
         currentCallId = null;
         ghostLine = null;
-        lineByUtterance.clear();
-        translationByUtterance.clear();
-        expandedTranslationUtterances.clear();
-
         endedTimer = setTimeout(() => {
             setState("disconnected", "Disconnected — waiting for call");
             resetHeader();
@@ -641,10 +219,9 @@
             if (!response.ok) {
                 return;
             }
-
             const data = await response.json();
             if (data && data.callId) {
-                await onCallStarted({ callId: data.callId });
+                onCallStarted({ callId: data.callId });
             }
         } catch (err) {
             console.debug("live-transcript: resync skipped.", err);
@@ -658,48 +235,23 @@
 
     connection.on("stream.callStarted", onCallStarted);
     connection.on("stream.callEnded", onCallEnded);
-    connection.on("stream.currentState", onCurrentState);
     connection.on("stream.transcript", onTranscript);
-    connection.on("stream.translation", onTranslation);
-    connection.on("stream.sentiment", onSentiment);
-    connection.on("stream.churnRisk", onChurnRisk);
-    connection.on("stream.knowledgeCards", onKnowledgeCards);
-    connection.on("stream.nextBestAction", onNextBestAction);
 
     connection.onreconnecting(() => {
         setState("connecting", "Reconnecting…");
         setText(summaryEl, "Live mode • Reconnecting…");
     });
-
     connection.onreconnected(() => {
         setState("disconnected", "Disconnected — waiting for call");
         resetHeader();
         resync();
     });
-
     connection.onclose(() => {
         setState("disconnected", "Disconnected — connection lost");
         setText(summaryEl, "Live mode • Connection lost");
         setText(callIdEl, WAITING);
         setText(customerEl, WAITING);
         setText(connectedEl, WAITING);
-    });
-
-    document.addEventListener("click", (event) => {
-        const target = event.target;
-        if (!(target instanceof Element)) {
-            return;
-        }
-
-        const toggleButton = target.closest("[data-live-translation-toggle='true']");
-        if (!(toggleButton instanceof HTMLElement)) {
-            return;
-        }
-
-        const utteranceId = normalizeUtteranceId(toggleButton.getAttribute("data-live-utterance-id"));
-        window.setTimeout(() => {
-            registerExpandedTranslation(utteranceId, toggleButton.getAttribute("aria-expanded") === "true");
-        }, 0);
     });
 
     async function start() {

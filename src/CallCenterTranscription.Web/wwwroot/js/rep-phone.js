@@ -25,9 +25,10 @@
     // The token/register endpoints are same-origin proxies on THIS web app (not the API base).
     const TOKEN_URL = "/rep/token";
     const REGISTER_URL = "/rep/register";
+    const FORCE_RESET_URL = "/rep/force-reset";
     const STORAGE_KEY = "rep.acs.userId";
     const HEARTBEAT_MS = 15000;
-    const DISPLAY_NAME = (root.getAttribute("data-rep-display-name") || "Representative").trim() || "Representative";
+    const DISPLAY_NAME = "Capt Propane";
 
     // ── UI handles ────────────────────────────────────────────────────────────────────────────
     const bar = root.querySelector("[data-rep-callbar]");
@@ -37,6 +38,7 @@
     const muteBtn = root.querySelector("[data-rep-mute]");
     const muteLabel = root.querySelector("[data-rep-mute-label]");
     const hangupBtn = root.querySelector("[data-rep-hangup]");
+    const hangupLabel = root.querySelector("[data-rep-hangup-label]");
 
     function setStatus(text) {
         if (statusEl) statusEl.textContent = text;
@@ -50,15 +52,13 @@
         switch (state) {
             case "ringing":
                 show(acceptBtn, true); show(declineBtn, true);
-                show(muteBtn, false); show(hangupBtn, false);
-                break;
-            case "connecting":
-                show(acceptBtn, false); show(declineBtn, false);
-                show(muteBtn, false); show(hangupBtn, false);
+                show(muteBtn, false); show(hangupBtn, true);
+                if (hangupLabel) hangupLabel.textContent = "Force reset";
                 break;
             case "incall":
                 show(acceptBtn, false); show(declineBtn, false);
                 show(muteBtn, true); show(hangupBtn, true);
+                if (hangupLabel) hangupLabel.textContent = "Hang up";
                 break;
             case "unavailable":
                 show(acceptBtn, false); show(declineBtn, false);
@@ -66,7 +66,8 @@
                 break;
             default: // idle
                 show(acceptBtn, false); show(declineBtn, false);
-                show(muteBtn, false); show(hangupBtn, false);
+                show(muteBtn, false); show(hangupBtn, true);
+                if (hangupLabel) hangupLabel.textContent = "Force reset";
                 break;
         }
     }
@@ -96,34 +97,18 @@
 
     // ── Registration heartbeat ───────────────────────────────────────────────────────────────
     let heartbeatTimer = null;
-    let softphoneRegistered = false;
 
     async function register() {
-        if (!repUserId) return false;
+        if (!repUserId) return;
         try {
-            const resp = await fetch(REGISTER_URL, {
+            await fetch(REGISTER_URL, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 cache: "no-store",
                 body: JSON.stringify({ userId: repUserId })
             });
-            if (!resp.ok) {
-                throw new Error(`register endpoint returned ${resp.status}`);
-            }
-            softphoneRegistered = true;
-            if (!currentCall && !currentIncoming) {
-                applyState("idle");
-                setStatus("Ready — waiting for a call");
-            }
-            return true;
         } catch (err) {
-            softphoneRegistered = false;
             console.warn("rep-phone: register failed (will retry).", err);
-            if (!currentCall && !currentIncoming) {
-                applyState("unavailable");
-                setStatus("Softphone registration lost — retrying…");
-            }
-            return false;
         }
     }
 
@@ -144,7 +129,7 @@
 
     function wireCall(call) {
         currentCall = call;
-        const applyCallState = () => {
+        call.on("stateChanged", () => {
             const s = call.state;
             if (s === "Connected") {
                 applyState("incall");
@@ -155,15 +140,9 @@
                 applyState("idle");
                 setStatus("Ready — waiting for a call");
             } else {
-                applyState("connecting");
                 setStatus(`Call ${s.toLowerCase()}…`);
             }
-        };
-
-        call.on("stateChanged", applyCallState);
-        // Ensure UI reflects the current call state immediately even if the SDK transitions to
-        // Connected before we attach the stateChanged listener.
-        applyCallState();
+        });
         call.on("isMutedChanged", syncMute);
     }
 
@@ -172,6 +151,22 @@
         const muted = !!currentCall.isMuted;
         muteBtn.setAttribute("aria-pressed", muted ? "true" : "false");
         if (muteLabel) muteLabel.textContent = muted ? "Unmute" : "Mute";
+    }
+
+    async function forceReset(reasonText) {
+        try {
+            await fetch(FORCE_RESET_URL, {
+                method: "POST",
+                cache: "no-store"
+            });
+        } catch (err) {
+            console.warn("rep-phone: force-reset request failed.", err);
+        }
+
+        currentIncoming = null;
+        currentCall = null;
+        applyState("idle");
+        setStatus(reasonText || "Reset complete — waiting for a call");
     }
 
     function onIncomingCall(args) {
@@ -228,9 +223,15 @@
     });
 
     hangupBtn && hangupBtn.addEventListener("click", async () => {
-        if (!currentCall) return;
-        try { await currentCall.hangUp(); }
-        catch (err) { console.warn("rep-phone: hang up failed.", err); }
+        if (currentCall) {
+            try { await currentCall.hangUp(); }
+            catch (err) { console.warn("rep-phone: hang up failed.", err); }
+        } else if (currentIncoming) {
+            try { await currentIncoming.reject(); }
+            catch (err) { console.warn("rep-phone: reject on reset failed.", err); }
+        }
+
+        await forceReset("Force reset complete — waiting for a call");
     });
 
     // ── Bootstrap ────────────────────────────────────────────────────────────────────────────
@@ -268,12 +269,8 @@
 
             // "Registered" == the incomingCall handler is wired and ready.
             callAgent.on("incomingCall", onIncomingCall);
-            setStatus("Registering softphone…");
-            const registered = await register();
-            if (!registered && !softphoneRegistered) {
-                applyState("unavailable");
-                setStatus("Softphone registration pending — retrying…");
-            }
+            applyState("idle");
+            setStatus("Ready — waiting for a call");
             startHeartbeat();
         } catch (err) {
             console.error("rep-phone: failed to initialise CallAgent.", err);

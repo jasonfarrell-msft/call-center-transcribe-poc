@@ -61,12 +61,11 @@ internal static class AcsEndpoints
             HttpContext ctx,
             AcsAudioSource acsSource,
             ActiveCallStore callStore,
-            PipelineCurrentStateStore currentStateStore,
             LiveSentimentStore liveSentiment,
             IHubContext<PipelineHub> hub,
             ILoggerFactory loggerFactory) =>
         {
-            await HandleMediaStreamAsync(ctx, acsSource, callStore, currentStateStore, liveSentiment, hub, loggerFactory.CreateLogger("AcsEndpoints"));
+            await HandleMediaStreamAsync(ctx, acsSource, callStore, liveSentiment, hub, loggerFactory.CreateLogger("AcsEndpoints"));
         }).AllowAnonymous();
 
         // ── Active call query — lets a late-joining/reconnecting browser resync state ───────────
@@ -175,13 +174,9 @@ internal static class AcsEndpoints
                     }
 
                     var callStore = ctx.RequestServices.GetRequiredService<ActiveCallStore>();
-                    // Single-call POC: atomically claim incoming-call answering so concurrent webhook
-                    // deliveries cannot answer multiple calls at once.
                     if (!callStore.TryBeginIncomingClaim())
                     {
-                        logger.LogWarning(
-                            "Ignoring IncomingCall while active call/claim is already in progress. Active call={ActiveCallId}.",
-                            callStore.CallId);
+                        logger.LogInformation("IncomingCall ignored because another call answer claim is already in progress.");
                         return Results.Ok();
                     }
 
@@ -213,12 +208,8 @@ internal static class AcsEndpoints
 
                         // Capture the ACS call connection ID so SpeechTranscriptionService can
                         // route transcript events to the correct SignalR group.
-                        var repRegistry = ctx.RequestServices.GetRequiredService<RepRegistry>();
                         var answeredCallId = result.Value.CallConnection.CallConnectionId;
                         callStore.CompleteIncomingClaim(answeredCallId);
-                        ctx.RequestServices
-                            .GetRequiredService<PipelineCurrentStateStore>()
-                            .ResetForCall(answeredCallId);
 
                         // Broadcast call-started so every console client transitions Disconnected → Connecting
                         // and subscribes to call:{answeredCallId}. Broadcast group == publish group (reviewer fix).
@@ -232,18 +223,6 @@ internal static class AcsEndpoints
                                 TimestampUtc = DateTimeOffset.UtcNow
                             },
                             ct);
-
-                        // Best-effort fast path: invite the currently registered rep immediately.
-                        // Callback-driven and heartbeat-driven paths remain as convergent retries.
-                        if (!string.IsNullOrWhiteSpace(repRegistry.CurrentUserId))
-                        {
-                            await RepEndpoints.TryAddRepToCallAsync(
-                                callClient,
-                                callStore,
-                                repRegistry,
-                                logger,
-                                ct);
-                        }
 
                         logger.LogInformation(
                             "ACS call answered; callId={CallId} media streaming directed to {MediaUri}",
@@ -305,9 +284,8 @@ internal static class AcsEndpoints
             {
                 case CallConnected connected:
                     logger.LogInformation(
-                        "ACS CallConnected for call {CallId}; attempting to add registered rep (operationContext={OperationContext}).",
-                        connected.CallConnectionId,
-                        connected.OperationContext ?? "(none)");
+                        "ACS CallConnected for call {CallId}; attempting to add registered rep.",
+                        connected.CallConnectionId);
 
                     var callClient = ctx.RequestServices.GetService<CallAutomationClient>();
                     var callStore = ctx.RequestServices.GetRequiredService<ActiveCallStore>();
@@ -319,130 +297,34 @@ internal static class AcsEndpoints
                         break;
                     }
 
-                    if (callStore.TrySetCallIdIfEmpty(connected.CallConnectionId))
-                    {
-                        ctx.RequestServices
-                            .GetRequiredService<PipelineCurrentStateStore>()
-                            .ResetForCall(connected.CallConnectionId);
-                    }
-
-                    var trackedCallId = callStore.CallId;
-                    if (string.IsNullOrWhiteSpace(trackedCallId))
-                    {
-                        logger.LogInformation(
-                            "Deferring CallConnected processing for call {CallbackCallId} while incoming call claim is still in progress.",
-                            connected.CallConnectionId);
-                        break;
-                    }
-
-                    if (!string.Equals(trackedCallId, connected.CallConnectionId, StringComparison.Ordinal))
-                    {
-                        logger.LogWarning(
-                            "Ignoring stale CallConnected callback for call {CallbackCallId}; active tracked call is {TrackedCallId}.",
-                            connected.CallConnectionId,
-                            trackedCallId);
-                        break;
-                    }
-
                     if (string.IsNullOrEmpty(registry.CurrentUserId))
                     {
                         // No rep ready yet — leave the add PENDING. The next /register reconverges
                         // and adds the rep (bounded by the AddParticipant invitation timeout).
                         logger.LogInformation(
-                            "CallConnected but no rep registered yet; deferring AddParticipant until /register. callId={CallId} trackedCall={TrackedCallId} repAdded={RepAdded}.",
-                            connected.CallConnectionId,
-                            callStore.CallId ?? "(none)",
-                            callStore.RepAdded);
+                            "CallConnected but no rep registered yet; deferring AddParticipant until /register.");
                         break;
                     }
 
                     await RepEndpoints.TryAddRepToCallAsync(callClient, callStore, registry, logger, ct);
                     break;
 
-                case CallDisconnected disconnected:
-                    await HandleCallDisconnectedAsync(ctx.RequestServices, disconnected.CallConnectionId, logger, ct);
-                    break;
-
                 case AddParticipantSucceeded ok:
-                    var successStore = ctx.RequestServices.GetRequiredService<ActiveCallStore>();
-                    var trackedSuccessCallId = successStore.CallId;
-                    var pendingSuccessOperationContext = successStore.PendingAddRepOperationContext;
-                    var successMatchesTrackedCall =
-                        !string.IsNullOrWhiteSpace(trackedSuccessCallId) &&
-                        string.Equals(trackedSuccessCallId, ok.CallConnectionId, StringComparison.Ordinal) &&
-                        !string.IsNullOrWhiteSpace(ok.OperationContext) &&
-                        string.Equals(ok.OperationContext, pendingSuccessOperationContext, StringComparison.Ordinal);
-                    if (successMatchesTrackedCall)
-                    {
-                        if (successStore.MarkRepAdded(ok.OperationContext))
-                        {
-                            logger.LogInformation(
-                                "ACS AddParticipant succeeded (rep answered) for callbackCallId={CallbackCallId}; trackedCallId={TrackedCallId}; operationContext={OperationContext}. Rep marked connected.",
-                                ok.CallConnectionId,
-                                trackedSuccessCallId,
-                                ok.OperationContext ?? "(none)");
-                        }
-                        else
-                        {
-                            logger.LogWarning(
-                                "Ignoring AddParticipantSucceeded after state changed: callbackCallId={CallbackCallId}; trackedCallId={TrackedCallId}; operationContext={OperationContext}.",
-                                ok.CallConnectionId,
-                                trackedSuccessCallId ?? "(none)",
-                                ok.OperationContext ?? "(none)");
-                        }
-                    }
-                    else
-                    {
-                        logger.LogWarning(
-                            "Ignoring AddParticipantSucceeded for stale/late attempt: callbackCallId={CallbackCallId}; trackedCallId={TrackedCallId}; operationContext={OperationContext}; pendingOperationContext={PendingOperationContext}.",
-                            ok.CallConnectionId,
-                            trackedSuccessCallId ?? "(none)",
-                            ok.OperationContext ?? "(none)",
-                            pendingSuccessOperationContext ?? "(none)");
-                    }
+                    logger.LogInformation(
+                        "ACS AddParticipant succeeded (rep answered) for call {CallId}.", ok.CallConnectionId);
                     break;
 
                 case AddParticipantFailed failed:
                     // Rep declined / didn't answer in time / error → release the claim so a later
                     // /register (e.g., rep retries) can re-invite within the call's lifetime.
-                    var activeStore = ctx.RequestServices.GetRequiredService<ActiveCallStore>();
-                    var trackedFailedCallId = activeStore.CallId;
-                    var pendingFailedOperationContext = activeStore.PendingAddRepOperationContext;
-                    var failedMatchesTrackedCall =
-                        !string.IsNullOrWhiteSpace(trackedFailedCallId) &&
-                        string.Equals(trackedFailedCallId, failed.CallConnectionId, StringComparison.Ordinal) &&
-                        !string.IsNullOrWhiteSpace(failed.OperationContext) &&
-                        string.Equals(failed.OperationContext, pendingFailedOperationContext, StringComparison.Ordinal);
-                    if (failedMatchesTrackedCall)
-                    {
-                        if (activeStore.ResetAddRep(failed.OperationContext))
-                        {
-                            logger.LogWarning(
-                                "ACS AddParticipant failed for callbackCallId={CallbackCallId}; trackedCallId={TrackedCallId}: {Code} {Message}; operationContext={OperationContext}",
-                                failed.CallConnectionId,
-                                trackedFailedCallId,
-                                failed.ResultInformation?.Code,
-                                failed.ResultInformation?.Message,
-                                failed.OperationContext ?? "(none)");
-                        }
-                        else
-                        {
-                            logger.LogWarning(
-                                "Ignoring AddParticipantFailed after state changed: callbackCallId={CallbackCallId}; trackedCallId={TrackedCallId}; operationContext={OperationContext}.",
-                                failed.CallConnectionId,
-                                trackedFailedCallId ?? "(none)",
-                                failed.OperationContext ?? "(none)");
-                        }
-                    }
-                    else
-                    {
-                        logger.LogWarning(
-                            "Ignoring AddParticipantFailed for stale/late attempt: callbackCallId={CallbackCallId}; trackedCallId={TrackedCallId}; operationContext={OperationContext}; pendingOperationContext={PendingOperationContext}.",
-                            failed.CallConnectionId,
-                            trackedFailedCallId ?? "(none)",
-                            failed.OperationContext ?? "(none)",
-                            pendingFailedOperationContext ?? "(none)");
-                    }
+                    logger.LogWarning(
+                        "ACS AddParticipant failed for call {CallId}: {Code} {Message}",
+                        failed.CallConnectionId, failed.ResultInformation?.Code, failed.ResultInformation?.Message);
+                    ctx.RequestServices.GetRequiredService<ActiveCallStore>().ResetAddRep();
+                    break;
+
+                case CallDisconnected disconnected:
+                    await HandleCallDisconnectedAsync(ctx.RequestServices, disconnected.CallConnectionId, logger, ct);
                     break;
 
                 default:
@@ -451,6 +333,10 @@ internal static class AcsEndpoints
             }
         }
     }
+
+    // ────────────────────────────────────────────────────────────────────────────────────────────
+    // Disconnected safety-net cleanup
+    // ────────────────────────────────────────────────────────────────────────────────────────────
 
     private static async Task HandleCallDisconnectedAsync(
         IServiceProvider services,
@@ -488,7 +374,6 @@ internal static class AcsEndpoints
         {
             var delayedCallStore = services.GetRequiredService<ActiveCallStore>();
             var delayedAudioSource = services.GetRequiredService<AcsAudioSource>();
-            var delayedCurrentStateStore = services.GetRequiredService<PipelineCurrentStateStore>();
             var delayedLiveSentimentStore = services.GetRequiredService<LiveSentimentStore>();
 
             _ = Task.Run(async () =>
@@ -499,12 +384,11 @@ internal static class AcsEndpoints
 
                     if (!string.Equals(delayedCallStore.CallId, endedCallId, StringComparison.Ordinal))
                     {
-                        return; // call already cleared or replaced by a newer call
+                        return;
                     }
 
                     delayedAudioSource.CompleteStream();
                     delayedCallStore.Clear();
-                    delayedCurrentStateStore.ClearLiveState();
                     delayedLiveSentimentStore.Clear();
 
                     logger.LogWarning(
@@ -531,7 +415,6 @@ internal static class AcsEndpoints
         HttpContext ctx,
         AcsAudioSource acsSource,
         ActiveCallStore callStore,
-        PipelineCurrentStateStore currentStateStore,
         LiveSentimentStore liveSentiment,
         IHubContext<PipelineHub> hub,
         ILogger logger)
@@ -614,7 +497,6 @@ internal static class AcsEndpoints
             // Signal end-of-stream to all ReadAsync consumers regardless of how the loop ended.
             acsSource.CompleteStream();
             callStore.Clear();  // call is over; new calls start fresh
-            currentStateStore.ClearLiveState();  // clear replay/current-state history between calls
             liveSentiment.Clear();  // drop rolling sentiment so the panel returns to waiting
 
             if (!string.IsNullOrEmpty(endedCallId))

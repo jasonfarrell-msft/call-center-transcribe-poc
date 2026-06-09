@@ -13,11 +13,11 @@ public static class ServiceCollectionExtensions
     /// Registers all call-center services.
     ///
     /// DI swap — AudioSource:Mode (env: AudioSource__Mode):
-    ///   "Acs"  (DEFAULT) → AcsAudioSource  (Channel-backed live path; needs Acs:Endpoint + RBAC to answer calls)
-    ///   "Mock"           → MockAudioSource (explicit deterministic fallback)
+    ///   "Mock" (DEFAULT) → MockAudioSource (no ACS dependency; nothing breaks when unset)
+    ///   "Acs"            → AcsAudioSource  (Channel-backed; needs Acs:Endpoint + RBAC)
     ///
     /// AcsAudioSource is ALWAYS registered as a singleton so the media-stream WebSocket
-    /// handler can inject it regardless of mode (it stays dormant/empty when Mock fallback is selected).
+    /// handler can inject it regardless of mode (it stays dormant/empty when Mode=Mock).
     ///
     /// CallAutomationClient is registered when Acs:Endpoint is configured; uses
     /// DefaultAzureCredential (managed identity on ACA). No connection strings.
@@ -27,14 +27,8 @@ public static class ServiceCollectionExtensions
         IConfiguration configuration)
     {
         services.AddSignalR();
-        services.AddHttpClient();
-        services.Configure<ReasoningOptions>(configuration.GetSection("Reasoning"));
-        services.AddSingleton<MockReasoningClient>();
-        services.AddSingleton<AzureAiFoundryReasoningClient>();
-        services.AddSingleton<IReasoningClient, ConfiguredReasoningClient>();
+        services.AddSingleton<IReasoningClient, MockReasoningClient>();
         services.AddSingleton<IScriptedScenarioFeed, ScriptedPropaneRetentionScenarioFeed>();
-        services.AddSingleton<PipelineCurrentStateStore>();
-        services.AddSingleton<PipelineReplayPublisher>();
 
         // ActiveCallStore: holds the current ACS call ID so SpeechTranscriptionService can
         // route transcript events to the correct SignalR group ("call:{callId}").
@@ -54,7 +48,7 @@ public static class ServiceCollectionExtensions
         // is dormant — its Channel stays empty because no calls are answered.
         services.AddSingleton<AcsAudioSource>();
 
-        var audioSourceMode = configuration.GetValue<string>("AudioSource:Mode") ?? "Acs";
+        var audioSourceMode = configuration.GetValue<string>("AudioSource:Mode") ?? "Mock";
         if (string.Equals(audioSourceMode, "Acs", StringComparison.OrdinalIgnoreCase))
         {
             // Forward the same singleton via the interface contract.
@@ -62,7 +56,7 @@ public static class ServiceCollectionExtensions
         }
         else
         {
-            // Explicit fallback: MockAudioSource for deterministic scripted demos/tests.
+            // Default: MockAudioSource — safe with no ACS provisioning.
             services.AddSingleton<IAudioSource, MockAudioSource>();
         }
 

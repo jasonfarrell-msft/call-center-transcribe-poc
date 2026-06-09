@@ -46,13 +46,9 @@ This document defines the minimum security/privacy posture before exposing live 
 
 ## 6) Mock/live safety switch
 
-- `AudioSource:Mode` is the customer↔rep interaction mode switch.
-  - `Acs` (default): the app stays on the live interaction path and waits for a real call.
-  - `Mock`: explicit deterministic fallback for scripted demo playback.
-- `Frontend:LiveMode` is the web-console rendering switch.
-  - `true` (default): live header/softphone/SignalR experience for ACS calls.
-  - `false`: scripted/polling console mode that intentionally surfaces mock customer/session metadata.
-- When using the scripted interaction fallback, set `AudioSource:Mode=Mock` **and** `Frontend:LiveMode=false` together so API and web remain coherent.
+- `DemoSafety:DataMode` is the explicit mode switch.
+  - `Mock` (default): scripted mock feed is allowed.
+  - Any non-`Mock` value currently fails startup until real providers are implemented.
 - UI/API surfaces must continue exposing `IsMockFeedActive` so operators can see when mock data is active.
 
 ## 7) Unauthorized access test checklist
@@ -60,4 +56,4 @@ This document defines the minimum security/privacy posture before exposing live 
 - [x] REST unauthorized test: `/api/session/current` returns `401` when `Security:RequireAuth=true` and no token is provided.
 - [x] SignalR unauthorized test: `/hubs/pipeline/negotiate` returns `401` when `Security:RequireAuth=true` and no token is provided.
 - [x] Config guard test: app fails startup if `Security:RequireAuth=true` without `Security:Auth:Authority` and `Security:Auth:Audience`.
-- [x] Mock fallback remains opt-in via `AudioSource:Mode=Mock`; live mode is the default startup path.
+- [x] Mock/live guard test: app fails startup when `DemoSafety:DataMode` is not `Mock`.

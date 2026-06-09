@@ -128,6 +128,7 @@ public sealed class ActiveCallStore
         }
 
         Interlocked.Exchange(ref _repAddState, RepAddNone);
+        Interlocked.Exchange(ref _incomingClaimState, IncomingClaimNone);
     }
 
     /// <summary>Claims ownership of answering the next incoming call.</summary>
