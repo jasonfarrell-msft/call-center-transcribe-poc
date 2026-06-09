@@ -59,6 +59,28 @@
                     <dd data-meta-connected>@Model.ConnectionTimeDisplay</dd>
                 </div>
             </dl>
+
+            @if (Model.LiveMode)
+            {
+                <div class="rep-callbar" data-rep-callbar hidden
+                     aria-label="Rep phone controls" role="region">
+                    <span class="rep-callbar-status" data-rep-status aria-live="polite">Softphone starting…</span>
+                    <div class="rep-callbar-actions">
+                        <button type="button" class="rep-btn rep-btn--accept" data-rep-accept hidden>
+                            <span aria-hidden="true">📞</span> Accept
+                        </button>
+                        <button type="button" class="rep-btn rep-btn--decline" data-rep-decline hidden>
+                            <span aria-hidden="true">✕</span> Decline
+                        </button>
+                        <button type="button" class="rep-btn rep-btn--mute" data-rep-mute hidden aria-pressed="false">
+                            <span aria-hidden="true">🎙️</span> <span data-rep-mute-label>Mute</span>
+                        </button>
+                        <button type="button" class="rep-btn rep-btn--hangup" data-rep-hangup hidden>
+                            <span aria-hidden="true">⛔</span> Hang up
+                        </button>
+                    </div>
+                </div>
+            }
         </header>
 
         <div class="console-columns" data-console-refresh-region="@(Model.LiveMode ? null : "columns")">
@@ -262,5 +284,7 @@
     {
         <script src="~/lib/signalr/dist/browser/signalr.min.js" asp-append-version="true"></script>
         <script src="~/js/live-transcript.js" asp-append-version="true"></script>
+        <script src="~/lib/acs-calling/acs-calling.bundle.js" asp-append-version="true"></script>
+        <script src="~/js/rep-phone.js" asp-append-version="true"></script>
     }
 }

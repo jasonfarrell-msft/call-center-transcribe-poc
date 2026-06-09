@@ -1,4 +1,5 @@
 using Azure.Communication.CallAutomation;
+using Azure.Communication.Identity;
 using Azure.Identity;
 using CallCenterTranscription.Ai;
 using CallCenterTranscription.Api.Services;
@@ -68,7 +69,18 @@ public static class ServiceCollectionExtensions
             services.AddSingleton(new CallAutomationClient(
                 new Uri(acsEndpoint),
                 new DefaultAzureCredential()));
+
+            // CommunicationIdentityClient: mints VoIP tokens for the rep's browser Calling SDK.
+            // Same managed-identity posture as Call Automation — NO connection strings.
+            services.AddSingleton(new CommunicationIdentityClient(
+                new Uri(acsEndpoint),
+                new DefaultAzureCredential()));
+            services.AddSingleton<RepIdentityService>();
         }
+
+        // RepRegistry: always present so /register works even before a token is minted; the
+        // browser is the source of truth for which identity gets added to a call.
+        services.AddSingleton<RepRegistry>();
 
         return services;
     }

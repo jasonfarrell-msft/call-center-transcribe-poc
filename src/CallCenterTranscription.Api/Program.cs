@@ -139,6 +139,9 @@ if (requireAuth)
 // Always mapped; dormant when AudioSource:Mode=Mock (no calls answered in mock mode).
 app.MapAcsRoutes();
 
+// Rep softphone control-plane: VoIP token + register/AddParticipant.
+app.MapRepRoutes();
+
 app.Run();
 
 public partial class Program;

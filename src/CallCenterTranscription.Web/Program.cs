@@ -5,6 +5,7 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddRazorPages();
 builder.Services.Configure<BackendApiOptions>(builder.Configuration.GetSection(BackendApiOptions.SectionName));
 builder.Services.AddHttpClient<PipelineApiClient>();
+builder.Services.AddHttpClient("rep-proxy");
 
 var app = builder.Build();
 
@@ -40,6 +41,62 @@ app.UseRouting();
 app.UseAuthorization();
 
 app.MapGet("/healthz", () => Results.Ok(new { status = "ok" }));
+
+// ── Rep softphone proxy ───────────────────────────────────────────────────────────────────────
+// Same-origin shim so the browser never holds the backend shared secret. These forward to the
+// API's /api/rep/* routes injecting the X-Rep-Key header (from Rep:AccessKey). The browser calls
+// /rep/token and /rep/register on this Web origin only.
+static (string? baseUrl, string? key) RepProxyConfig(IConfiguration cfg) =>
+    (cfg[$"{BackendApiOptions.SectionName}:BaseUrl"], cfg["Rep:AccessKey"]);
+
+app.MapGet("/rep/token", async (
+    HttpContext http,
+    IHttpClientFactory httpFactory,
+    IConfiguration cfg,
+    CancellationToken ct) =>
+{
+    var (baseUrl, key) = RepProxyConfig(cfg);
+    if (string.IsNullOrWhiteSpace(baseUrl) || !Uri.TryCreate(baseUrl, UriKind.Absolute, out var baseUri))
+        return Results.Problem("Rep softphone backend is not configured.", statusCode: StatusCodes.Status503ServiceUnavailable);
+
+    var userId = http.Request.Query["userId"].ToString();
+    var target = new Uri(baseUri, $"api/rep/token{(string.IsNullOrEmpty(userId) ? "" : $"?userId={Uri.EscapeDataString(userId)}")}");
+
+    using var client = httpFactory.CreateClient("rep-proxy");
+    using var req = new HttpRequestMessage(HttpMethod.Get, target);
+    if (!string.IsNullOrEmpty(key)) req.Headers.Add("X-Rep-Key", key);
+
+    using var resp = await client.SendAsync(req, ct);
+    var json = await resp.Content.ReadAsStringAsync(ct);
+    return Results.Content(json, "application/json", statusCode: (int)resp.StatusCode);
+});
+
+app.MapPost("/rep/register", async (
+    HttpContext http,
+    IHttpClientFactory httpFactory,
+    IConfiguration cfg,
+    CancellationToken ct) =>
+{
+    var (baseUrl, key) = RepProxyConfig(cfg);
+    if (string.IsNullOrWhiteSpace(baseUrl) || !Uri.TryCreate(baseUrl, UriKind.Absolute, out var baseUri))
+        return Results.Problem("Rep softphone backend is not configured.", statusCode: StatusCodes.Status503ServiceUnavailable);
+
+    string body;
+    using (var reader = new StreamReader(http.Request.Body))
+        body = await reader.ReadToEndAsync(ct);
+
+    var target = new Uri(baseUri, "api/rep/register");
+    using var client = httpFactory.CreateClient("rep-proxy");
+    using var req = new HttpRequestMessage(HttpMethod.Post, target)
+    {
+        Content = new StringContent(body, System.Text.Encoding.UTF8, "application/json")
+    };
+    if (!string.IsNullOrEmpty(key)) req.Headers.Add("X-Rep-Key", key);
+
+    using var resp = await client.SendAsync(req, ct);
+    var json = await resp.Content.ReadAsStringAsync(ct);
+    return Results.Content(json, "application/json", statusCode: (int)resp.StatusCode);
+});
 
 app.MapStaticAssets();
 app.MapRazorPages()

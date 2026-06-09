@@ -47,6 +47,7 @@ public sealed class AcsAudioSource : IAudioSource
 
     private long _frameCount;
     private long _silentFrameCount;
+    private long _repFrameCount;
 
     public AcsAudioSource(ILogger<AcsAudioSource> logger)
     {
@@ -138,6 +139,19 @@ public sealed class AcsAudioSource : IAudioSource
                 if (!root.TryGetProperty("audioData", out var audioData))
                     return ValueTask.CompletedTask;
 
+                // Unmixed media streaming tags each frame with the source participant's raw id.
+                // ACS raw-id prefixes: "4:" = PSTN (the CUSTOMER), "8:" = CommunicationUser (the REP
+                // we AddParticipant-ed). Drop the rep's audio so the single recognizer — and thus the
+                // transcript AND the customer sentiment meter — stays CUSTOMER-only. Fail-open: if the
+                // field is absent (e.g., a Mixed fallback) we INCLUDE the frame, so we never silently
+                // lose the customer; worst case the rep briefly leaks in (the prior behaviour).
+                if (TryGetParticipantRawId(audioData, out var participantRawId) &&
+                    participantRawId.StartsWith("8:", StringComparison.Ordinal))
+                {
+                    Interlocked.Increment(ref _repFrameCount);
+                    return ValueTask.CompletedTask;
+                }
+
                 if (!audioData.TryGetProperty("data", out var dataProp))
                     return ValueTask.CompletedTask;
 
@@ -224,9 +238,32 @@ public sealed class AcsAudioSource : IAudioSource
 
         var total  = Interlocked.Read(ref _frameCount);
         var silent = Interlocked.Read(ref _silentFrameCount);
+        var rep    = Interlocked.Read(ref _repFrameCount);
         _logger.LogInformation(
-            "AcsAudioSource: audio session completed — {Total} AudioData frames received " +
-            "({Silent} silent, {NonSilent} with audio).",
-            total, silent, total - silent);
+            "AcsAudioSource: audio session completed — {Total} customer AudioData frames received " +
+            "({Silent} silent, {NonSilent} with audio); {Rep} rep frames dropped (unmixed).",
+            total, silent, total - silent, rep);
+    }
+
+    /// <summary>
+    /// Reads the source participant raw id from an unmixed AudioData payload. ACS has historically
+    /// used both "participantRawID" and "participantRawId" casings, so we try both.
+    /// </summary>
+    private static bool TryGetParticipantRawId(JsonElement audioData, out string rawId)
+    {
+        if (audioData.TryGetProperty("participantRawID", out var a) && a.ValueKind == JsonValueKind.String)
+        {
+            rawId = a.GetString() ?? string.Empty;
+            return rawId.Length > 0;
+        }
+
+        if (audioData.TryGetProperty("participantRawId", out var b) && b.ValueKind == JsonValueKind.String)
+        {
+            rawId = b.GetString() ?? string.Empty;
+            return rawId.Length > 0;
+        }
+
+        rawId = string.Empty;
+        return false;
     }
 }

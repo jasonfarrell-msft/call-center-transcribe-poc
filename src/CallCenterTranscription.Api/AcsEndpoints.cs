@@ -40,11 +40,16 @@ internal static class AcsEndpoints
         {
             return await HandleIncomingCallAsync(ctx, loggerFactory.CreateLogger("AcsEndpoints"), ct);
         });
-        // Receives mid-call ACS events (CallConnected, MediaStreamingStarted, etc.).
-        // Returns 200 OK; full event dispatch is out of scope for this round.
-        acsEvents.MapPost("/callbacks", (ILoggerFactory loggerFactory) =>
+        // Receives mid-call ACS Call Automation events (CallConnected, AddParticipant results, etc.).
+        // On CallConnected we AddParticipant the registered rep so their browser rings (Accept gate).
+        // Always returns 200 OK so ACS does not retry on transient handler errors.
+        acsEvents.MapPost("/callbacks", async (
+            HttpContext ctx,
+            ILoggerFactory loggerFactory,
+            CancellationToken ct) =>
         {
-            loggerFactory.CreateLogger("AcsEndpoints").LogDebug("ACS mid-call callback received.");
+            var logger = loggerFactory.CreateLogger("AcsEndpoints");
+            await HandleCallbacksAsync(ctx, logger, ct);
             return Results.Ok();
         });
 
@@ -174,10 +179,14 @@ internal static class AcsEndpoints
                     {
                         // SDK 1.5.1 API: ctor takes (audioChannelType, streamingTransport);
                         // TransportUri and MediaStreamingContent are set as properties.
+                        // Unmixed (per-participant audio) so the rep's mic — once they join — can be
+                        // dropped from the transcript/sentiment pipeline, keeping the sentiment meter
+                        // CUSTOMER-only. Before the rep joins there is only the caller, so behaviour
+                        // is identical to the prior Mixed stream.
                         var answerOptions = new AnswerCallOptions(incomingCallContext, callbackUri)
                         {
                             MediaStreamingOptions = new MediaStreamingOptions(
-                                MediaStreamingAudioChannel.Mixed,
+                                MediaStreamingAudioChannel.Unmixed,
                                 StreamingTransport.Websocket)
                             {
                                 TransportUri           = mediaStreamUri,
@@ -226,6 +235,90 @@ internal static class AcsEndpoints
         }
 
         return Results.Ok();
+    }
+
+    // ────────────────────────────────────────────────────────────────────────────────────────────
+    // Mid-call callbacks handler (CallConnected → AddParticipant the rep)
+    // ────────────────────────────────────────────────────────────────────────────────────────────
+
+    private static async Task HandleCallbacksAsync(HttpContext ctx, ILogger logger, CancellationToken ct)
+    {
+        string body;
+        try
+        {
+            using var reader = new StreamReader(ctx.Request.Body);
+            body = await reader.ReadToEndAsync(ct);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Failed to read ACS callback body; ignoring.");
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(body))
+            return;
+
+        CallAutomationEventBase[] events;
+        try
+        {
+            events = CallAutomationEventParser.ParseMany(BinaryData.FromString(body));
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Failed to parse ACS callback events; ignoring.");
+            return;
+        }
+
+        foreach (var evt in events)
+        {
+            switch (evt)
+            {
+                case CallConnected connected:
+                    logger.LogInformation(
+                        "ACS CallConnected for call {CallId}; attempting to add registered rep.",
+                        connected.CallConnectionId);
+
+                    var callClient = ctx.RequestServices.GetService<CallAutomationClient>();
+                    var callStore = ctx.RequestServices.GetRequiredService<ActiveCallStore>();
+                    var registry = ctx.RequestServices.GetRequiredService<RepRegistry>();
+
+                    if (callClient is null)
+                    {
+                        logger.LogWarning("CallConnected received but CallAutomationClient is not registered.");
+                        break;
+                    }
+
+                    if (string.IsNullOrEmpty(registry.CurrentUserId))
+                    {
+                        // No rep ready yet — leave the add PENDING. The next /register reconverges
+                        // and adds the rep (bounded by the AddParticipant invitation timeout).
+                        logger.LogInformation(
+                            "CallConnected but no rep registered yet; deferring AddParticipant until /register.");
+                        break;
+                    }
+
+                    await RepEndpoints.TryAddRepToCallAsync(callClient, callStore, registry, logger, ct);
+                    break;
+
+                case AddParticipantSucceeded ok:
+                    logger.LogInformation(
+                        "ACS AddParticipant succeeded (rep answered) for call {CallId}.", ok.CallConnectionId);
+                    break;
+
+                case AddParticipantFailed failed:
+                    // Rep declined / didn't answer in time / error → release the claim so a later
+                    // /register (e.g., rep retries) can re-invite within the call's lifetime.
+                    logger.LogWarning(
+                        "ACS AddParticipant failed for call {CallId}: {Code} {Message}",
+                        failed.CallConnectionId, failed.ResultInformation?.Code, failed.ResultInformation?.Message);
+                    ctx.RequestServices.GetRequiredService<ActiveCallStore>().ResetAddRep();
+                    break;
+
+                default:
+                    logger.LogDebug("Unhandled ACS callback event '{Type}'.", evt.GetType().Name);
+                    break;
+            }
+        }
     }
 
     // ────────────────────────────────────────────────────────────────────────────────────────────
