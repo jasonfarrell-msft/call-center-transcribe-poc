@@ -60,7 +60,7 @@ public sealed class Phase0ScaffoldTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        // No configuration → AudioSource:Mode defaults to "Mock"; Acs:Endpoint absent.
+        // No configuration → AudioSource:Mode defaults to "Acs"; live answering still waits on Acs:Endpoint.
         services.AddCallCenterServices(new ConfigurationBuilder().Build());
 
         using var provider = services.BuildServiceProvider();
@@ -68,7 +68,7 @@ public sealed class Phase0ScaffoldTests
         var audioSource = provider.GetRequiredService<IAudioSource>();
         var reasoningClient = provider.GetRequiredService<IReasoningClient>();
 
-        Assert.IsType<MockAudioSource>(audioSource);
+        Assert.IsType<AcsAudioSource>(audioSource);
         Assert.IsType<ConfiguredReasoningClient>(reasoningClient);
     }
 }

@@ -51,12 +51,12 @@ Transcript turn order:
 ## Mission Control baseline
 
 - Mission Control overall state remains `degraded`.
-- `IsMockFeedActive = true`.
+- `IsMockFeedActive = false` by default.
 - `AcsMediaRoutesLiveReady = false`.
-- Summary must continue to communicate that mock feed is active and ACS callback/media routes are deferred/not live-ready.
+- Summary must communicate that live mode is active, with degraded dependencies until ACS/Speech/Translator are configured.
 - Component expectations include:
-  - `mock-feed` status `mock`
-  - `acs-media-routes` status `deferred`
+  - `mock-feed` status `deferred`
+  - `acs-media-routes` status `degraded`
 
 ## Minimum manual smoke path
 
@@ -64,17 +64,18 @@ Transcript turn order:
 
 - API:
   - `GET /healthz` returns OK.
-  - `GET /api/session/current` returns `call-propane-retention-0001`.
-  - `GET /api/events/transcript` returns 5 ordered scripted turns.
-  - `GET /api/events/translation` returns 1 translation correlated to transcript sequence 3.
-  - `GET /api/events/sentiment` returns improving summary.
-  - `GET /api/mission-control/health` reports degraded/mock/deferred status.
+  - `GET /api/session/current` defaults to a live/waiting payload with no mock customer or rep identity.
+  - `GET /api/session/current-state` defaults to a live/waiting replay snapshot with empty event arrays unless `AudioSource:Mode=Mock`.
+  - `GET /api/events/transcript` returns an empty array until a live call produces transcript events (or scripted history when mock mode is explicit).
+  - `GET /api/events/translation` returns an empty array until live translation is produced (or scripted history when mock mode is explicit).
+  - `GET /api/events/sentiment` returns a waiting/neutral summary until live sentiment is produced.
+  - `GET /api/mission-control/health` reports degraded/live-default status until live dependencies are configured.
 - Web:
   - Homepage renders **Call-Center Representative Console** (no scaffold placeholder).
-  - Transcript shows diarized turns in order.
-  - Spanish turn has a reveal control and reveals translation only after click.
+  - Homepage defaults to live mode (`Frontend:LiveMode=true`) and waits for a real call instead of showing mock customer/rep names.
+  - Scripted fallback validation uses `AudioSource:Mode=Mock` together with `Frontend:LiveMode=false`.
   - Sentiment card shows tone/trend as non-color-only text.
-  - Mission Control shows **Mock feed active** and ACS deferred/not-live-ready state.
+  - Mission Control shows live-mode degraded status until ACS dependencies are configured.
 
 ### Disconnected/degraded behavior checks
 
@@ -84,7 +85,7 @@ Transcript turn order:
 ### Deployed validation
 
 - Verify deployed Web and API `/healthz` endpoints.
-- Recheck the same scripted-call, translation, sentiment, and Mission Control expectations against deployed endpoints/UI.
+- Recheck the same live-waiting current-state, empty-until-live event, sentiment, and Mission Control expectations against deployed endpoints/UI (plus explicit mock-mode validation when used).
 
 ## Future regression additions (explicit place for new issues)
 

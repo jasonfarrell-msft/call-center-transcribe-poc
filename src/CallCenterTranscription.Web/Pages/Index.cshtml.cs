@@ -45,7 +45,7 @@ public class IndexModel : PageModel
     public IReadOnlyList<string> ConnectionIssues => _connectionIssues;
     public bool HasActiveCall => !string.IsNullOrWhiteSpace(CurrentSession.Call.CallId);
     public string RepresentativeDisplayName => string.IsNullOrWhiteSpace(CurrentSession.Call.AgentName)
-        ? "Capt Propane"
+        ? "Representative"
         : CurrentSession.Call.AgentName;
     public string CallIdDisplay => HasActiveCall ? CurrentSession.Call.CallId : "Waiting for call";
     public string CustomerDisplayName => HasActiveCall && !string.IsNullOrWhiteSpace(CurrentSession.Call.CustomerName)
@@ -89,14 +89,21 @@ public class IndexModel : PageModel
                 new SessionCurrentResponse(),
                 "session context",
                 warning => SessionWarning = warning);
-            ConnectionSummary = BuildConnectionSummary(currentSessionResult);
         }
         else
         {
             // Live mode: render neutral header placeholders; live-transcript.js updates them
             // (Call ID, customer, connected time, status summary) on callStarted/callEnded.
-            CurrentSession = new SessionCurrentResponse();
-            ConnectionSummary = "Live mode • Waiting for call";
+            CurrentSession = new SessionCurrentResponse
+            {
+                Call = new CallSessionMetadata
+                {
+                    State = "waiting",
+                    Source = "acs-live"
+                },
+                IsMockFeedActive = false,
+                Notes = "Live customer-to-representative interaction is enabled and waiting for a call."
+            };
         }
 
         var transcriptEvents = ResolveResult(
@@ -122,6 +129,9 @@ public class IndexModel : PageModel
 
         TranscriptTimeline = BuildTranscriptTimeline(transcriptEvents, translationEvents);
         Sentiment = BuildSentimentPresentation(SentimentFeed);
+        ConnectionSummary = currentSessionTask is null
+            ? "Live mode • Waiting for call"
+            : BuildConnectionSummary();
     }
 
     private static IReadOnlyList<TranscriptTimelineItem> BuildTranscriptTimeline(
@@ -247,11 +257,11 @@ public class IndexModel : PageModel
         };
     }
 
-    private string BuildConnectionSummary(ApiFetchResult<SessionCurrentResponse> currentSessionResult)
+    private string BuildConnectionSummary()
     {
         if (HasConnectionIssues)
         {
-            return currentSessionResult.IsSuccess
+            return SessionWarning is null
                 ? "Backend API degraded"
                 : "Backend API disconnected";
         }

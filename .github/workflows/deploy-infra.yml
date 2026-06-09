@@ -1,0 +1,107 @@
+name: Deploy Infrastructure
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/deploy-infra.yml
+      - azure.yaml
+      - infra/**
+  workflow_dispatch:
+    inputs:
+      preserve_api_image:
+        description: Preserve the currently deployed API container image during infra apply
+        required: true
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: ${{ github.ref == 'refs/heads/main' && 'deploy-infra-production' || format('deploy-infra-skip-{0}', github.run_id) }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # actions/checkout@v5
+
+      - name: Azure login
+        uses: azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43 # azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Validate Bicep template
+        run: az bicep build --file infra/main.bicep --stdout > /dev/null
+
+      - name: Resolve current API image
+        if: github.event_name != 'workflow_dispatch' || github.event.inputs.preserve_api_image == 'true'
+        id: current_api_image
+        env:
+          AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+          AZURE_CONTAINER_APP_NAME: ${{ vars.AZURE_CONTAINER_APP_NAME }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${AZURE_CONTAINER_APP_NAME:-}" ]; then
+            echo "AZURE_CONTAINER_APP_NAME is not set; skipping API image preservation."
+            exit 0
+          fi
+
+          if ! az containerapp show \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --name "$AZURE_CONTAINER_APP_NAME" \
+            --query "name" \
+            -o tsv > /dev/null 2>&1; then
+            echo "Container App '$AZURE_CONTAINER_APP_NAME' not found; skipping API image preservation."
+            exit 0
+          fi
+
+          CURRENT_API_IMAGE="$(az containerapp show \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --name "$AZURE_CONTAINER_APP_NAME" \
+            --query "properties.template.containers[0].image" \
+            -o tsv)"
+
+          if [ -n "$CURRENT_API_IMAGE" ]; then
+            echo "api_image=$CURRENT_API_IMAGE" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Deploy infrastructure
+        env:
+          AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+          CURRENT_API_IMAGE: ${{ steps.current_api_image.outputs.api_image }}
+        run: |
+          set -euo pipefail
+          DEPLOYMENT_NAME="infra-${GITHUB_RUN_NUMBER}-${GITHUB_SHA::7}"
+
+          PARAM_OVERRIDES=()
+          if [ -n "${CURRENT_API_IMAGE:-}" ]; then
+            PARAM_OVERRIDES+=("apiContainerImage=${CURRENT_API_IMAGE}")
+          fi
+
+          az deployment group create \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --name "$DEPLOYMENT_NAME" \
+            --template-file infra/main.bicep \
+            --parameters @infra/main.parameters.json \
+            "${PARAM_OVERRIDES[@]}" \
+            --query "properties.provisioningState" \
+            -o tsv
+
+      - name: Azure logout
+        if: always()
+        run: az logout

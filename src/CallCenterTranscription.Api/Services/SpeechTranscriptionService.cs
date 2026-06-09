@@ -19,6 +19,7 @@ public sealed class SpeechTranscriptionService : BackgroundService
     private readonly IAudioSource _audioSource;
     private readonly IHubContext<PipelineHub> _hub;
     private readonly ActiveCallStore _callStore;
+    private readonly PipelineCurrentStateStore _currentStateStore;
     private readonly LiveSentimentStore _liveSentiment;
     private readonly IReasoningClient _reasoningClient;
     private readonly IHttpClientFactory _httpClientFactory;
@@ -29,6 +30,7 @@ public sealed class SpeechTranscriptionService : BackgroundService
         IAudioSource audioSource,
         IHubContext<PipelineHub> hub,
         ActiveCallStore callStore,
+        PipelineCurrentStateStore currentStateStore,
         LiveSentimentStore liveSentiment,
         IReasoningClient reasoningClient,
         IHttpClientFactory httpClientFactory,
@@ -38,6 +40,7 @@ public sealed class SpeechTranscriptionService : BackgroundService
         _audioSource = audioSource;
         _hub = hub;
         _callStore = callStore;
+        _currentStateStore = currentStateStore;
         _liveSentiment = liveSentiment;
         _reasoningClient = reasoningClient;
         _httpClientFactory = httpClientFactory;
@@ -243,6 +246,7 @@ public sealed class SpeechTranscriptionService : BackgroundService
             var seq = nextSequence();
             var detectedLanguage = ResolveDetectedLanguage(e.Result, fallbackLanguage);
             var transcriptEvent = BuildTranscriptEvent(callId, seq, e.Result.ResultId, e.Result.Text, isFinal: true, detectedLanguage);
+            _currentStateStore.AppendTranscriptEvent(transcriptEvent);
 
             _ = _hub.Clients.Group(group)
                 .SendAsync(PipelineContract.StreamNames.Transcript, transcriptEvent, CancellationToken.None);
@@ -362,6 +366,7 @@ public sealed class SpeechTranscriptionService : BackgroundService
                 TranslatedText = translatedText,
                 Source = "azure-ai-translator"
             };
+            _currentStateStore.AppendTranslationEvent(translationEvent);
 
             await _hub.Clients.Group(group)
                 .SendAsync(PipelineContract.StreamNames.Translation, translationEvent, CancellationToken.None)
@@ -388,16 +393,19 @@ public sealed class SpeechTranscriptionService : BackgroundService
                 switch (reasoningEvent)
                 {
                     case ChurnRiskEvent churnRiskEvent:
+                        _currentStateStore.AppendChurnRiskEvent(churnRiskEvent);
                         await _hub.Clients.Group(group)
                             .SendAsync(PipelineContract.StreamNames.ChurnRisk, churnRiskEvent, CancellationToken.None)
                             .ConfigureAwait(false);
                         break;
                     case KnowledgeCardEvent knowledgeCardEvent:
+                        _currentStateStore.AppendKnowledgeCardEvent(knowledgeCardEvent);
                         await _hub.Clients.Group(group)
                             .SendAsync(PipelineContract.StreamNames.KnowledgeCards, knowledgeCardEvent, CancellationToken.None)
                             .ConfigureAwait(false);
                         break;
                     case NextBestActionEvent nextBestActionEvent:
+                        _currentStateStore.AppendNextBestActionEvent(nextBestActionEvent);
                         await _hub.Clients.Group(group)
                             .SendAsync(PipelineContract.StreamNames.NextBestAction, nextBestActionEvent, CancellationToken.None)
                             .ConfigureAwait(false);

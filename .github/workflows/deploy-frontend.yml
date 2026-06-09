@@ -11,7 +11,11 @@ on:
       - Directory.Build.targets
       - NuGet.config
       - global.json
+      - .config/dotnet-tools.json
+      - azure.yaml
+      - src/CallCenterTranscription.Ai/**
       - src/CallCenterTranscription.Shared/**
+      - src/CallCenterTranscription.Telephony/**
       - src/CallCenterTranscription.Web/**
   workflow_dispatch:
 

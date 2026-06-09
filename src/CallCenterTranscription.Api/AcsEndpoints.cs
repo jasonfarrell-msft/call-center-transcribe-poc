@@ -59,11 +59,12 @@ internal static class AcsEndpoints
             HttpContext ctx,
             AcsAudioSource acsSource,
             ActiveCallStore callStore,
+            PipelineCurrentStateStore currentStateStore,
             LiveSentimentStore liveSentiment,
             IHubContext<PipelineHub> hub,
             ILoggerFactory loggerFactory) =>
         {
-            await HandleMediaStreamAsync(ctx, acsSource, callStore, liveSentiment, hub, loggerFactory.CreateLogger("AcsEndpoints"));
+            await HandleMediaStreamAsync(ctx, acsSource, callStore, currentStateStore, liveSentiment, hub, loggerFactory.CreateLogger("AcsEndpoints"));
         }).AllowAnonymous();
 
         // ── Active call query — lets a late-joining/reconnecting browser resync state ───────────
@@ -202,6 +203,9 @@ internal static class AcsEndpoints
                         var callStore = ctx.RequestServices.GetRequiredService<ActiveCallStore>();
                         var answeredCallId = result.Value.CallConnection.CallConnectionId;
                         callStore.SetCallId(answeredCallId);
+                        ctx.RequestServices
+                            .GetRequiredService<PipelineCurrentStateStore>()
+                            .ResetForCall(answeredCallId);
 
                         // Broadcast call-started so every console client transitions Disconnected → Connecting
                         // and subscribes to call:{answeredCallId}. Broadcast group == publish group (reviewer fix).
@@ -329,6 +333,7 @@ internal static class AcsEndpoints
         HttpContext ctx,
         AcsAudioSource acsSource,
         ActiveCallStore callStore,
+        PipelineCurrentStateStore currentStateStore,
         LiveSentimentStore liveSentiment,
         IHubContext<PipelineHub> hub,
         ILogger logger)
@@ -411,6 +416,7 @@ internal static class AcsEndpoints
             // Signal end-of-stream to all ReadAsync consumers regardless of how the loop ended.
             acsSource.CompleteStream();
             callStore.Clear();  // call is over; new calls start fresh
+            currentStateStore.ClearLiveState();  // clear replay/current-state history between calls
             liveSentiment.Clear();  // drop rolling sentiment so the panel returns to waiting
 
             if (!string.IsNullOrEmpty(endedCallId))

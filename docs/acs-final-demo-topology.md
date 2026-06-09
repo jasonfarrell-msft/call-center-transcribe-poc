@@ -89,5 +89,5 @@ Until those checks pass, Mission Control must continue to surface mock/deferred 
 
 ### Demo fallback boundary (safe backup)
 
-- If any live ACS readiness gate fails, keep `DemoSafety:DataMode=Mock` and run the scripted feed path.
-- Mock mode is the approved reliability fallback and remains the default safe path for stage/demo continuity.
+- If any live ACS readiness gate fails, set `AudioSource:Mode=Mock` on the API and `Frontend:LiveMode=false` on the Web app, then run the scripted feed path.
+- Mock mode remains the approved reliability fallback, but live ACS is now the default interaction path.

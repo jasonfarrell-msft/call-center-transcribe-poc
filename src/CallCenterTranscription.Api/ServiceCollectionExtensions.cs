@@ -13,11 +13,11 @@ public static class ServiceCollectionExtensions
     /// Registers all call-center services.
     ///
     /// DI swap — AudioSource:Mode (env: AudioSource__Mode):
-    ///   "Mock" (DEFAULT) → MockAudioSource (no ACS dependency; nothing breaks when unset)
-    ///   "Acs"            → AcsAudioSource  (Channel-backed; needs Acs:Endpoint + RBAC)
+    ///   "Acs"  (DEFAULT) → AcsAudioSource  (Channel-backed live path; needs Acs:Endpoint + RBAC to answer calls)
+    ///   "Mock"           → MockAudioSource (explicit deterministic fallback)
     ///
     /// AcsAudioSource is ALWAYS registered as a singleton so the media-stream WebSocket
-    /// handler can inject it regardless of mode (it stays dormant/empty when Mode=Mock).
+    /// handler can inject it regardless of mode (it stays dormant/empty when Mock fallback is selected).
     ///
     /// CallAutomationClient is registered when Acs:Endpoint is configured; uses
     /// DefaultAzureCredential (managed identity on ACA). No connection strings.
@@ -54,7 +54,7 @@ public static class ServiceCollectionExtensions
         // is dormant — its Channel stays empty because no calls are answered.
         services.AddSingleton<AcsAudioSource>();
 
-        var audioSourceMode = configuration.GetValue<string>("AudioSource:Mode") ?? "Mock";
+        var audioSourceMode = configuration.GetValue<string>("AudioSource:Mode") ?? "Acs";
         if (string.Equals(audioSourceMode, "Acs", StringComparison.OrdinalIgnoreCase))
         {
             // Forward the same singleton via the interface contract.
@@ -62,7 +62,7 @@ public static class ServiceCollectionExtensions
         }
         else
         {
-            // Default: MockAudioSource — safe with no ACS provisioning.
+            // Explicit fallback: MockAudioSource for deterministic scripted demos/tests.
             services.AddSingleton<IAudioSource, MockAudioSource>();
         }
 

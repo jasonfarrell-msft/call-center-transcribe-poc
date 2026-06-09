@@ -542,6 +542,38 @@
         setText(nbaUpdatedEl, formatTime(evt.timestampUtc) || "Now");
     }
 
+    function onCurrentState(snapshot) {
+        if (!snapshot || !snapshot.call) {
+            return;
+        }
+
+        if (endedTimer) {
+            clearTimeout(endedTimer);
+            endedTimer = null;
+        }
+
+        const call = snapshot.call;
+        const callId = (call.callId || "").trim();
+        if (!callId) {
+            currentCallId = null;
+            setState("disconnected", "Disconnected — waiting for call");
+            resetHeader();
+            return;
+        }
+
+        currentCallId = callId;
+        const hasTranscriptHistory = Array.isArray(snapshot.transcriptEvents) && snapshot.transcriptEvents.length > 0;
+        setState(hasTranscriptHistory ? "live" : "connecting", hasTranscriptHistory ? "● Live transcription" : "Call connected — starting transcription…");
+        setText(summaryEl, "Live mode • Call connected");
+        setText(callIdEl, callId);
+        setText(customerEl, (call.customerName || "").trim() || "Inbound caller");
+        setText(connectedEl, call.startedAtUtc ? formatTime(call.startedAtUtc) : WAITING);
+
+        if (Array.isArray(snapshot.sentimentEvents) && snapshot.sentimentEvents.length > 0) {
+            onSentiment(snapshot.sentimentEvents[snapshot.sentimentEvents.length - 1]);
+        }
+    }
+
     async function subscribeToCall(callId) {
         if (!callId) {
             return;
@@ -626,6 +658,7 @@
 
     connection.on("stream.callStarted", onCallStarted);
     connection.on("stream.callEnded", onCallEnded);
+    connection.on("stream.currentState", onCurrentState);
     connection.on("stream.transcript", onTranscript);
     connection.on("stream.translation", onTranslation);
     connection.on("stream.sentiment", onSentiment);

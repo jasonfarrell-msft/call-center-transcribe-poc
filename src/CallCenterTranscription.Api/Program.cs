@@ -97,8 +97,11 @@ if (requireAuth)
     apiRoutes.RequireAuthorization("AgentAssistAccess");
 }
 
-apiRoutes.MapGet("/session/current", (IScriptedScenarioFeed scriptedScenarioFeed) =>
-    Results.Ok(scriptedScenarioFeed.GetCurrentSession()));
+apiRoutes.MapGet("/session/current", (
+    IScriptedScenarioFeed scriptedScenarioFeed,
+    ActiveCallStore activeCallStore,
+    IConfiguration configuration) =>
+    Results.Ok(BuildCurrentSession(scriptedScenarioFeed, activeCallStore, configuration)));
 apiRoutes.MapGet("/session/current-state", (PipelineCurrentStateStore currentStateStore) =>
     Results.Ok(currentStateStore.GetSnapshot()));
 
@@ -156,6 +159,41 @@ app.MapAcsRoutes();
 app.MapRepRoutes();
 
 app.Run();
+
+static SessionCurrentResponse BuildCurrentSession(
+    IScriptedScenarioFeed scriptedScenarioFeed,
+    ActiveCallStore activeCallStore,
+    IConfiguration configuration)
+{
+    var liveAudioMode = string.Equals(
+        configuration.GetValue<string>("AudioSource:Mode") ?? "Acs",
+        "Acs",
+        StringComparison.OrdinalIgnoreCase);
+
+    if (!liveAudioMode)
+    {
+        return scriptedScenarioFeed.GetCurrentSession();
+    }
+
+    var activeCall = activeCallStore.GetSnapshot();
+    var callId = activeCall.CallId ?? string.Empty;
+    var hasActiveCall = !string.IsNullOrWhiteSpace(callId);
+
+    return new SessionCurrentResponse
+    {
+        Call = new CallSessionMetadata
+        {
+            CallId = callId,
+            State = hasActiveCall ? "active" : "waiting",
+            StartedAtUtc = hasActiveCall ? activeCall.StartedAtUtc ?? default : default,
+            Source = "acs-live"
+        },
+        IsMockFeedActive = false,
+        Notes = hasActiveCall
+            ? "Live customer-to-representative interaction is active."
+            : "Live customer-to-representative interaction is enabled and waiting for a call."
+    };
+}
 
 static MissionControlHealthResponse BuildMissionControlHealth(
     IScriptedScenarioFeed scriptedScenarioFeed,

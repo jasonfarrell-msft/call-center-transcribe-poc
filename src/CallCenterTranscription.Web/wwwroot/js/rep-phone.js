@@ -27,7 +27,7 @@
     const REGISTER_URL = "/rep/register";
     const STORAGE_KEY = "rep.acs.userId";
     const HEARTBEAT_MS = 15000;
-    const DISPLAY_NAME = "Capt Propane";
+    const DISPLAY_NAME = (root.getAttribute("data-rep-display-name") || "Representative").trim() || "Representative";
 
     // ── UI handles ────────────────────────────────────────────────────────────────────────────
     const bar = root.querySelector("[data-rep-callbar]");

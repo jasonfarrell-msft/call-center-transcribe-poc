@@ -18,7 +18,7 @@ public sealed class WebConsoleTests
     [Fact]
     public async Task IndexModel_OnGetAsync_RevealsTranslationOnlyAfterExplicitAction()
     {
-        var model = CreateIndexModel();
+        var model = CreateIndexModel(liveMode: false);
         model.PageContext = new PageContext
         {
             HttpContext = new DefaultHttpContext()
@@ -39,7 +39,7 @@ public sealed class WebConsoleTests
     [Fact]
     public async Task IndexModel_OnGetAsync_LoadsContextSentimentAndMissionControlData()
     {
-        var model = CreateIndexModel();
+        var model = CreateIndexModel(liveMode: false);
         model.PageContext = new PageContext
         {
             HttpContext = new DefaultHttpContext()
@@ -62,7 +62,7 @@ public sealed class WebConsoleTests
     [Fact]
     public async Task IndexModel_OnGetAsync_WhenBackendBaseUrlMissing_SurfacesDisconnectedState()
     {
-        var model = CreateIndexModel(baseUrl: string.Empty);
+        var model = CreateIndexModel(baseUrl: string.Empty, liveMode: false);
         model.PageContext = new PageContext
         {
             HttpContext = new DefaultHttpContext()
@@ -96,7 +96,7 @@ public sealed class WebConsoleTests
     [Fact]
     public async Task IndexModel_OnGetAsync_WhenEndpointsFail_SurfacesFeedWarnings()
     {
-        var model = CreateIndexModel(handler: new AlwaysUnavailablePipelineHandler());
+        var model = CreateIndexModel(handler: new AlwaysUnavailablePipelineHandler(), liveMode: false);
         model.PageContext = new PageContext
         {
             HttpContext = new DefaultHttpContext()
@@ -130,7 +130,7 @@ public sealed class WebConsoleTests
     [Fact]
     public async Task IndexModel_OnGetAsync_WhenPayloadIsValidButEmpty_UsesEmptyStateWithoutWarnings()
     {
-        var model = CreateIndexModel(handler: new SuccessfulEmptyPipelineHandler());
+        var model = CreateIndexModel(handler: new SuccessfulEmptyPipelineHandler(), liveMode: false);
         model.PageContext = new PageContext
         {
             HttpContext = new DefaultHttpContext()
@@ -149,7 +149,7 @@ public sealed class WebConsoleTests
     [Fact]
     public async Task IndexModel_OnGetAsync_WhenNonSessionFeedFails_ShowsDegradedSummary()
     {
-        var model = CreateIndexModel(handler: new PartialFailurePipelineHandler());
+        var model = CreateIndexModel(handler: new PartialFailurePipelineHandler(), liveMode: false);
         model.PageContext = new PageContext
         {
             HttpContext = new DefaultHttpContext()
@@ -163,7 +163,29 @@ public sealed class WebConsoleTests
         Assert.Contains("returned an error", model.TranscriptWarning, StringComparison.OrdinalIgnoreCase);
     }
 
-    private static IndexModel CreateIndexModel(HttpMessageHandler? handler = null, string baseUrl = "https://example.test/")
+    [Fact]
+    public async Task IndexModel_OnGetAsync_WhenLiveModeEnabled_UsesWaitingHeaderWithoutMockSessionMetadata()
+    {
+        var model = CreateIndexModel(handler: new SuccessfulEmptyPipelineHandler(), liveMode: true);
+        model.PageContext = new PageContext
+        {
+            HttpContext = new DefaultHttpContext()
+        };
+
+        await model.OnGetAsync();
+
+        Assert.True(model.LiveMode);
+        Assert.Equal("Live mode • Waiting for call", model.ConnectionSummary);
+        Assert.Equal("Waiting for call", model.CallIdDisplay);
+        Assert.Equal("Waiting for call", model.CustomerDisplayName);
+        Assert.False(model.CurrentSession.IsMockFeedActive);
+        Assert.False(model.HasConnectionIssues);
+    }
+
+    private static IndexModel CreateIndexModel(
+        HttpMessageHandler? handler = null,
+        string baseUrl = "https://example.test/",
+        bool liveMode = false)
     {
         var httpClient = new HttpClient(handler ?? new StubPipelineHandler());
         var options = Options.Create(new BackendApiOptions
@@ -172,7 +194,12 @@ public sealed class WebConsoleTests
         });
 
         var pipelineClient = new PipelineApiClient(httpClient, options);
-        var configuration = new ConfigurationBuilder().Build();
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["Frontend:LiveMode"] = liveMode ? "true" : "false"
+            })
+            .Build();
         return new IndexModel(NullLogger<IndexModel>.Instance, pipelineClient, options, configuration);
     }
 }
@@ -194,10 +221,11 @@ public sealed class WebHomepageSmokeTests(WebApplicationFactory<CallCenterTransc
         var html = await client.GetStringAsync("/");
 
         Assert.Contains("Call-Center Representative Console", html, StringComparison.Ordinal);
-        Assert.Contains("Live transcript, diarization, and translation", html, StringComparison.Ordinal);
+        Assert.Contains("data-live-mode=\"true\"", html, StringComparison.Ordinal);
+        Assert.Contains("Live transcription from the active call appears here in real time.", html, StringComparison.Ordinal);
         Assert.Contains("Sentiment indicator", html, StringComparison.Ordinal);
         Assert.Contains("Representative awareness", html, StringComparison.Ordinal);
-        Assert.Contains("Mission Control health", html, StringComparison.Ordinal);
+        Assert.Contains("Mission Control →", html, StringComparison.Ordinal);
         Assert.Contains("Backend API connection issues detected.", html, StringComparison.Ordinal);
         Assert.Contains("Backend API is not configured", html, StringComparison.Ordinal);
         Assert.DoesNotContain("Phase 0 scaffold is running.", html, StringComparison.Ordinal);

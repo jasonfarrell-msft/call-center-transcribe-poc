@@ -1,0 +1,157 @@
+name: Deploy API
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/deploy-api.yml
+      - CallCenterTranscription.sln
+      - Directory.Build.props
+      - Directory.Build.targets
+      - NuGet.config
+      - global.json
+      - .dockerignore
+      - azure.yaml
+      - src/CallCenterTranscription.Api/**
+      - src/CallCenterTranscription.Ai/**
+      - src/CallCenterTranscription.Telephony/**
+      - src/CallCenterTranscription.Shared/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: ${{ github.ref == 'refs/heads/main' && 'deploy-api-production' || format('deploy-api-skip-{0}', github.run_id) }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_VERSION: 9.0.x
+  API_PROJECT_PATH: src/CallCenterTranscription.Api/CallCenterTranscription.Api.csproj
+  API_DOCKERFILE_PATH: src/CallCenterTranscription.Api/Dockerfile
+  API_IMAGE_NAME: callcentertranscription-api
+
+jobs:
+  build:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # actions/checkout@v5
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2 # actions/setup-dotnet@v5
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Restore API project
+        run: dotnet restore ${{ env.API_PROJECT_PATH }}
+
+      - name: Build API project
+        run: dotnet build ${{ env.API_PROJECT_PATH }} --configuration Release --no-restore
+
+      - name: Run API test suite
+        run: dotnet test tests/CallCenterTranscription.Tests/CallCenterTranscription.Tests.csproj --configuration Release --nologo
+
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    needs: build
+    environment: production
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # actions/checkout@v5
+
+      - name: Azure login
+        uses: azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43 # azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Resolve deployment targets
+        id: resolve
+        env:
+          AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+          AZURE_CONTAINER_APP_NAME: ${{ vars.AZURE_CONTAINER_APP_NAME }}
+        run: |
+          set -euo pipefail
+          ACR_LOGIN_SERVER="$(az containerapp show \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --name "$AZURE_CONTAINER_APP_NAME" \
+            --query 'properties.configuration.registries[0].server' \
+            -o tsv)"
+
+          if [ -z "$ACR_LOGIN_SERVER" ]; then
+            echo "Container App is missing registry configuration; cannot resolve ACR login server."
+            exit 1
+          fi
+
+          if [[ "$ACR_LOGIN_SERVER" != *.azurecr.io ]]; then
+            echo "Unexpected ACR login server: $ACR_LOGIN_SERVER"
+            exit 1
+          fi
+
+          ACR_NAME="${ACR_LOGIN_SERVER%%.azurecr.io}"
+          IMAGE_TAG="sha-${GITHUB_SHA}"
+          IMAGE_REF="$ACR_LOGIN_SERVER/${API_IMAGE_NAME}:$IMAGE_TAG"
+
+          echo "acr_name=$ACR_NAME" >> "$GITHUB_OUTPUT"
+          echo "image_ref=$IMAGE_REF" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push API image to ACR
+        run: |
+          set -euo pipefail
+          az acr build \
+            --registry "${{ steps.resolve.outputs.acr_name }}" \
+            --image "${{ env.API_IMAGE_NAME }}:sha-${GITHUB_SHA}" \
+            --file "${{ env.API_DOCKERFILE_PATH }}" \
+            .
+
+      - name: Deploy API image to Container Apps
+        env:
+          AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+          AZURE_CONTAINER_APP_NAME: ${{ vars.AZURE_CONTAINER_APP_NAME }}
+        run: |
+          set -euo pipefail
+          az containerapp update \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --name "$AZURE_CONTAINER_APP_NAME" \
+            --image "${{ steps.resolve.outputs.image_ref }}" \
+            --query "properties.latestRevisionName" \
+            -o tsv
+
+      - name: Verify API health endpoint
+        env:
+          AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+          AZURE_CONTAINER_APP_NAME: ${{ vars.AZURE_CONTAINER_APP_NAME }}
+        run: |
+          set -euo pipefail
+          API_FQDN="$(az containerapp show \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --name "$AZURE_CONTAINER_APP_NAME" \
+            --query 'properties.configuration.ingress.fqdn' \
+            -o tsv)"
+
+          for attempt in 1 2 3 4 5 6; do
+            if curl --fail --silent --show-error "https://${API_FQDN}/healthz" > /dev/null; then
+              echo "API health check passed on attempt ${attempt}."
+              exit 0
+            fi
+
+            if [ "$attempt" -eq 6 ]; then
+              echo "API health check failed after ${attempt} attempts."
+              exit 1
+            fi
+
+            echo "API health check not ready (attempt ${attempt}); retrying in 10s..."
+            sleep 10
+          done
+
+      - name: Azure logout
+        if: always()
+        run: az logout

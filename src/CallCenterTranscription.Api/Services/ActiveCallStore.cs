@@ -21,27 +21,74 @@ public sealed class ActiveCallStore
     private const int RepAddInProgress = 1;
     private const int RepAddDone = 2;
 
-    private volatile string? _callId;
+    private readonly object _gate = new();
+    private string? _callId;
+    private DateTimeOffset? _startedAtUtc;
     private int _repAddState = RepAddNone;
 
     /// <summary>Returns the current active call ID, or null if no call is in progress.</summary>
-    public string? CallId => _callId;
+    public string? CallId
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _callId;
+            }
+        }
+    }
+
+    /// <summary>Returns the stable timestamp captured when the current call became active.</summary>
+    public DateTimeOffset? StartedAtUtc
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _startedAtUtc;
+            }
+        }
+    }
 
     /// <summary>True once the rep participant has been added to the current call.</summary>
     public bool RepAdded => Volatile.Read(ref _repAddState) == RepAddDone;
 
     /// <summary>Sets the active call ID when a call is answered and resets rep-add state.</summary>
-    public void SetCallId(string callId)
+    public void SetCallId(string callId, DateTimeOffset? startedAtUtc = null)
     {
-        _callId = callId;
+        if (string.IsNullOrWhiteSpace(callId))
+        {
+            throw new ArgumentException("callId must be provided.", nameof(callId));
+        }
+
+        lock (_gate)
+        {
+            _callId = callId.Trim();
+            _startedAtUtc = startedAtUtc ?? DateTimeOffset.UtcNow;
+        }
+
         Interlocked.Exchange(ref _repAddState, RepAddNone);
     }
 
     /// <summary>Clears the call ID when the call ends or the stream is completed.</summary>
     public void Clear()
     {
-        _callId = null;
+        lock (_gate)
+        {
+            _callId = null;
+            _startedAtUtc = null;
+        }
+
         Interlocked.Exchange(ref _repAddState, RepAddNone);
+    }
+
+    /// <summary>Returns the current call ID and stable start time as an atomic snapshot.</summary>
+    public ActiveCallSnapshot GetSnapshot()
+    {
+        lock (_gate)
+        {
+            return new ActiveCallSnapshot(_callId, _startedAtUtc);
+        }
     }
 
     /// <summary>
@@ -59,3 +106,5 @@ public sealed class ActiveCallStore
     public void ResetAddRep() =>
         Interlocked.CompareExchange(ref _repAddState, RepAddNone, RepAddInProgress);
 }
+
+public readonly record struct ActiveCallSnapshot(string? CallId, DateTimeOffset? StartedAtUtc);
