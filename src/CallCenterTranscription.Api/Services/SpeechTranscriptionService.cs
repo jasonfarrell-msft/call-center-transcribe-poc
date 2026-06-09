@@ -70,9 +70,10 @@ public sealed class SpeechTranscriptionService : BackgroundService
         var tokenScope = new TokenRequestContext(["https://cognitiveservices.azure.com/.default"]);
 
         _logger.LogInformation(
-            "SpeechTranscriptionService: ready (languages={Languages}, translator={TranslatorState}); waiting for call audio.",
+            "SpeechTranscriptionService: ready (languages={Languages}, translator={TranslatorState}, speechResourceIdConfigured={SpeechResourceIdConfigured}); waiting for call audio.",
             string.Join(",", candidateLanguages),
-            string.IsNullOrWhiteSpace(translatorEndpoint) ? "disabled" : "enabled");
+            string.IsNullOrWhiteSpace(translatorEndpoint) ? "disabled" : "enabled",
+            !string.IsNullOrWhiteSpace(speechResourceId));
 
         while (!stoppingToken.IsCancellationRequested)
         {
@@ -120,12 +121,25 @@ public sealed class SpeechTranscriptionService : BackgroundService
         PushAudioInputStream? pushStream = null;
         long sequence = 0;
         long framesWritten = 0;
+        long droppedFramesWithoutActiveCall = 0;
+        var firstFrameLogged = false;
         var stopwatch = Stopwatch.StartNew();
 
         try
         {
             await foreach (var frame in _audioSource.ReadAsync(stoppingToken).ConfigureAwait(false))
             {
+                if (!firstFrameLogged)
+                {
+                    firstFrameLogged = true;
+                    _logger.LogInformation(
+                        "SpeechTranscriptionService: first audio frame received (sampleRateHz={SampleRateHz}, encoding={Encoding}, payloadBytes={PayloadBytes}) trackedCall={CallId}.",
+                        frame.SampleRateHz,
+                        frame.Encoding,
+                        frame.Payload.Length,
+                        _callStore.CallId ?? "(none)");
+                }
+
                 if (recognizer is null)
                 {
                     var accessToken = await credential.GetTokenAsync(tokenScope, stoppingToken).ConfigureAwait(false);
@@ -158,8 +172,27 @@ public sealed class SpeechTranscriptionService : BackgroundService
 
                 if (frame.Payload.Length > 0)
                 {
+                    if (string.IsNullOrWhiteSpace(_callStore.CallId))
+                    {
+                        droppedFramesWithoutActiveCall++;
+                        if (droppedFramesWithoutActiveCall == 1 || droppedFramesWithoutActiveCall % 250 == 0)
+                        {
+                            _logger.LogWarning(
+                                "SpeechTranscriptionService: audio frame received with no active callId in store (count={Count}); transcript events cannot be routed until call state is present.",
+                                droppedFramesWithoutActiveCall);
+                        }
+                    }
+
                     pushStream!.Write(frame.Payload);
                     framesWritten++;
+
+                    if (framesWritten % 500 == 0)
+                    {
+                        _logger.LogInformation(
+                            "SpeechTranscriptionService: pushed {FramesWritten} audio frames so far for tracked call {CallId}.",
+                            framesWritten,
+                            _callStore.CallId ?? "(none)");
+                    }
                 }
             }
         }
@@ -193,6 +226,8 @@ public sealed class SpeechTranscriptionService : BackgroundService
         string translatorTargetLanguage)
     {
         var firstPartialLogged = false;
+        long recognizingDroppedNoGroup = 0;
+        long recognizedDroppedNoGroup = 0;
 
         recognizer.Recognizing += (_, e) =>
         {
@@ -209,6 +244,13 @@ public sealed class SpeechTranscriptionService : BackgroundService
 
             if (ResolveGroup() is not { } recognizing)
             {
+                recognizingDroppedNoGroup++;
+                if (recognizingDroppedNoGroup == 1 || recognizingDroppedNoGroup % 50 == 0)
+                {
+                    _logger.LogWarning(
+                        "SpeechTranscriptionService: dropping partial transcript because no active call group is available (count={Count}).",
+                        recognizingDroppedNoGroup);
+                }
                 return;
             }
 
@@ -239,6 +281,14 @@ public sealed class SpeechTranscriptionService : BackgroundService
 
             if (ResolveGroup() is not { } recognized)
             {
+                recognizedDroppedNoGroup++;
+                if (recognizedDroppedNoGroup == 1 || recognizedDroppedNoGroup % 10 == 0)
+                {
+                    _logger.LogWarning(
+                        "SpeechTranscriptionService: dropping final transcript because no active call group is available (count={Count}) resultId={ResultId}.",
+                        recognizedDroppedNoGroup,
+                        e.Result.ResultId);
+                }
                 return;
             }
 

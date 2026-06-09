@@ -95,9 +95,23 @@ internal static class RepEndpoints
             // Pending-add reconverge: if a call is already answered but the rep wasn't added yet
             // (rep registered after CallConnected, or after an API restart), add them now.
             var callClient = ctx.RequestServices.GetService<CallAutomationClient>();
-            if (callClient is not null && !string.IsNullOrEmpty(callStore.CallId) && !callStore.RepAdded)
+            var trackedCallId = callStore.CallId;
+            if (callClient is not null && !string.IsNullOrEmpty(trackedCallId) && !callStore.RepAdded)
             {
+                logger.LogInformation(
+                    "Rep register reconverge: activeCall={CallId} repAdded={RepAdded}; attempting AddParticipant for rep {UserId}.",
+                    trackedCallId,
+                    callStore.RepAdded,
+                    body.UserId);
                 await TryAddRepToCallAsync(callClient, callStore, registry, logger, ct);
+            }
+            else
+            {
+                logger.LogInformation(
+                    "Rep register completed without AddParticipant attempt: callClientAvailable={CallClientAvailable} activeCall={CallId} repAdded={RepAdded}.",
+                    callClient is not null,
+                    trackedCallId ?? "(none)",
+                    callStore.RepAdded);
             }
 
             return Results.Ok(new { registered = true, callActive = !string.IsNullOrEmpty(callStore.CallId) });
@@ -120,10 +134,22 @@ internal static class RepEndpoints
         CancellationToken ct)
     {
         if (string.IsNullOrEmpty(callStore.CallId) || string.IsNullOrEmpty(registry.CurrentUserId))
+        {
+            logger.LogInformation(
+                "Skipping AddParticipant: activeCall={CallId} repUser={RepUser}.",
+                callStore.CallId ?? "(none)",
+                registry.CurrentUserId ?? "(none)");
             return;
+        }
 
         if (!callStore.TryBeginAddRep())
+        {
+            logger.LogInformation(
+                "Skipping AddParticipant claim: activeCall={CallId} repAdded={RepAdded}; another add is in-flight or already complete.",
+                callStore.CallId ?? "(none)",
+                callStore.RepAdded);
             return; // another path is adding / already added
+        }
 
         // Re-snapshot INSIDE the claim: a concurrent Clear() (call ended) between the pre-check
         // and here would leave CallId null. Bail and release the claim so we never invite a rep
@@ -133,6 +159,10 @@ internal static class RepEndpoints
         if (string.IsNullOrEmpty(callId) || string.IsNullOrEmpty(repUserId))
         {
             callStore.ResetAddRep();
+            logger.LogWarning(
+                "AddParticipant claim released after state resnapshot: activeCall={CallId} repUser={RepUser}.",
+                callId ?? "(none)",
+                repUserId ?? "(none)");
             return;
         }
 
@@ -140,17 +170,39 @@ internal static class RepEndpoints
         {
             var connection = callClient.GetCallConnection(callId);
             var invite = new CallInvite(new CommunicationUserIdentifier(repUserId));
+            const string operationContext = "add-rep";
             var options = new AddParticipantOptions(invite)
             {
                 InvitationTimeoutInSeconds = InvitationTimeoutSeconds,
-                OperationContext = "add-rep"
+                OperationContext = operationContext
             };
 
+            logger.LogInformation(
+                "AddParticipant request: callId={CallId} repUserId={UserId} operationContext={OperationContext} timeoutSeconds={TimeoutSeconds}.",
+                callId,
+                repUserId,
+                operationContext,
+                InvitationTimeoutSeconds);
             await connection.AddParticipantAsync(options, ct);
             callStore.MarkRepAdded();
             logger.LogInformation(
-                "AddParticipant invited rep {UserId} to call {CallId} (Accept budget {Timeout}s).",
-                repUserId, callId, InvitationTimeoutSeconds);
+                "AddParticipant accepted by ACS for call {CallId}; invite sent to rep {UserId} (Accept budget {Timeout}s, operationContext={OperationContext}).",
+                callId,
+                repUserId,
+                InvitationTimeoutSeconds,
+                operationContext);
+        }
+        catch (Azure.RequestFailedException ex)
+        {
+            callStore.ResetAddRep(); // allow the next /register to retry
+            logger.LogError(
+                ex,
+                "AddParticipant request failed for call {CallId} rep {UserId}: status={Status} errorCode={ErrorCode} message={Message}.",
+                callId,
+                repUserId,
+                ex.Status,
+                ex.ErrorCode,
+                ex.Message);
         }
         catch (Exception ex)
         {
