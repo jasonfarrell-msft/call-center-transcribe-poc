@@ -54,10 +54,11 @@ internal static class AcsEndpoints
             HttpContext ctx,
             AcsAudioSource acsSource,
             ActiveCallStore callStore,
+            LiveSentimentStore liveSentiment,
             IHubContext<PipelineHub> hub,
             ILoggerFactory loggerFactory) =>
         {
-            await HandleMediaStreamAsync(ctx, acsSource, callStore, hub, loggerFactory.CreateLogger("AcsEndpoints"));
+            await HandleMediaStreamAsync(ctx, acsSource, callStore, liveSentiment, hub, loggerFactory.CreateLogger("AcsEndpoints"));
         }).AllowAnonymous();
 
         // ── Active call query — lets a late-joining/reconnecting browser resync state ───────────
@@ -235,6 +236,7 @@ internal static class AcsEndpoints
         HttpContext ctx,
         AcsAudioSource acsSource,
         ActiveCallStore callStore,
+        LiveSentimentStore liveSentiment,
         IHubContext<PipelineHub> hub,
         ILogger logger)
     {
@@ -251,6 +253,10 @@ internal static class AcsEndpoints
         // Start a fresh per-call audio session so the transcription consumer builds a new
         // recognizer for this call (and stays alive for the next one after it ends).
         acsSource.BeginSession();
+
+        // Start a clean rolling-sentiment session for this call so the meter resets to
+        // "Waiting for sentiment" and then tracks the new conversation.
+        liveSentiment.Reset(callStore.CallId);
 
         var buffer = new byte[8192]; // ACS sends 640-byte frames; 8 KB covers a few frames per read.
         using var ms = new MemoryStream();
@@ -312,6 +318,7 @@ internal static class AcsEndpoints
             // Signal end-of-stream to all ReadAsync consumers regardless of how the loop ended.
             acsSource.CompleteStream();
             callStore.Clear();  // call is over; new calls start fresh
+            liveSentiment.Clear();  // drop rolling sentiment so the panel returns to waiting
 
             if (!string.IsNullOrEmpty(endedCallId))
             {

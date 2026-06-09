@@ -1,5 +1,6 @@
 using CallCenterTranscription.Api;
 using CallCenterTranscription.Api.Hubs;
+using CallCenterTranscription.Api.Services;
 using CallCenterTranscription.Shared.Events;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 
@@ -105,12 +106,22 @@ apiRoutes.MapGet("/mission-control/health", (IScriptedScenarioFeed scriptedScena
     Results.Ok(scriptedScenarioFeed.GetMissionControlHealth()));
 
 var eventRoutes = apiRoutes.MapGroup("/events");
+
+// In ACS (live) mode the sentiment panel is driven by the live transcript rather than the
+// scripted demo feed, so the meter moves with the real conversation.
+var liveSentimentMode = string.Equals(
+    app.Configuration.GetValue<string>("AudioSource:Mode"), "Acs", StringComparison.OrdinalIgnoreCase);
+
 eventRoutes.MapGet("/transcript", (IScriptedScenarioFeed scriptedScenarioFeed) =>
     Results.Ok(scriptedScenarioFeed.GetTranscriptEvents()));
 eventRoutes.MapGet("/translation", (IScriptedScenarioFeed scriptedScenarioFeed) =>
     Results.Ok(scriptedScenarioFeed.GetTranslationEvents()));
-eventRoutes.MapGet("/sentiment", (IScriptedScenarioFeed scriptedScenarioFeed) =>
-    Results.Ok(scriptedScenarioFeed.GetSentimentFeed()));
+eventRoutes.MapGet("/sentiment", (
+    IScriptedScenarioFeed scriptedScenarioFeed,
+    LiveSentimentStore liveSentiment) =>
+    // Live (Acs) mode: serve the rolling, transcript-driven sentiment so the meter tracks the
+    // real call. Mock mode: keep the scripted demo feed.
+    Results.Ok(liveSentimentMode ? liveSentiment.GetFeed() : scriptedScenarioFeed.GetSentimentFeed()));
 eventRoutes.MapGet("/churn-risk", (IScriptedScenarioFeed scriptedScenarioFeed) =>
     Results.Ok(scriptedScenarioFeed.GetChurnRiskEvents()));
 eventRoutes.MapGet("/knowledge-cards", (IScriptedScenarioFeed scriptedScenarioFeed) =>

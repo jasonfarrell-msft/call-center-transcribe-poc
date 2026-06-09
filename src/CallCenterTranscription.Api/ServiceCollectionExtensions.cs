@@ -33,6 +33,10 @@ public static class ServiceCollectionExtensions
         // route transcript events to the correct SignalR group ("call:{callId}").
         services.AddSingleton<ActiveCallStore>();
 
+        // LiveSentimentStore: turns finalized live transcript into a rolling sentiment score so
+        // the rep console's sentiment meter moves with the conversation (live/Acs mode only).
+        services.AddSingleton<LiveSentimentStore>();
+
         // SpeechTranscriptionService: reads IAudioSource → Azure AI Speech → PipelineHub.
         // Self-gates: exits cleanly if Speech:Endpoint / Speech:Region are not configured,
         // or if AAD token acquisition fails (e.g., running locally without a managed identity).

@@ -39,6 +39,7 @@ public sealed class SpeechTranscriptionService : BackgroundService
     private readonly IAudioSource _audioSource;
     private readonly IHubContext<PipelineHub> _hub;
     private readonly ActiveCallStore _callStore;
+    private readonly LiveSentimentStore _liveSentiment;
     private readonly IConfiguration _config;
     private readonly ILogger<SpeechTranscriptionService> _logger;
 
@@ -46,12 +47,14 @@ public sealed class SpeechTranscriptionService : BackgroundService
         IAudioSource audioSource,
         IHubContext<PipelineHub> hub,
         ActiveCallStore callStore,
+        LiveSentimentStore liveSentiment,
         IConfiguration config,
         ILogger<SpeechTranscriptionService> logger)
     {
         _audioSource = audioSource;
         _hub = hub;
         _callStore = callStore;
+        _liveSentiment = liveSentiment;
         _config = config;
         _logger = logger;
     }
@@ -227,6 +230,10 @@ public sealed class SpeechTranscriptionService : BackgroundService
             var evt = BuildEvent(callId, seq, e.Result.ResultId, e.Result.Text, isFinal: true);
             _ = _hub.Clients.Group(group)
                     .SendAsync(PipelineContract.StreamNames.Transcript, evt, CancellationToken.None);
+
+            // Fold the finalized utterance into the rolling live-sentiment signal so the
+            // console's sentiment meter tracks the conversation.
+            _liveSentiment.Append(callId, e.Result.Text);
 
             _logger.LogInformation(
                 "SpeechTranscriptionService: FINAL utterance seq={Seq} callId={CallId} text=\"{Text}\"",
