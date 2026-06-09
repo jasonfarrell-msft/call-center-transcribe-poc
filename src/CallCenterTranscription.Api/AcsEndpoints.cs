@@ -28,6 +28,8 @@ namespace CallCenterTranscription.Api;
 /// </summary>
 internal static class AcsEndpoints
 {
+    private static readonly TimeSpan DisconnectedCleanupDelay = TimeSpan.FromSeconds(8);
+
     internal static WebApplication MapAcsRoutes(this WebApplication app)
     {
         // ── ACS Event Webhooks (AllowAnonymous — Event Grid uses its own delivery auth) ───────
@@ -381,6 +383,44 @@ internal static class AcsEndpoints
             "ACS CallDisconnected observed for call {CallId}; awaiting media-stream close to finalize call state (matchedTrackedCall={MatchedTrackedCall}).",
             endedCallId ?? "(unknown)",
             matchesTrackedCall);
+
+        if (matchesTrackedCall && !string.IsNullOrWhiteSpace(endedCallId))
+        {
+            var delayedCallStore = services.GetRequiredService<ActiveCallStore>();
+            var delayedAudioSource = services.GetRequiredService<AcsAudioSource>();
+            var delayedCurrentStateStore = services.GetRequiredService<PipelineCurrentStateStore>();
+            var delayedLiveSentimentStore = services.GetRequiredService<LiveSentimentStore>();
+
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await Task.Delay(DisconnectedCleanupDelay, CancellationToken.None);
+
+                    if (!string.Equals(delayedCallStore.CallId, endedCallId, StringComparison.Ordinal))
+                    {
+                        return; // call already cleared or replaced by a newer call
+                    }
+
+                    delayedAudioSource.CompleteStream();
+                    delayedCallStore.Clear();
+                    delayedCurrentStateStore.ClearLiveState();
+                    delayedLiveSentimentStore.Clear();
+
+                    logger.LogWarning(
+                        "Forced delayed cleanup for disconnected call {CallId} after media-stream close was not observed within {Seconds}s.",
+                        endedCallId,
+                        DisconnectedCleanupDelay.TotalSeconds);
+                }
+                catch (Exception ex)
+                {
+                    logger.LogWarning(
+                        ex,
+                        "Delayed cleanup failed for disconnected call {CallId}.",
+                        endedCallId);
+                }
+            });
+        }
     }
 
     // ────────────────────────────────────────────────────────────────────────────────────────────
