@@ -69,12 +69,12 @@ public sealed class LiveSentimentStore
     /// Utterances with no sentiment-bearing words (score 0) are ignored so neutral chatter and
     /// silence do not drag the meter toward the midpoint.
     /// </summary>
-    public void Append(string callId, string? text)
+    public SentimentEvent? Append(string callId, string? text)
     {
         var utteranceScore = SentimentLexicon.Score(text);
         if (utteranceScore == 0d)
         {
-            return;
+            return null;
         }
 
         lock (_gate)
@@ -85,7 +85,7 @@ public sealed class LiveSentimentStore
             // next call. (Reviewer fix: closes the call-teardown race.)
             if (!_active)
             {
-                return;
+                return null;
             }
 
             if (string.IsNullOrEmpty(_callId))
@@ -96,7 +96,7 @@ public sealed class LiveSentimentStore
             else if (!string.Equals(_callId, callId, StringComparison.Ordinal))
             {
                 // Late utterance from a different (prior) call — drop it.
-                return;
+                return null;
             }
 
             _previousRollingScore = _rollingScore;
@@ -122,6 +122,8 @@ public sealed class LiveSentimentStore
             {
                 _events.RemoveRange(0, _events.Count - MaxEvents);
             }
+
+            return _events[^1];
         }
     }
 

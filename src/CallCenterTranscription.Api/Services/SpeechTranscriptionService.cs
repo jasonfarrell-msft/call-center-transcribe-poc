@@ -247,7 +247,12 @@ public sealed class SpeechTranscriptionService : BackgroundService
             _ = _hub.Clients.Group(group)
                 .SendAsync(PipelineContract.StreamNames.Transcript, transcriptEvent, CancellationToken.None);
 
-            _liveSentiment.Append(callId, e.Result.Text);
+            var sentimentEvent = _liveSentiment.Append(callId, e.Result.Text);
+            if (sentimentEvent is not null)
+            {
+                _ = _hub.Clients.Group(group)
+                    .SendAsync(PipelineContract.StreamNames.Sentiment, sentimentEvent, CancellationToken.None);
+            }
 
             _ = PublishTranslationIfNeededAsync(
                 callId,
