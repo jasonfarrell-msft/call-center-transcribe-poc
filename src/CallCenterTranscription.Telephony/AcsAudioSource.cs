@@ -245,6 +245,7 @@ public sealed class AcsAudioSource : IAudioSource
 
                     // Non-communication and non-PSTN participant raw IDs are treated as customer/
                     // unknown-speaker audio and passed through to preserve transcription.
+                    Interlocked.Exchange(ref _communicationPassThroughEnabled, 1);
                     FlushBufferedCommunicationFrames();
                     WriteFrame(frame, silent, payload.Length);
                     return ValueTask.CompletedTask;

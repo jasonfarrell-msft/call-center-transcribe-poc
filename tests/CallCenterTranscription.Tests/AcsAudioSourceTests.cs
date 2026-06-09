@@ -51,6 +51,22 @@ public sealed class AcsAudioSourceTests
         Assert.Single(frames);
     }
 
+    [Fact]
+    public async Task ReadAsync_WhenUnknownParticipantObserved_CommunicationFramesAreNotRebufferedAndDropped()
+    {
+        var source = new AcsAudioSource(NullLogger<AcsAudioSource>.Instance);
+        source.BeginSession();
+
+        await source.HandleWebSocketMessageAsync(BuildAudioDataMessage("1:unknown-customer"));
+        await source.HandleWebSocketMessageAsync(BuildAudioDataMessage("8:acs:test-rep"));
+        await source.HandleWebSocketMessageAsync(BuildAudioDataMessage("4:+12065550100"));
+        source.CompleteStream();
+
+        var frames = await ReadAllAsync(source);
+
+        Assert.Equal(3, frames.Count);
+    }
+
     private static async Task<List<AudioFrame>> ReadAllAsync(AcsAudioSource source)
     {
         var frames = new List<AudioFrame>();
