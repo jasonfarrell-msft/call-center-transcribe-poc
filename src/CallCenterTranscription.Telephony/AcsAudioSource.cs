@@ -39,6 +39,8 @@ public sealed class AcsAudioSource : IAudioSource
         });
 
     private readonly ILogger<AcsAudioSource> _logger;
+    private readonly object _participantGate = new();
+    private readonly Queue<PendingCommunicationFrame> _pendingCommunicationFrames = new();
 
     // The current call's frame channel writer target. Written/read only on the single
     // media-stream WebSocket handler context (single replica ⇒ one call at a time). volatile
@@ -48,6 +50,10 @@ public sealed class AcsAudioSource : IAudioSource
     private long _frameCount;
     private long _silentFrameCount;
     private long _repFrameCount;
+    private int _sawNonCommunicationParticipantFrame;
+    private int _communicationPassThroughEnabled;
+    private int _loggedCommunicationFrameFallback;
+    private const int CommunicationProbeFrameThreshold = 50;
 
     public AcsAudioSource(ILogger<AcsAudioSource> logger)
     {
@@ -74,6 +80,14 @@ public sealed class AcsAudioSource : IAudioSource
         var channel = CreateFrameChannel();
         Interlocked.Exchange(ref _frameCount, 0);
         Interlocked.Exchange(ref _silentFrameCount, 0);
+        Interlocked.Exchange(ref _repFrameCount, 0);
+        Interlocked.Exchange(ref _sawNonCommunicationParticipantFrame, 0);
+        Interlocked.Exchange(ref _communicationPassThroughEnabled, 0);
+        Interlocked.Exchange(ref _loggedCommunicationFrameFallback, 0);
+        lock (_participantGate)
+        {
+            _pendingCommunicationFrames.Clear();
+        }
         _current = channel;
         _sessions.Writer.TryWrite(channel.Reader);
         _logger.LogInformation("AcsAudioSource: new audio session started.");
@@ -140,17 +154,14 @@ public sealed class AcsAudioSource : IAudioSource
                     return ValueTask.CompletedTask;
 
                 // Unmixed media streaming tags each frame with the source participant's raw id.
-                // ACS raw-id prefixes: "4:" = PSTN (the CUSTOMER), "8:" = CommunicationUser (the REP
-                // we AddParticipant-ed). Drop the rep's audio so the single recognizer — and thus the
-                // transcript AND the customer sentiment meter — stays CUSTOMER-only. Fail-open: if the
-                // field is absent (e.g., a Mixed fallback) we INCLUDE the frame, so we never silently
-                // lose the customer; worst case the rep briefly leaks in (the prior behaviour).
-                if (TryGetParticipantRawId(audioData, out var participantRawId) &&
-                    participantRawId.StartsWith("8:", StringComparison.Ordinal))
-                {
-                    Interlocked.Increment(ref _repFrameCount);
-                    return ValueTask.CompletedTask;
-                }
+                // ACS raw-id prefixes: "4:" = PSTN (typically CUSTOMER), "8:" = CommunicationUser.
+                // Strategy:
+                //   • If we have seen a non-"8:" participant, drop "8:" frames as rep audio.
+                //   • If we only see "8:" frames at call start, buffer a short probe window. If no
+                //     non-"8:" frame appears, flush and pass through so non-PSTN callers still transcribe.
+                var hasParticipantRawId = TryGetParticipantRawId(audioData, out var participantRawId);
+                var isCommunicationUserFrame = hasParticipantRawId &&
+                    participantRawId.StartsWith("8:", StringComparison.Ordinal);
 
                 if (!audioData.TryGetProperty("data", out var dataProp))
                     return ValueTask.CompletedTask;
@@ -187,28 +198,51 @@ public sealed class AcsAudioSource : IAudioSource
                     Payload     = payload
                 };
 
-                // TryWrite with DropOldest never blocks and always returns true. Null-safe if a
-                // frame somehow arrives before BeginSession (frame is dropped).
-                _current?.Writer.TryWrite(frame);
-
-                var count = Interlocked.Increment(ref _frameCount);
-                if (silent)
-                    Interlocked.Increment(ref _silentFrameCount);
-
-                // Diagnostic logging: first frame, then every ~5 s (250 frames @ 50 fps).
-                if (count == 1)
+                if (hasParticipantRawId)
                 {
-                    _logger.LogInformation(
-                        "AcsAudioSource: first AudioData frame received ({Bytes} bytes, silent={Silent}).",
-                        payload.Length, silent);
+                    if (!isCommunicationUserFrame)
+                    {
+                        Interlocked.Exchange(ref _sawNonCommunicationParticipantFrame, 1);
+                        DropBufferedCommunicationFrames();
+                        WriteFrame(frame, silent, payload.Length);
+                        return ValueTask.CompletedTask;
+                    }
+
+                    if (Volatile.Read(ref _sawNonCommunicationParticipantFrame) == 1)
+                    {
+                        Interlocked.Increment(ref _repFrameCount);
+                        return ValueTask.CompletedTask;
+                    }
+
+                    lock (_participantGate)
+                    {
+                        if (Volatile.Read(ref _communicationPassThroughEnabled) == 1)
+                        {
+                            WriteFrame(frame, silent, payload.Length);
+                            return ValueTask.CompletedTask;
+                        }
+
+                        _pendingCommunicationFrames.Enqueue(new PendingCommunicationFrame(frame, silent, payload.Length));
+                        if (_pendingCommunicationFrames.Count >= CommunicationProbeFrameThreshold)
+                        {
+                            Interlocked.Exchange(ref _communicationPassThroughEnabled, 1);
+                            if (Interlocked.CompareExchange(ref _loggedCommunicationFrameFallback, 1, 0) == 0)
+                            {
+                                _logger.LogInformation(
+                                    "AcsAudioSource: no non-communication participant observed after {ProbeFrames} frames; " +
+                                    "passing through communication-user audio for this call.",
+                                    CommunicationProbeFrameThreshold);
+                            }
+
+                            FlushBufferedCommunicationFrames();
+                        }
+                    }
+
+                    return ValueTask.CompletedTask;
                 }
-                else if (count % 250 == 0)
-                {
-                    var silentSoFar = Interlocked.Read(ref _silentFrameCount);
-                    _logger.LogInformation(
-                        "AcsAudioSource: {Count} AudioData frames received ({Silent} silent).",
-                        count, silentSoFar);
-                }
+
+                FlushBufferedCommunicationFrames();
+                WriteFrame(frame, silent, payload.Length);
 
                 return ValueTask.CompletedTask;
             }
@@ -234,6 +268,15 @@ public sealed class AcsAudioSource : IAudioSource
     /// </summary>
     public void CompleteStream()
     {
+        if (Volatile.Read(ref _sawNonCommunicationParticipantFrame) == 1)
+        {
+            DropBufferedCommunicationFrames();
+        }
+        else
+        {
+            FlushBufferedCommunicationFrames();
+        }
+
         _current?.Writer.TryComplete();
 
         var total  = Interlocked.Read(ref _frameCount);
@@ -243,6 +286,58 @@ public sealed class AcsAudioSource : IAudioSource
             "AcsAudioSource: audio session completed — {Total} customer AudioData frames received " +
             "({Silent} silent, {NonSilent} with audio); {Rep} rep frames dropped (unmixed).",
             total, silent, total - silent, rep);
+    }
+
+    private void FlushBufferedCommunicationFrames()
+    {
+        lock (_participantGate)
+        {
+            while (_pendingCommunicationFrames.Count > 0)
+            {
+                var pending = _pendingCommunicationFrames.Dequeue();
+                WriteFrame(pending.Frame, pending.Silent, pending.PayloadLength);
+            }
+        }
+    }
+
+    private void DropBufferedCommunicationFrames()
+    {
+        lock (_participantGate)
+        {
+            if (_pendingCommunicationFrames.Count == 0)
+            {
+                return;
+            }
+
+            Interlocked.Add(ref _repFrameCount, _pendingCommunicationFrames.Count);
+            _pendingCommunicationFrames.Clear();
+        }
+    }
+
+    private void WriteFrame(AudioFrame frame, bool silent, int payloadLength)
+    {
+        // TryWrite with DropOldest never blocks and always returns true. Null-safe if a
+        // frame somehow arrives before BeginSession (frame is dropped).
+        _current?.Writer.TryWrite(frame);
+
+        var count = Interlocked.Increment(ref _frameCount);
+        if (silent)
+            Interlocked.Increment(ref _silentFrameCount);
+
+        // Diagnostic logging: first frame, then every ~5 s (250 frames @ 50 fps).
+        if (count == 1)
+        {
+            _logger.LogInformation(
+                "AcsAudioSource: first AudioData frame received ({Bytes} bytes, silent={Silent}).",
+                payloadLength, silent);
+        }
+        else if (count % 250 == 0)
+        {
+            var silentSoFar = Interlocked.Read(ref _silentFrameCount);
+            _logger.LogInformation(
+                "AcsAudioSource: {Count} AudioData frames received ({Silent} silent).",
+                count, silentSoFar);
+        }
     }
 
     /// <summary>
@@ -266,4 +361,6 @@ public sealed class AcsAudioSource : IAudioSource
         rawId = string.Empty;
         return false;
     }
+
+    private readonly record struct PendingCommunicationFrame(AudioFrame Frame, bool Silent, int PayloadLength);
 }

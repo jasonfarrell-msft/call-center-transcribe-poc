@@ -201,6 +201,7 @@ internal static class AcsEndpoints
                         // Capture the ACS call connection ID so SpeechTranscriptionService can
                         // route transcript events to the correct SignalR group.
                         var callStore = ctx.RequestServices.GetRequiredService<ActiveCallStore>();
+                        var repRegistry = ctx.RequestServices.GetRequiredService<RepRegistry>();
                         var answeredCallId = result.Value.CallConnection.CallConnectionId;
                         callStore.SetCallId(answeredCallId);
                         ctx.RequestServices
@@ -219,6 +220,18 @@ internal static class AcsEndpoints
                                 TimestampUtc = DateTimeOffset.UtcNow
                             },
                             ct);
+
+                        // Best-effort fast path: invite the currently registered rep immediately.
+                        // Callback-driven and heartbeat-driven paths remain as convergent retries.
+                        if (!string.IsNullOrWhiteSpace(repRegistry.CurrentUserId))
+                        {
+                            await RepEndpoints.TryAddRepToCallAsync(
+                                callClient,
+                                callStore,
+                                repRegistry,
+                                logger,
+                                ct);
+                        }
 
                         logger.LogInformation(
                             "ACS call answered; callId={CallId} media streaming directed to {MediaUri}",
@@ -292,6 +305,14 @@ internal static class AcsEndpoints
                         break;
                     }
 
+                    if (!string.Equals(callStore.CallId, connected.CallConnectionId, StringComparison.Ordinal))
+                    {
+                        callStore.SetCallId(connected.CallConnectionId);
+                        ctx.RequestServices
+                            .GetRequiredService<PipelineCurrentStateStore>()
+                            .ResetForCall(connected.CallConnectionId);
+                    }
+
                     if (string.IsNullOrEmpty(registry.CurrentUserId))
                     {
                         // No rep ready yet — leave the add PENDING. The next /register reconverges
@@ -302,6 +323,10 @@ internal static class AcsEndpoints
                     }
 
                     await RepEndpoints.TryAddRepToCallAsync(callClient, callStore, registry, logger, ct);
+                    break;
+
+                case CallDisconnected disconnected:
+                    await HandleCallDisconnectedAsync(ctx.RequestServices, disconnected.CallConnectionId, logger, ct);
                     break;
 
                 case AddParticipantSucceeded ok:
@@ -323,6 +348,39 @@ internal static class AcsEndpoints
                     break;
             }
         }
+    }
+
+    private static async Task HandleCallDisconnectedAsync(
+        IServiceProvider services,
+        string? disconnectedCallId,
+        ILogger logger,
+        CancellationToken cancellationToken)
+    {
+        var callStore = services.GetRequiredService<ActiveCallStore>();
+        var trackedCallId = callStore.CallId;
+        var endedCallId = string.IsNullOrWhiteSpace(disconnectedCallId) ? trackedCallId : disconnectedCallId;
+        var matchesTrackedCall = !string.IsNullOrWhiteSpace(trackedCallId) &&
+            (string.IsNullOrWhiteSpace(disconnectedCallId) ||
+             string.Equals(trackedCallId, disconnectedCallId, StringComparison.Ordinal));
+
+        if (!string.IsNullOrWhiteSpace(endedCallId))
+        {
+            var hub = services.GetRequiredService<IHubContext<PipelineHub>>();
+            await hub.Clients.All.SendAsync(
+                PipelineContract.StreamNames.CallEnded,
+                new CallLifecycleEvent
+                {
+                    CallId = endedCallId,
+                    Status = "ended",
+                    TimestampUtc = DateTimeOffset.UtcNow
+                },
+                cancellationToken);
+        }
+
+        logger.LogInformation(
+            "ACS CallDisconnected observed for call {CallId}; awaiting media-stream close to finalize call state (matchedTrackedCall={MatchedTrackedCall}).",
+            endedCallId ?? "(unknown)",
+            matchesTrackedCall);
     }
 
     // ────────────────────────────────────────────────────────────────────────────────────────────

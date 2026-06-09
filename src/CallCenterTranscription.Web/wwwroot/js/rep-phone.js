@@ -92,18 +92,34 @@
 
     // ── Registration heartbeat ───────────────────────────────────────────────────────────────
     let heartbeatTimer = null;
+    let softphoneRegistered = false;
 
     async function register() {
-        if (!repUserId) return;
+        if (!repUserId) return false;
         try {
-            await fetch(REGISTER_URL, {
+            const resp = await fetch(REGISTER_URL, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 cache: "no-store",
                 body: JSON.stringify({ userId: repUserId })
             });
+            if (!resp.ok) {
+                throw new Error(`register endpoint returned ${resp.status}`);
+            }
+            softphoneRegistered = true;
+            if (!currentCall && !currentIncoming) {
+                applyState("idle");
+                setStatus("Ready — waiting for a call");
+            }
+            return true;
         } catch (err) {
+            softphoneRegistered = false;
             console.warn("rep-phone: register failed (will retry).", err);
+            if (!currentCall && !currentIncoming) {
+                applyState("unavailable");
+                setStatus("Softphone registration lost — retrying…");
+            }
+            return false;
         }
     }
 
@@ -242,8 +258,12 @@
 
             // "Registered" == the incomingCall handler is wired and ready.
             callAgent.on("incomingCall", onIncomingCall);
-            applyState("idle");
-            setStatus("Ready — waiting for a call");
+            setStatus("Registering softphone…");
+            const registered = await register();
+            if (!registered && !softphoneRegistered) {
+                applyState("unavailable");
+                setStatus("Softphone registration pending — retrying…");
+            }
             startHeartbeat();
         } catch (err) {
             console.error("rep-phone: failed to initialise CallAgent.", err);
