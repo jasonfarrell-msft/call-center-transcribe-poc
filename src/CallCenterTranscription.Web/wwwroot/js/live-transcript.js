@@ -28,6 +28,26 @@
         return;
     }
 
+    // Header fields that must stay in sync with the live connection state (the top bar).
+    const summaryEl = root.querySelector("[data-conn-summary]");
+    const callIdEl = root.querySelector("[data-meta-callid]");
+    const customerEl = root.querySelector("[data-meta-customer]");
+    const connectedEl = root.querySelector("[data-meta-connected]");
+    const WAITING = "Waiting for call";
+
+    function setText(el, value) {
+        if (el) {
+            el.textContent = value;
+        }
+    }
+
+    function resetHeader() {
+        setText(summaryEl, "Live mode • Waiting for call");
+        setText(callIdEl, WAITING);
+        setText(customerEl, WAITING);
+        setText(connectedEl, WAITING);
+    }
+
     const STATE_CLASSES = {
         disconnected: "conn-status--disconnected",
         connecting: "conn-status--connecting",
@@ -118,6 +138,7 @@
             endedTimer = null;
         }
         setState("live", "● Live transcription");
+        setText(summaryEl, "Live feed active • Transcribing");
         clearEmptyState();
 
         const wasNearBottom = isNearBottom();
@@ -167,6 +188,10 @@
         currentCallId = callId;
         clearTranscript();
         setState("connecting", "Call connected — starting transcription…");
+        setText(summaryEl, "Live mode • Call connected");
+        setText(callIdEl, callId);
+        setText(customerEl, "Inbound caller");
+        setText(connectedEl, formatTime());
         // Await the group join so no early transcript is missed (reviewer fix).
         await subscribeToCall(callId);
     }
@@ -177,10 +202,12 @@
             return;
         }
         setState("ended", "Call ended");
+        setText(summaryEl, "Live mode • Call ended");
         currentCallId = null;
         ghostLine = null;
         endedTimer = setTimeout(() => {
             setState("disconnected", "Disconnected — waiting for call");
+            resetHeader();
         }, 4000);
     }
 
@@ -212,23 +239,31 @@
 
     connection.onreconnecting(() => {
         setState("connecting", "Reconnecting…");
+        setText(summaryEl, "Live mode • Reconnecting…");
     });
     connection.onreconnected(() => {
         setState("disconnected", "Disconnected — waiting for call");
+        resetHeader();
         resync();
     });
     connection.onclose(() => {
         setState("disconnected", "Disconnected — connection lost");
+        setText(summaryEl, "Live mode • Connection lost");
+        setText(callIdEl, WAITING);
+        setText(customerEl, WAITING);
+        setText(connectedEl, WAITING);
     });
 
     async function start() {
         try {
             await connection.start();
             setState("disconnected", "Disconnected — waiting for call");
+            resetHeader();
             await resync();
         } catch (err) {
             console.warn("live-transcript: connection failed; retrying in 5s.", err);
             setState("disconnected", "Disconnected — retrying…");
+            setText(summaryEl, "Live mode • Reconnecting…");
             setTimeout(start, 5000);
         }
     }

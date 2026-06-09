@@ -195,7 +195,13 @@
     function replaceRefreshRegions(root, nextRoot) {
         const regionNames = Array.from(root.querySelectorAll(consoleRefreshRegionSelector))
             .map((region) => region.getAttribute("data-console-refresh-region"))
-            .filter((value, index, values) => Boolean(value) && values.indexOf(value) === index);
+            // Skip empty region names: in live mode the header/columns wrappers render an empty
+            // data-console-refresh-region (they are driven by the live SignalR stream, not the
+            // scripted poll), so they must be excluded from server-markup replacement.
+            .filter((value, index, values) =>
+                typeof value === "string" &&
+                value.trim().length > 0 &&
+                values.indexOf(value) === index);
 
         regionNames.forEach((regionName) => {
             const currentRegion = root.querySelector(`[data-console-refresh-region="${regionName}"]`);

@@ -60,25 +60,45 @@ public class IndexModel : PageModel
     public async Task OnGetAsync()
     {
         var cancellationToken = HttpContext.RequestAborted;
-        var currentSessionTask = _pipelineApiClient.GetCurrentSessionAsync(cancellationToken);
+
+        // In live mode the header and transcript are driven entirely by the live SignalR
+        // connection-state machine (client-side). We deliberately skip the scripted
+        // /api/session/current mock feed so the top bar never leaks stale mock customer,
+        // "Mock feed active" or connected-timestamp metadata that would desync from the
+        // real connection state shown in the transcript column.
+        var currentSessionTask = LiveMode
+            ? null
+            : _pipelineApiClient.GetCurrentSessionAsync(cancellationToken);
         var transcriptTask = _pipelineApiClient.GetTranscriptEventsAsync(cancellationToken);
         var translationTask = _pipelineApiClient.GetTranslationEventsAsync(cancellationToken);
         var sentimentTask = _pipelineApiClient.GetSentimentFeedAsync(cancellationToken);
         var missionControlTask = _pipelineApiClient.GetMissionControlHealthAsync(cancellationToken);
 
-        await Task.WhenAll(currentSessionTask, transcriptTask, translationTask, sentimentTask, missionControlTask);
+        await Task.WhenAll(transcriptTask, translationTask, sentimentTask, missionControlTask);
 
-        var currentSessionResult = await currentSessionTask;
         var transcriptResult = await transcriptTask;
         var translationResult = await translationTask;
         var sentimentResult = await sentimentTask;
         var missionControlResult = await missionControlTask;
 
-        CurrentSession = ResolveResult(
-            currentSessionResult,
-            new SessionCurrentResponse(),
-            "session context",
-            warning => SessionWarning = warning);
+        if (currentSessionTask is not null)
+        {
+            var currentSessionResult = await currentSessionTask;
+            CurrentSession = ResolveResult(
+                currentSessionResult,
+                new SessionCurrentResponse(),
+                "session context",
+                warning => SessionWarning = warning);
+            ConnectionSummary = BuildConnectionSummary(currentSessionResult);
+        }
+        else
+        {
+            // Live mode: render neutral header placeholders; live-transcript.js updates them
+            // (Call ID, customer, connected time, status summary) on callStarted/callEnded.
+            CurrentSession = new SessionCurrentResponse();
+            ConnectionSummary = "Live mode • Waiting for call";
+        }
+
         var transcriptEvents = ResolveResult(
             transcriptResult,
             [],
@@ -101,7 +121,6 @@ public class IndexModel : PageModel
             warning => MissionControlWarning = warning);
 
         TranscriptTimeline = BuildTranscriptTimeline(transcriptEvents, translationEvents);
-        ConnectionSummary = BuildConnectionSummary(currentSessionResult);
         Sentiment = BuildSentimentPresentation(SentimentFeed);
     }
 

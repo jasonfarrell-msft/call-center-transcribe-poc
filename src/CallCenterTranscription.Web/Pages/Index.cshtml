@@ -23,12 +23,12 @@
 
     <section class="console-view console-view--representative"
              aria-labelledby="console-heading">
-        <header class="card-shell console-header" data-console-refresh-region="header">
+        <header class="card-shell console-header" data-console-refresh-region="@(Model.LiveMode ? null : "header")">
             <div class="console-header-top">
                 <div>
                     <p class="console-eyebrow">Representative console</p>
                     <h2 id="console-heading" tabindex="-1">@Model.RepresentativeDisplayName</h2>
-                    <p class="console-status" role="status" aria-live="polite">@Model.ConnectionSummary</p>
+                    <p class="console-status" role="status" aria-live="polite" data-conn-summary>@Model.ConnectionSummary</p>
                 </div>
             </div>
 
@@ -48,15 +48,15 @@
             <dl class="console-call-meta" aria-label="Current call details">
                 <div>
                     <dt>Call ID</dt>
-                    <dd>@Model.CallIdDisplay</dd>
+                    <dd data-meta-callid>@Model.CallIdDisplay</dd>
                 </div>
                 <div>
                     <dt>Customer</dt>
-                    <dd>@Model.CustomerDisplayName</dd>
+                    <dd data-meta-customer>@Model.CustomerDisplayName</dd>
                 </div>
                 <div>
                     <dt>Connected</dt>
-                    <dd>@Model.ConnectionTimeDisplay</dd>
+                    <dd data-meta-connected>@Model.ConnectionTimeDisplay</dd>
                 </div>
             </dl>
         </header>
