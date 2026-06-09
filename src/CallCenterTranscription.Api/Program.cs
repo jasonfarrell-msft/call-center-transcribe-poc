@@ -102,8 +102,10 @@ apiRoutes.MapGet("/session/current", (IScriptedScenarioFeed scriptedScenarioFeed
 apiRoutes.MapGet("/session/current-state", (PipelineCurrentStateStore currentStateStore) =>
     Results.Ok(currentStateStore.GetSnapshot()));
 
-apiRoutes.MapGet("/mission-control/health", (IScriptedScenarioFeed scriptedScenarioFeed) =>
-    Results.Ok(scriptedScenarioFeed.GetMissionControlHealth()));
+apiRoutes.MapGet("/mission-control/health", (
+    IScriptedScenarioFeed scriptedScenarioFeed,
+    IConfiguration configuration) =>
+    Results.Ok(BuildMissionControlHealth(scriptedScenarioFeed, configuration)));
 
 var eventRoutes = apiRoutes.MapGroup("/events");
 
@@ -154,5 +156,101 @@ app.MapAcsRoutes();
 app.MapRepRoutes();
 
 app.Run();
+
+static MissionControlHealthResponse BuildMissionControlHealth(
+    IScriptedScenarioFeed scriptedScenarioFeed,
+    IConfiguration configuration)
+{
+    var baseline = scriptedScenarioFeed.GetMissionControlHealth();
+    var liveAudioMode = string.Equals(
+        configuration.GetValue<string>("AudioSource:Mode"),
+        "Acs",
+        StringComparison.OrdinalIgnoreCase);
+
+    if (!liveAudioMode)
+    {
+        return baseline;
+    }
+
+    var speechConfigured = !string.IsNullOrWhiteSpace(configuration["Speech:Endpoint"])
+        && !string.IsNullOrWhiteSpace(configuration["Speech:Region"]);
+    var translatorConfigured = !string.IsNullOrWhiteSpace(configuration["Translator:Endpoint"]);
+    var acsConfigured = !string.IsNullOrWhiteSpace(configuration["Acs:Endpoint"]);
+    var now = DateTimeOffset.UtcNow;
+
+    var componentsById = baseline.Components.ToDictionary(component => component.ComponentId, StringComparer.OrdinalIgnoreCase);
+
+    MissionControlComponentHealth Resolve(string componentId, Func<MissionControlComponentHealth, MissionControlComponentHealth> update)
+    {
+        if (!componentsById.TryGetValue(componentId, out var component))
+        {
+            component = new MissionControlComponentHealth
+            {
+                ComponentId = componentId,
+                DisplayName = componentId,
+                LastCheckedUtc = now
+            };
+        }
+
+        return update(component with { LastCheckedUtc = now });
+    }
+
+    componentsById["mock-feed"] = Resolve("mock-feed", component => component with
+    {
+        Status = "deferred",
+        Readiness = "standby",
+        IsLive = false,
+        Evidence = "Mock feed remains available as explicit fallback while live ACS/Speech is active."
+    });
+
+    componentsById["azure-ai-speech"] = Resolve("azure-ai-speech", component => component with
+    {
+        Status = speechConfigured ? "healthy" : "degraded",
+        Readiness = speechConfigured ? "live" : "config-missing",
+        IsLive = speechConfigured,
+        Evidence = speechConfigured
+            ? "Live Azure AI Speech transcription is enabled for ACS audio."
+            : "Speech endpoint/region configuration missing; transcript falls back to mock mode."
+    });
+
+    componentsById["azure-ai-translator"] = Resolve("azure-ai-translator", component => component with
+    {
+        Status = translatorConfigured ? "healthy" : "degraded",
+        Readiness = translatorConfigured ? "live" : "fallback-mock",
+        IsLive = translatorConfigured,
+        Evidence = translatorConfigured
+            ? "Live Azure AI Translator is enabled for non-English utterances."
+            : "Translator endpoint configuration missing; non-English turns remain untranslated."
+    });
+
+    componentsById["acs-media-routes"] = Resolve("acs-media-routes", component => component with
+    {
+        Status = acsConfigured ? "healthy" : "degraded",
+        Readiness = acsConfigured ? "live" : "config-missing",
+        IsLive = acsConfigured,
+        Evidence = acsConfigured
+            ? "ACS callbacks and media stream routes are configured for live ingress."
+            : "ACS endpoint configuration missing; incoming call/media stream cannot activate."
+    });
+
+    var orderedComponents = baseline.Components
+        .Select(component => componentsById.TryGetValue(component.ComponentId, out var updated) ? updated : component with { LastCheckedUtc = now })
+        .ToArray();
+
+    var allLiveDependenciesHealthy = speechConfigured && translatorConfigured && acsConfigured;
+    var overallStatus = allLiveDependenciesHealthy ? "healthy" : "degraded";
+
+    return baseline with
+    {
+        OverallStatus = overallStatus,
+        GeneratedAtUtc = now,
+        IsMockFeedActive = false,
+        AcsMediaRoutesLiveReady = acsConfigured,
+        Summary = allLiveDependenciesHealthy
+            ? "Live ACS, Speech, and Translator pipeline is active."
+            : "Live mode active with degraded dependencies. Mock fallback remains available.",
+        Components = orderedComponents
+    };
+}
 
 public partial class Program;
