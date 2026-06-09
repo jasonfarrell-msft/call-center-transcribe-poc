@@ -166,11 +166,13 @@ internal static class RepEndpoints
             return;
         }
 
+        var operationContext = $"add-rep:{callId}:{Guid.NewGuid():N}";
+        callStore.SetPendingAddRepOperationContext(operationContext);
+
         try
         {
             var connection = callClient.GetCallConnection(callId);
             var invite = new CallInvite(new CommunicationUserIdentifier(repUserId));
-            const string operationContext = "add-rep";
             var options = new AddParticipantOptions(invite)
             {
                 InvitationTimeoutInSeconds = InvitationTimeoutSeconds,
@@ -200,7 +202,7 @@ internal static class RepEndpoints
                     await Task.Delay(TimeSpan.FromSeconds(InvitationTimeoutSeconds + 5)).ConfigureAwait(false);
                     if (string.Equals(callStore.CallId, callId, StringComparison.Ordinal))
                     {
-                        callStore.ResetAddRep();
+                        callStore.ResetAddRep(operationContext);
                         logger.LogInformation(
                             "AddParticipant claim timeout elapsed for call {CallId}; attempted claim release for retry if rep is still not connected.",
                             callId);
@@ -214,7 +216,7 @@ internal static class RepEndpoints
         }
         catch (Azure.RequestFailedException ex)
         {
-            callStore.ResetAddRep(); // allow the next /register to retry
+            callStore.ResetAddRep(operationContext); // allow the next /register to retry
             logger.LogError(
                 ex,
                 "AddParticipant request failed for call {CallId} rep {UserId}: status={Status} errorCode={ErrorCode} message={Message}.",
@@ -226,7 +228,7 @@ internal static class RepEndpoints
         }
         catch (Exception ex)
         {
-            callStore.ResetAddRep(); // allow the next /register to retry
+            callStore.ResetAddRep(operationContext); // allow the next /register to retry
             logger.LogError(ex, "Failed to AddParticipant rep {UserId} to call {CallId}.", repUserId, callId);
         }
     }

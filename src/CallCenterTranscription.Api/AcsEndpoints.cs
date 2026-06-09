@@ -365,24 +365,40 @@ internal static class AcsEndpoints
 
                 case AddParticipantSucceeded ok:
                     var successStore = ctx.RequestServices.GetRequiredService<ActiveCallStore>();
-                    if (string.Equals(
-                            successStore.CallId,
-                            ok.CallConnectionId,
-                            StringComparison.Ordinal))
+                    var trackedSuccessCallId = successStore.CallId;
+                    var pendingSuccessOperationContext = successStore.PendingAddRepOperationContext;
+                    var successMatchesTrackedCall =
+                        !string.IsNullOrWhiteSpace(trackedSuccessCallId) &&
+                        string.Equals(trackedSuccessCallId, ok.CallConnectionId, StringComparison.Ordinal) &&
+                        !string.IsNullOrWhiteSpace(ok.OperationContext) &&
+                        string.Equals(ok.OperationContext, pendingSuccessOperationContext, StringComparison.Ordinal);
+                    if (successMatchesTrackedCall)
                     {
-                        successStore.MarkRepAdded();
-                        logger.LogInformation(
-                            "ACS AddParticipant succeeded (rep answered) for call {CallId}; operationContext={OperationContext}. Rep marked connected.",
-                            ok.CallConnectionId,
-                            ok.OperationContext ?? "(none)");
+                        if (successStore.MarkRepAdded(ok.OperationContext))
+                        {
+                            logger.LogInformation(
+                                "ACS AddParticipant succeeded (rep answered) for callbackCallId={CallbackCallId}; trackedCallId={TrackedCallId}; operationContext={OperationContext}. Rep marked connected.",
+                                ok.CallConnectionId,
+                                trackedSuccessCallId,
+                                ok.OperationContext ?? "(none)");
+                        }
+                        else
+                        {
+                            logger.LogWarning(
+                                "Ignoring AddParticipantSucceeded after state changed: callbackCallId={CallbackCallId}; trackedCallId={TrackedCallId}; operationContext={OperationContext}.",
+                                ok.CallConnectionId,
+                                trackedSuccessCallId ?? "(none)",
+                                ok.OperationContext ?? "(none)");
+                        }
                     }
                     else
                     {
                         logger.LogWarning(
-                            "Ignoring AddParticipantSucceeded for stale call {CallbackCallId}; active tracked call is {TrackedCallId}; operationContext={OperationContext}.",
+                            "Ignoring AddParticipantSucceeded for stale/late attempt: callbackCallId={CallbackCallId}; trackedCallId={TrackedCallId}; operationContext={OperationContext}; pendingOperationContext={PendingOperationContext}.",
                             ok.CallConnectionId,
-                            successStore.CallId ?? "(none)",
-                            ok.OperationContext ?? "(none)");
+                            trackedSuccessCallId ?? "(none)",
+                            ok.OperationContext ?? "(none)",
+                            pendingSuccessOperationContext ?? "(none)");
                     }
                     break;
 
@@ -390,23 +406,42 @@ internal static class AcsEndpoints
                     // Rep declined / didn't answer in time / error → release the claim so a later
                     // /register (e.g., rep retries) can re-invite within the call's lifetime.
                     var activeStore = ctx.RequestServices.GetRequiredService<ActiveCallStore>();
-                    if (string.Equals(activeStore.CallId, failed.CallConnectionId, StringComparison.Ordinal))
+                    var trackedFailedCallId = activeStore.CallId;
+                    var pendingFailedOperationContext = activeStore.PendingAddRepOperationContext;
+                    var failedMatchesTrackedCall =
+                        !string.IsNullOrWhiteSpace(trackedFailedCallId) &&
+                        string.Equals(trackedFailedCallId, failed.CallConnectionId, StringComparison.Ordinal) &&
+                        !string.IsNullOrWhiteSpace(failed.OperationContext) &&
+                        string.Equals(failed.OperationContext, pendingFailedOperationContext, StringComparison.Ordinal);
+                    if (failedMatchesTrackedCall)
                     {
-                        logger.LogWarning(
-                            "ACS AddParticipant failed for call {CallId}: {Code} {Message}; operationContext={OperationContext}",
-                            failed.CallConnectionId,
-                            failed.ResultInformation?.Code,
-                            failed.ResultInformation?.Message,
-                            failed.OperationContext ?? "(none)");
-                        activeStore.ResetAddRep();
+                        if (activeStore.ResetAddRep(failed.OperationContext))
+                        {
+                            logger.LogWarning(
+                                "ACS AddParticipant failed for callbackCallId={CallbackCallId}; trackedCallId={TrackedCallId}: {Code} {Message}; operationContext={OperationContext}",
+                                failed.CallConnectionId,
+                                trackedFailedCallId,
+                                failed.ResultInformation?.Code,
+                                failed.ResultInformation?.Message,
+                                failed.OperationContext ?? "(none)");
+                        }
+                        else
+                        {
+                            logger.LogWarning(
+                                "Ignoring AddParticipantFailed after state changed: callbackCallId={CallbackCallId}; trackedCallId={TrackedCallId}; operationContext={OperationContext}.",
+                                failed.CallConnectionId,
+                                trackedFailedCallId ?? "(none)",
+                                failed.OperationContext ?? "(none)");
+                        }
                     }
                     else
                     {
                         logger.LogWarning(
-                            "Ignoring AddParticipantFailed for stale call {CallbackCallId}; active tracked call is {TrackedCallId}; operationContext={OperationContext}.",
+                            "Ignoring AddParticipantFailed for stale/late attempt: callbackCallId={CallbackCallId}; trackedCallId={TrackedCallId}; operationContext={OperationContext}; pendingOperationContext={PendingOperationContext}.",
                             failed.CallConnectionId,
-                            activeStore.CallId ?? "(none)",
-                            failed.OperationContext ?? "(none)");
+                            trackedFailedCallId ?? "(none)",
+                            failed.OperationContext ?? "(none)",
+                            pendingFailedOperationContext ?? "(none)");
                     }
                     break;
 

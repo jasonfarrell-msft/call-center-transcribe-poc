@@ -26,6 +26,7 @@ public sealed class ActiveCallStore
     private readonly object _gate = new();
     private string? _callId;
     private DateTimeOffset? _startedAtUtc;
+    private string? _pendingAddRepOperationContext;
     private int _repAddState = RepAddNone;
     private int _incomingClaimState = IncomingClaimNone;
 
@@ -56,6 +57,21 @@ public sealed class ActiveCallStore
     /// <summary>True once the rep participant has been added to the current call.</summary>
     public bool RepAdded => Volatile.Read(ref _repAddState) == RepAddDone;
 
+    /// <summary>
+    /// Operation context for the current in-flight AddParticipant attempt (if any).
+    /// Used to correlate callbacks to the exact attempt and ignore late stale results.
+    /// </summary>
+    public string? PendingAddRepOperationContext
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _pendingAddRepOperationContext;
+            }
+        }
+    }
+
     /// <summary>Sets the active call ID when a call is answered and resets rep-add state.</summary>
     public void SetCallId(string callId, DateTimeOffset? startedAtUtc = null)
     {
@@ -68,6 +84,7 @@ public sealed class ActiveCallStore
         {
             _callId = callId.Trim();
             _startedAtUtc = startedAtUtc ?? DateTimeOffset.UtcNow;
+            _pendingAddRepOperationContext = null;
         }
 
         Interlocked.Exchange(ref _repAddState, RepAddNone);
@@ -93,6 +110,7 @@ public sealed class ActiveCallStore
 
             _callId = callId.Trim();
             _startedAtUtc = startedAtUtc ?? DateTimeOffset.UtcNow;
+            _pendingAddRepOperationContext = null;
         }
 
         Interlocked.Exchange(ref _repAddState, RepAddNone);
@@ -106,6 +124,7 @@ public sealed class ActiveCallStore
         {
             _callId = null;
             _startedAtUtc = null;
+            _pendingAddRepOperationContext = null;
         }
 
         Interlocked.Exchange(ref _repAddState, RepAddNone);
@@ -127,6 +146,7 @@ public sealed class ActiveCallStore
         {
             _callId = callId.Trim();
             _startedAtUtc = startedAtUtc ?? DateTimeOffset.UtcNow;
+            _pendingAddRepOperationContext = null;
         }
 
         Interlocked.Exchange(ref _repAddState, RepAddNone);
@@ -154,12 +174,55 @@ public sealed class ActiveCallStore
     public bool TryBeginAddRep() =>
         Interlocked.CompareExchange(ref _repAddState, RepAddInProgress, RepAddNone) == RepAddNone;
 
+    /// <summary>Sets the correlation key for the current in-flight AddParticipant attempt.</summary>
+    public void SetPendingAddRepOperationContext(string operationContext)
+    {
+        if (string.IsNullOrWhiteSpace(operationContext))
+        {
+            throw new ArgumentException("operationContext must be provided.", nameof(operationContext));
+        }
+
+        lock (_gate)
+        {
+            _pendingAddRepOperationContext = operationContext.Trim();
+        }
+    }
+
     /// <summary>Commits the rep-add after AddParticipant succeeds (Adding → Added).</summary>
-    public void MarkRepAdded() => Interlocked.Exchange(ref _repAddState, RepAddDone);
+    public bool MarkRepAdded(string? operationContext = null)
+    {
+        lock (_gate)
+        {
+            if (!string.IsNullOrWhiteSpace(operationContext) &&
+                !string.Equals(_pendingAddRepOperationContext, operationContext, StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            _pendingAddRepOperationContext = null;
+        }
+
+        Interlocked.Exchange(ref _repAddState, RepAddDone);
+        return true;
+    }
 
     /// <summary>Releases a failed rep-add claim so the next /register can retry (Adding → None).</summary>
-    public void ResetAddRep() =>
+    public bool ResetAddRep(string? operationContext = null)
+    {
+        lock (_gate)
+        {
+            if (!string.IsNullOrWhiteSpace(operationContext) &&
+                !string.Equals(_pendingAddRepOperationContext, operationContext, StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            _pendingAddRepOperationContext = null;
+        }
+
         Interlocked.CompareExchange(ref _repAddState, RepAddNone, RepAddInProgress);
+        return true;
+    }
 }
 
 public readonly record struct ActiveCallSnapshot(string? CallId, DateTimeOffset? StartedAtUtc);
