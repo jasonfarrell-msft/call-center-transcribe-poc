@@ -29,6 +29,8 @@ public static class ServiceCollectionExtensions
         services.AddSignalR();
         services.AddSingleton<IReasoningClient, MockReasoningClient>();
         services.AddSingleton<IScriptedScenarioFeed, ScriptedPropaneRetentionScenarioFeed>();
+        services.AddSingleton<PipelineCurrentStateStore>();
+        services.AddSingleton<PipelineReplayPublisher>();
 
         // ActiveCallStore: holds the current ACS call ID so SpeechTranscriptionService can
         // route transcript events to the correct SignalR group ("call:{callId}").

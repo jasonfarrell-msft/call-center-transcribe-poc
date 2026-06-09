@@ -99,8 +99,8 @@ if (requireAuth)
 
 apiRoutes.MapGet("/session/current", (IScriptedScenarioFeed scriptedScenarioFeed) =>
     Results.Ok(scriptedScenarioFeed.GetCurrentSession()));
-apiRoutes.MapGet("/session/current-state", (IScriptedScenarioFeed scriptedScenarioFeed) =>
-    Results.Ok(scriptedScenarioFeed.GetCurrentState()));
+apiRoutes.MapGet("/session/current-state", (PipelineCurrentStateStore currentStateStore) =>
+    Results.Ok(currentStateStore.GetSnapshot()));
 
 apiRoutes.MapGet("/mission-control/health", (IScriptedScenarioFeed scriptedScenarioFeed) =>
     Results.Ok(scriptedScenarioFeed.GetMissionControlHealth()));
@@ -112,22 +112,33 @@ var eventRoutes = apiRoutes.MapGroup("/events");
 var liveSentimentMode = string.Equals(
     app.Configuration.GetValue<string>("AudioSource:Mode"), "Acs", StringComparison.OrdinalIgnoreCase);
 
-eventRoutes.MapGet("/transcript", (IScriptedScenarioFeed scriptedScenarioFeed) =>
-    Results.Ok(scriptedScenarioFeed.GetTranscriptEvents()));
-eventRoutes.MapGet("/translation", (IScriptedScenarioFeed scriptedScenarioFeed) =>
-    Results.Ok(scriptedScenarioFeed.GetTranslationEvents()));
+eventRoutes.MapGet("/transcript", (PipelineCurrentStateStore currentStateStore) =>
+    Results.Ok(currentStateStore.GetSnapshot().TranscriptEvents));
+eventRoutes.MapGet("/translation", (PipelineCurrentStateStore currentStateStore) =>
+    Results.Ok(currentStateStore.GetSnapshot().TranslationEvents));
 eventRoutes.MapGet("/sentiment", (
-    IScriptedScenarioFeed scriptedScenarioFeed,
+    PipelineCurrentStateStore currentStateStore,
     LiveSentimentStore liveSentiment) =>
+{
+    var snapshot = currentStateStore.GetSnapshot();
+
     // Live (Acs) mode: serve the rolling, transcript-driven sentiment so the meter tracks the
     // real call. Mock mode: keep the scripted demo feed.
-    Results.Ok(liveSentimentMode ? liveSentiment.GetFeed() : scriptedScenarioFeed.GetSentimentFeed()));
-eventRoutes.MapGet("/churn-risk", (IScriptedScenarioFeed scriptedScenarioFeed) =>
-    Results.Ok(scriptedScenarioFeed.GetChurnRiskEvents()));
-eventRoutes.MapGet("/knowledge-cards", (IScriptedScenarioFeed scriptedScenarioFeed) =>
-    Results.Ok(scriptedScenarioFeed.GetKnowledgeCardEvents()));
-eventRoutes.MapGet("/next-best-action", (IScriptedScenarioFeed scriptedScenarioFeed) =>
-    Results.Ok(scriptedScenarioFeed.GetNextBestActionEvents()));
+    return Results.Ok(liveSentimentMode
+        ? liveSentiment.GetFeed()
+        : new SentimentFeedResponse
+        {
+            CallId = snapshot.Call.CallId,
+            Summary = snapshot.SentimentSummary,
+            Events = snapshot.SentimentEvents
+        });
+});
+eventRoutes.MapGet("/churn-risk", (PipelineCurrentStateStore currentStateStore) =>
+    Results.Ok(currentStateStore.GetSnapshot().ChurnRiskEvents));
+eventRoutes.MapGet("/knowledge-cards", (PipelineCurrentStateStore currentStateStore) =>
+    Results.Ok(currentStateStore.GetSnapshot().KnowledgeCardEvents));
+eventRoutes.MapGet("/next-best-action", (PipelineCurrentStateStore currentStateStore) =>
+    Results.Ok(currentStateStore.GetSnapshot().NextBestActionEvents));
 
 var pipelineHub = app.MapHub<PipelineHub>("/hubs/pipeline");
 if (requireAuth)
