@@ -224,6 +224,12 @@
     }
 
     function initializeConsoleRefresh(root) {
+        // Explicit product decision: in live mode the representative console is fully SignalR-
+        // driven, so we retire HTML polling rather than running both paths in parallel.
+        if (root.getAttribute("data-live-mode") === "true") {
+            return;
+        }
+
         const intervalMs = Number.parseInt(root.getAttribute("data-console-refresh-interval-ms") ?? "4000", 10);
         if (!Number.isFinite(intervalMs) || intervalMs <= 0) {
             return;
