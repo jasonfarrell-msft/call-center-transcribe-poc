@@ -20,11 +20,14 @@ public sealed class ActiveCallStore
     private const int RepAddNone = 0;
     private const int RepAddInProgress = 1;
     private const int RepAddDone = 2;
+    private const int IncomingClaimNone = 0;
+    private const int IncomingClaimInProgress = 1;
 
     private readonly object _gate = new();
     private string? _callId;
     private DateTimeOffset? _startedAtUtc;
     private int _repAddState = RepAddNone;
+    private int _incomingClaimState = IncomingClaimNone;
 
     /// <summary>Returns the current active call ID, or null if no call is in progress.</summary>
     public string? CallId
@@ -70,6 +73,32 @@ public sealed class ActiveCallStore
         Interlocked.Exchange(ref _repAddState, RepAddNone);
     }
 
+    /// <summary>
+    /// Atomically sets the call ID only when no call is currently tracked and no incoming answer
+    /// claim is in progress. Returns true when this call became active, false otherwise.
+    /// </summary>
+    public bool TrySetCallIdIfEmpty(string callId, DateTimeOffset? startedAtUtc = null)
+    {
+        if (string.IsNullOrWhiteSpace(callId))
+        {
+            throw new ArgumentException("callId must be provided.", nameof(callId));
+        }
+
+        lock (_gate)
+        {
+            if (_incomingClaimState == IncomingClaimInProgress || !string.IsNullOrWhiteSpace(_callId))
+            {
+                return false;
+            }
+
+            _callId = callId.Trim();
+            _startedAtUtc = startedAtUtc ?? DateTimeOffset.UtcNow;
+        }
+
+        Interlocked.Exchange(ref _repAddState, RepAddNone);
+        return true;
+    }
+
     /// <summary>Clears the call ID when the call ends or the stream is completed.</summary>
     public void Clear()
     {
@@ -81,6 +110,32 @@ public sealed class ActiveCallStore
 
         Interlocked.Exchange(ref _repAddState, RepAddNone);
     }
+
+    /// <summary>Claims ownership of answering the next incoming call.</summary>
+    public bool TryBeginIncomingClaim() =>
+        Interlocked.CompareExchange(ref _incomingClaimState, IncomingClaimInProgress, IncomingClaimNone) == IncomingClaimNone;
+
+    /// <summary>Commits the active call after AnswerCall succeeds and clears the incoming claim.</summary>
+    public void CompleteIncomingClaim(string callId, DateTimeOffset? startedAtUtc = null)
+    {
+        if (string.IsNullOrWhiteSpace(callId))
+        {
+            throw new ArgumentException("callId must be provided.", nameof(callId));
+        }
+
+        lock (_gate)
+        {
+            _callId = callId.Trim();
+            _startedAtUtc = startedAtUtc ?? DateTimeOffset.UtcNow;
+        }
+
+        Interlocked.Exchange(ref _repAddState, RepAddNone);
+        Interlocked.Exchange(ref _incomingClaimState, IncomingClaimNone);
+    }
+
+    /// <summary>Releases a failed incoming-call answer claim so a later event may retry.</summary>
+    public void CancelIncomingClaim() =>
+        Interlocked.CompareExchange(ref _incomingClaimState, IncomingClaimNone, IncomingClaimInProgress);
 
     /// <summary>Returns the current call ID and stable start time as an atomic snapshot.</summary>
     public ActiveCallSnapshot GetSnapshot()

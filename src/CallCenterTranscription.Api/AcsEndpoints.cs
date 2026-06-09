@@ -174,6 +174,17 @@ internal static class AcsEndpoints
                         continue;
                     }
 
+                    var callStore = ctx.RequestServices.GetRequiredService<ActiveCallStore>();
+                    // Single-call POC: atomically claim incoming-call answering so concurrent webhook
+                    // deliveries cannot answer multiple calls at once.
+                    if (!callStore.TryBeginIncomingClaim())
+                    {
+                        logger.LogWarning(
+                            "Ignoring IncomingCall while active call/claim is already in progress. Active call={ActiveCallId}.",
+                            callStore.CallId);
+                        return Results.Ok();
+                    }
+
                     // ACA external ingress provides HTTPS/WSS — always use secure schemes.
                     var callbackUri    = new Uri($"https://{ctx.Request.Host}/api/events/acs/callbacks");
                     var mediaStreamUri = new Uri($"wss://{ctx.Request.Host}/api/calls/media-stream");
@@ -202,10 +213,9 @@ internal static class AcsEndpoints
 
                         // Capture the ACS call connection ID so SpeechTranscriptionService can
                         // route transcript events to the correct SignalR group.
-                        var callStore = ctx.RequestServices.GetRequiredService<ActiveCallStore>();
                         var repRegistry = ctx.RequestServices.GetRequiredService<RepRegistry>();
                         var answeredCallId = result.Value.CallConnection.CallConnectionId;
-                        callStore.SetCallId(answeredCallId);
+                        callStore.CompleteIncomingClaim(answeredCallId);
                         ctx.RequestServices
                             .GetRequiredService<PipelineCurrentStateStore>()
                             .ResetForCall(answeredCallId);
@@ -241,6 +251,7 @@ internal static class AcsEndpoints
                     }
                     catch (Exception ex)
                     {
+                        callStore.CancelIncomingClaim();
                         // Log and return 200 — retrying the IncomingCall event won't recover a
                         // missed call. Investigate in logs then restart the call for the demo.
                         logger.LogError(ex, "Failed to answer ACS incoming call.");
@@ -307,12 +318,29 @@ internal static class AcsEndpoints
                         break;
                     }
 
-                    if (!string.Equals(callStore.CallId, connected.CallConnectionId, StringComparison.Ordinal))
+                    if (callStore.TrySetCallIdIfEmpty(connected.CallConnectionId))
                     {
-                        callStore.SetCallId(connected.CallConnectionId);
                         ctx.RequestServices
                             .GetRequiredService<PipelineCurrentStateStore>()
                             .ResetForCall(connected.CallConnectionId);
+                    }
+
+                    var trackedCallId = callStore.CallId;
+                    if (string.IsNullOrWhiteSpace(trackedCallId))
+                    {
+                        logger.LogInformation(
+                            "Deferring CallConnected processing for call {CallbackCallId} while incoming call claim is still in progress.",
+                            connected.CallConnectionId);
+                        break;
+                    }
+
+                    if (!string.Equals(trackedCallId, connected.CallConnectionId, StringComparison.Ordinal))
+                    {
+                        logger.LogWarning(
+                            "Ignoring stale CallConnected callback for call {CallbackCallId}; active tracked call is {TrackedCallId}.",
+                            connected.CallConnectionId,
+                            trackedCallId);
+                        break;
                     }
 
                     if (string.IsNullOrEmpty(registry.CurrentUserId))
@@ -332,17 +360,41 @@ internal static class AcsEndpoints
                     break;
 
                 case AddParticipantSucceeded ok:
-                    logger.LogInformation(
-                        "ACS AddParticipant succeeded (rep answered) for call {CallId}.", ok.CallConnectionId);
+                    if (string.Equals(
+                            ctx.RequestServices.GetRequiredService<ActiveCallStore>().CallId,
+                            ok.CallConnectionId,
+                            StringComparison.Ordinal))
+                    {
+                        logger.LogInformation(
+                            "ACS AddParticipant succeeded (rep answered) for call {CallId}.", ok.CallConnectionId);
+                    }
+                    else
+                    {
+                        logger.LogWarning(
+                            "Ignoring AddParticipantSucceeded for stale call {CallbackCallId}; active tracked call is {TrackedCallId}.",
+                            ok.CallConnectionId,
+                            ctx.RequestServices.GetRequiredService<ActiveCallStore>().CallId ?? "(none)");
+                    }
                     break;
 
                 case AddParticipantFailed failed:
                     // Rep declined / didn't answer in time / error → release the claim so a later
                     // /register (e.g., rep retries) can re-invite within the call's lifetime.
-                    logger.LogWarning(
-                        "ACS AddParticipant failed for call {CallId}: {Code} {Message}",
-                        failed.CallConnectionId, failed.ResultInformation?.Code, failed.ResultInformation?.Message);
-                    ctx.RequestServices.GetRequiredService<ActiveCallStore>().ResetAddRep();
+                    var activeStore = ctx.RequestServices.GetRequiredService<ActiveCallStore>();
+                    if (string.Equals(activeStore.CallId, failed.CallConnectionId, StringComparison.Ordinal))
+                    {
+                        logger.LogWarning(
+                            "ACS AddParticipant failed for call {CallId}: {Code} {Message}",
+                            failed.CallConnectionId, failed.ResultInformation?.Code, failed.ResultInformation?.Message);
+                        activeStore.ResetAddRep();
+                    }
+                    else
+                    {
+                        logger.LogWarning(
+                            "Ignoring AddParticipantFailed for stale call {CallbackCallId}; active tracked call is {TrackedCallId}.",
+                            failed.CallConnectionId,
+                            activeStore.CallId ?? "(none)");
+                    }
                     break;
 
                 default:
