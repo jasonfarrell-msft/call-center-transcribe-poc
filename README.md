@@ -23,6 +23,7 @@ dotnet test CallCenterTranscription.sln
 - Target framework is `net9.0` (SDK support confirmed locally).
 - No secrets or connection strings are hardcoded; backend/frontend integration points are configuration/DI seams.
 - API auth enforcement is controlled by `Security:RequireAuth` (`false` in Phase 0 scaffold, enable in Phase 1+ with real identity wiring).
+- Agent assist reasoning mode is controlled by `Reasoning:Mode` (`Mock`, `Hybrid`, `Live`) with Azure AI Foundry settings under `Reasoning:*`.
 - Scripted demo regression baseline and QA checklist: `docs/regression-baseline.md`.
 - Live-data security and privacy requirements are defined in `docs/live-data-security-guardrails.md`.
 - ACS final demo topology and webhook/media requirements are defined in `docs/acs-final-demo-topology.md`.

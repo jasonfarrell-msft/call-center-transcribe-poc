@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Json;
 using CallCenterTranscription.Ai;
 using CallCenterTranscription.Api;
+using CallCenterTranscription.Api.Services;
 using CallCenterTranscription.Shared.Events;
 using CallCenterTranscription.Telephony;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -29,7 +30,7 @@ public sealed class ApiWiringSmokeTests(WebApplicationFactory<Program> factory)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
         Assert.IsType<MockAudioSource>(audioSource);
-        Assert.IsType<MockReasoningClient>(reasoningClient);
+        Assert.IsType<ConfiguredReasoningClient>(reasoningClient);
         Assert.Contains("/healthz", routePatterns);
         Assert.Contains("/api/session/current", routePatterns);
         Assert.Contains("/api/session/current-state", routePatterns);
@@ -161,6 +162,10 @@ public sealed class ApiWiringSmokeTests(WebApplicationFactory<Program> factory)
             component.ComponentId == "mock-feed" && component.Status == "mock");
         Assert.Contains(missionControl.Components, component =>
             component.ComponentId == "acs-media-routes" && component.Status == "deferred");
+        Assert.Contains(missionControl.Components, component =>
+            component.ComponentId == "agent-assist-reasoning"
+            && component.Readiness == "mock"
+            && component.Status == "mock");
     }
 
     [Fact]
@@ -189,6 +194,10 @@ public sealed class ApiWiringSmokeTests(WebApplicationFactory<Program> factory)
             component.ComponentId == "azure-ai-translator" && component.Status == "healthy" && component.IsLive);
         Assert.Contains(missionControl.Components, component =>
             component.ComponentId == "acs-media-routes" && component.Status == "healthy" && component.IsLive);
+        Assert.Contains(missionControl.Components, component =>
+            component.ComponentId == "agent-assist-reasoning"
+            && component.Readiness == "mock"
+            && component.Status == "mock");
     }
 
     [Fact]
@@ -215,6 +224,27 @@ public sealed class ApiWiringSmokeTests(WebApplicationFactory<Program> factory)
             && component.Status == "degraded"
             && !component.IsLive
             && component.Readiness == "fallback-mock");
+    }
+
+    [Fact]
+    public async Task ApiHost_MissionControlShowsHybridReasoningMode_WhenConfigured()
+    {
+        using var envScope = new EnvironmentVariableScope(new Dictionary<string, string?>
+        {
+            ["Reasoning__Mode"] = "Hybrid",
+            ["Reasoning__FoundryChatCompletionsUrl"] = "https://contoso.services.ai.azure.com/models/chat/completions"
+        });
+        using var hybridFactory = new WebApplicationFactory<Program>();
+        using var client = hybridFactory.CreateClient();
+
+        var missionControl = await client.GetFromJsonAsync<MissionControlHealthResponse>("/api/mission-control/health");
+
+        Assert.NotNull(missionControl);
+        Assert.Contains(missionControl.Components, component =>
+            component.ComponentId == "agent-assist-reasoning"
+            && component.Readiness == "hybrid"
+            && component.Status == "degraded"
+            && !component.IsLive);
     }
 
     [Fact]
