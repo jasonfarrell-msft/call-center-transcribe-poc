@@ -98,25 +98,6 @@ app.MapPost("/rep/register", async (
     return Results.Content(json, "application/json", statusCode: (int)resp.StatusCode);
 });
 
-app.MapPost("/rep/force-reset", async (
-    IHttpClientFactory httpFactory,
-    IConfiguration cfg,
-    CancellationToken ct) =>
-{
-    var (baseUrl, key) = RepProxyConfig(cfg);
-    if (string.IsNullOrWhiteSpace(baseUrl) || !Uri.TryCreate(baseUrl, UriKind.Absolute, out var baseUri))
-        return Results.Problem("Rep softphone backend is not configured.", statusCode: StatusCodes.Status503ServiceUnavailable);
-
-    var target = new Uri(baseUri, "api/rep/force-reset");
-    using var client = httpFactory.CreateClient("rep-proxy");
-    using var req = new HttpRequestMessage(HttpMethod.Post, target);
-    if (!string.IsNullOrEmpty(key)) req.Headers.Add("X-Rep-Key", key);
-
-    using var resp = await client.SendAsync(req, ct);
-    var json = await resp.Content.ReadAsStringAsync(ct);
-    return Results.Content(json, "application/json", statusCode: (int)resp.StatusCode);
-});
-
 app.MapStaticAssets();
 app.MapRazorPages()
    .WithStaticAssets();

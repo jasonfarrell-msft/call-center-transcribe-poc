@@ -1,10 +1,6 @@
 using Azure.Communication;
 using Azure.Communication.CallAutomation;
-using CallCenterTranscription.Api.Hubs;
 using CallCenterTranscription.Api.Services;
-using CallCenterTranscription.Shared.Events;
-using CallCenterTranscription.Telephony;
-using Microsoft.AspNetCore.SignalR;
 
 namespace CallCenterTranscription.Api;
 
@@ -105,47 +101,6 @@ internal static class RepEndpoints
             }
 
             return Results.Ok(new { registered = true, callActive = !string.IsNullOrEmpty(callStore.CallId) });
-        });
-
-        rep.MapPost("/force-reset", async (
-            HttpContext ctx,
-            IConfiguration config,
-            ActiveCallStore callStore,
-            AcsAudioSource acsAudioSource,
-            LiveSentimentStore liveSentiment,
-            IHubContext<PipelineHub> hub,
-            ILoggerFactory loggerFactory,
-            CancellationToken ct) =>
-        {
-            var logger = loggerFactory.CreateLogger("RepEndpoints");
-            if (!IsAuthorized(ctx, config))
-            {
-                return Results.Unauthorized();
-            }
-
-            var endedCallId = callStore.CallId;
-            acsAudioSource.CompleteStream();
-            callStore.Clear();
-            liveSentiment.Clear();
-
-            if (!string.IsNullOrWhiteSpace(endedCallId))
-            {
-                await hub.Clients.All.SendAsync(
-                    PipelineContract.StreamNames.CallEnded,
-                    new CallLifecycleEvent
-                    {
-                        CallId = endedCallId,
-                        Status = "ended",
-                        TimestampUtc = DateTimeOffset.UtcNow
-                    },
-                    ct);
-            }
-
-            logger.LogWarning(
-                "Forced call reset executed by rep control endpoint. clearedCallId={CallId}",
-                endedCallId ?? "(none)");
-
-            return Results.Ok(new { reset = true, clearedCallId = endedCallId });
         });
 
         return app;

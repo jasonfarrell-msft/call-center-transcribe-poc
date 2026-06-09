@@ -25,7 +25,6 @@
     // The token/register endpoints are same-origin proxies on THIS web app (not the API base).
     const TOKEN_URL = "/rep/token";
     const REGISTER_URL = "/rep/register";
-    const FORCE_RESET_URL = "/rep/force-reset";
     const STORAGE_KEY = "rep.acs.userId";
     const HEARTBEAT_MS = 15000;
     const DISPLAY_NAME = "Capt Propane";
@@ -38,7 +37,6 @@
     const muteBtn = root.querySelector("[data-rep-mute]");
     const muteLabel = root.querySelector("[data-rep-mute-label]");
     const hangupBtn = root.querySelector("[data-rep-hangup]");
-    const hangupLabel = root.querySelector("[data-rep-hangup-label]");
 
     function setStatus(text) {
         if (statusEl) statusEl.textContent = text;
@@ -52,13 +50,11 @@
         switch (state) {
             case "ringing":
                 show(acceptBtn, true); show(declineBtn, true);
-                show(muteBtn, false); show(hangupBtn, true);
-                if (hangupLabel) hangupLabel.textContent = "Force reset";
+                show(muteBtn, false); show(hangupBtn, false);
                 break;
             case "incall":
                 show(acceptBtn, false); show(declineBtn, false);
                 show(muteBtn, true); show(hangupBtn, true);
-                if (hangupLabel) hangupLabel.textContent = "Hang up";
                 break;
             case "unavailable":
                 show(acceptBtn, false); show(declineBtn, false);
@@ -66,8 +62,7 @@
                 break;
             default: // idle
                 show(acceptBtn, false); show(declineBtn, false);
-                show(muteBtn, false); show(hangupBtn, true);
-                if (hangupLabel) hangupLabel.textContent = "Force reset";
+                show(muteBtn, false); show(hangupBtn, false);
                 break;
         }
     }
@@ -153,22 +148,6 @@
         if (muteLabel) muteLabel.textContent = muted ? "Unmute" : "Mute";
     }
 
-    async function forceReset(reasonText) {
-        try {
-            await fetch(FORCE_RESET_URL, {
-                method: "POST",
-                cache: "no-store"
-            });
-        } catch (err) {
-            console.warn("rep-phone: force-reset request failed.", err);
-        }
-
-        currentIncoming = null;
-        currentCall = null;
-        applyState("idle");
-        setStatus(reasonText || "Reset complete — waiting for a call");
-    }
-
     function onIncomingCall(args) {
         const incoming = args && args.incomingCall;
         if (!incoming) return;
@@ -223,15 +202,9 @@
     });
 
     hangupBtn && hangupBtn.addEventListener("click", async () => {
-        if (currentCall) {
-            try { await currentCall.hangUp(); }
-            catch (err) { console.warn("rep-phone: hang up failed.", err); }
-        } else if (currentIncoming) {
-            try { await currentIncoming.reject(); }
-            catch (err) { console.warn("rep-phone: reject on reset failed.", err); }
-        }
-
-        await forceReset("Force reset complete — waiting for a call");
+        if (!currentCall) return;
+        try { await currentCall.hangUp(); }
+        catch (err) { console.warn("rep-phone: hang up failed.", err); }
     });
 
     // ── Bootstrap ────────────────────────────────────────────────────────────────────────────

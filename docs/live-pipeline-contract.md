@@ -67,6 +67,7 @@ When an agent opens the console mid-call or reconnects:
    - accumulated events for each stream
    - `streamReplayPolicy` (currently `full_history_for_active_call`)
 3. Client then subscribes to `call:{callId}` and optionally `session:{sessionId}` on the hub for incremental updates.
+4. On subscribe, `PipelineHub` immediately emits `stream.currentState` plus replay events for all stream types to the subscribing caller so late join/reconnect does not wait for the next live event.
 
 ## Empty-array semantics
 

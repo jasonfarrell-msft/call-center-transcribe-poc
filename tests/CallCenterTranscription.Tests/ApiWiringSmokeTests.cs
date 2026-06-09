@@ -164,6 +164,60 @@ public sealed class ApiWiringSmokeTests(WebApplicationFactory<Program> factory)
     }
 
     [Fact]
+    public async Task ApiHost_MissionControlReportsLiveSpeechTranslator_WhenAcsModeConfigured()
+    {
+        using var envScope = new EnvironmentVariableScope(new Dictionary<string, string?>
+        {
+            ["AudioSource__Mode"] = "Acs",
+            ["Acs__Endpoint"] = "https://contoso.communication.azure.com",
+            ["Speech__Endpoint"] = "https://contoso-speech.cognitiveservices.azure.com",
+            ["Speech__Region"] = "swedencentral",
+            ["Translator__Endpoint"] = "https://api.cognitive.microsofttranslator.com"
+        });
+        using var liveFactory = new WebApplicationFactory<Program>();
+        using var client = liveFactory.CreateClient();
+
+        var missionControl = await client.GetFromJsonAsync<MissionControlHealthResponse>("/api/mission-control/health");
+
+        Assert.NotNull(missionControl);
+        Assert.False(missionControl.IsMockFeedActive);
+        Assert.True(missionControl.AcsMediaRoutesLiveReady);
+        Assert.Contains("Live ACS", missionControl.Summary, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(missionControl.Components, component =>
+            component.ComponentId == "azure-ai-speech" && component.Status == "healthy" && component.IsLive);
+        Assert.Contains(missionControl.Components, component =>
+            component.ComponentId == "azure-ai-translator" && component.Status == "healthy" && component.IsLive);
+        Assert.Contains(missionControl.Components, component =>
+            component.ComponentId == "acs-media-routes" && component.Status == "healthy" && component.IsLive);
+    }
+
+    [Fact]
+    public async Task ApiHost_MissionControlShowsTranslatorFallback_WhenTranslatorNotConfigured()
+    {
+        using var envScope = new EnvironmentVariableScope(new Dictionary<string, string?>
+        {
+            ["AudioSource__Mode"] = "Acs",
+            ["Acs__Endpoint"] = "https://contoso.communication.azure.com",
+            ["Speech__Endpoint"] = "https://contoso-speech.cognitiveservices.azure.com",
+            ["Speech__Region"] = "swedencentral",
+            ["Translator__Endpoint"] = string.Empty
+        });
+        using var liveFactory = new WebApplicationFactory<Program>();
+        using var client = liveFactory.CreateClient();
+
+        var missionControl = await client.GetFromJsonAsync<MissionControlHealthResponse>("/api/mission-control/health");
+
+        Assert.NotNull(missionControl);
+        Assert.False(missionControl.IsMockFeedActive);
+        Assert.Contains("fallback", missionControl.Summary, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(missionControl.Components, component =>
+            component.ComponentId == "azure-ai-translator"
+            && component.Status == "degraded"
+            && !component.IsLive
+            && component.Readiness == "fallback-mock");
+    }
+
+    [Fact]
     public async Task ApiHost_RequiresAuthenticationForSessionRoute_WhenRequireAuthEnabled()
     {
         using var envScope = new EnvironmentVariableScope(new Dictionary<string, string?>

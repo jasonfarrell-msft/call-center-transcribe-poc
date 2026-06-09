@@ -28,8 +28,6 @@ namespace CallCenterTranscription.Api;
 /// </summary>
 internal static class AcsEndpoints
 {
-    private static readonly TimeSpan DisconnectedCleanupDelay = TimeSpan.FromSeconds(8);
-
     internal static WebApplication MapAcsRoutes(this WebApplication app)
     {
         // ── ACS Event Webhooks (AllowAnonymous — Event Grid uses its own delivery auth) ───────
@@ -173,13 +171,6 @@ internal static class AcsEndpoints
                         continue;
                     }
 
-                    var callStore = ctx.RequestServices.GetRequiredService<ActiveCallStore>();
-                    if (!callStore.TryBeginIncomingClaim())
-                    {
-                        logger.LogInformation("IncomingCall ignored because another call answer claim is already in progress.");
-                        return Results.Ok();
-                    }
-
                     // ACA external ingress provides HTTPS/WSS — always use secure schemes.
                     var callbackUri    = new Uri($"https://{ctx.Request.Host}/api/events/acs/callbacks");
                     var mediaStreamUri = new Uri($"wss://{ctx.Request.Host}/api/calls/media-stream");
@@ -208,8 +199,9 @@ internal static class AcsEndpoints
 
                         // Capture the ACS call connection ID so SpeechTranscriptionService can
                         // route transcript events to the correct SignalR group.
+                        var callStore = ctx.RequestServices.GetRequiredService<ActiveCallStore>();
                         var answeredCallId = result.Value.CallConnection.CallConnectionId;
-                        callStore.CompleteIncomingClaim(answeredCallId);
+                        callStore.SetCallId(answeredCallId);
 
                         // Broadcast call-started so every console client transitions Disconnected → Connecting
                         // and subscribes to call:{answeredCallId}. Broadcast group == publish group (reviewer fix).
@@ -230,7 +222,6 @@ internal static class AcsEndpoints
                     }
                     catch (Exception ex)
                     {
-                        callStore.CancelIncomingClaim();
                         // Log and return 200 — retrying the IncomingCall event won't recover a
                         // missed call. Investigate in logs then restart the call for the demo.
                         logger.LogError(ex, "Failed to answer ACS incoming call.");
@@ -323,87 +314,10 @@ internal static class AcsEndpoints
                     ctx.RequestServices.GetRequiredService<ActiveCallStore>().ResetAddRep();
                     break;
 
-                case CallDisconnected disconnected:
-                    await HandleCallDisconnectedAsync(ctx.RequestServices, disconnected.CallConnectionId, logger, ct);
-                    break;
-
                 default:
                     logger.LogDebug("Unhandled ACS callback event '{Type}'.", evt.GetType().Name);
                     break;
             }
-        }
-    }
-
-    // ────────────────────────────────────────────────────────────────────────────────────────────
-    // Disconnected safety-net cleanup
-    // ────────────────────────────────────────────────────────────────────────────────────────────
-
-    private static async Task HandleCallDisconnectedAsync(
-        IServiceProvider services,
-        string? disconnectedCallId,
-        ILogger logger,
-        CancellationToken cancellationToken)
-    {
-        var callStore = services.GetRequiredService<ActiveCallStore>();
-        var trackedCallId = callStore.CallId;
-        var endedCallId = string.IsNullOrWhiteSpace(disconnectedCallId) ? trackedCallId : disconnectedCallId;
-        var matchesTrackedCall = !string.IsNullOrWhiteSpace(trackedCallId) &&
-            (string.IsNullOrWhiteSpace(disconnectedCallId) ||
-             string.Equals(trackedCallId, disconnectedCallId, StringComparison.Ordinal));
-
-        if (!string.IsNullOrWhiteSpace(endedCallId))
-        {
-            var hub = services.GetRequiredService<IHubContext<PipelineHub>>();
-            await hub.Clients.All.SendAsync(
-                PipelineContract.StreamNames.CallEnded,
-                new CallLifecycleEvent
-                {
-                    CallId = endedCallId,
-                    Status = "ended",
-                    TimestampUtc = DateTimeOffset.UtcNow
-                },
-                cancellationToken);
-        }
-
-        logger.LogInformation(
-            "ACS CallDisconnected observed for call {CallId}; awaiting media-stream close to finalize call state (matchedTrackedCall={MatchedTrackedCall}).",
-            endedCallId ?? "(unknown)",
-            matchesTrackedCall);
-
-        if (matchesTrackedCall && !string.IsNullOrWhiteSpace(endedCallId))
-        {
-            var delayedCallStore = services.GetRequiredService<ActiveCallStore>();
-            var delayedAudioSource = services.GetRequiredService<AcsAudioSource>();
-            var delayedLiveSentimentStore = services.GetRequiredService<LiveSentimentStore>();
-
-            _ = Task.Run(async () =>
-            {
-                try
-                {
-                    await Task.Delay(DisconnectedCleanupDelay, CancellationToken.None);
-
-                    if (!string.Equals(delayedCallStore.CallId, endedCallId, StringComparison.Ordinal))
-                    {
-                        return;
-                    }
-
-                    delayedAudioSource.CompleteStream();
-                    delayedCallStore.Clear();
-                    delayedLiveSentimentStore.Clear();
-
-                    logger.LogWarning(
-                        "Forced delayed cleanup for disconnected call {CallId} after media-stream close was not observed within {Seconds}s.",
-                        endedCallId,
-                        DisconnectedCleanupDelay.TotalSeconds);
-                }
-                catch (Exception ex)
-                {
-                    logger.LogWarning(
-                        ex,
-                        "Delayed cleanup failed for disconnected call {CallId}.",
-                        endedCallId);
-                }
-            });
         }
     }
 
