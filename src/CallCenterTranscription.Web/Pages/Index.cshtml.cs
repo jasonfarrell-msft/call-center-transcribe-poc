@@ -45,7 +45,7 @@ public class IndexModel : PageModel
     public IReadOnlyList<string> ConnectionIssues => _connectionIssues;
     public bool HasActiveCall => !string.IsNullOrWhiteSpace(CurrentSession.Call.CallId);
     public string RepresentativeDisplayName => string.IsNullOrWhiteSpace(CurrentSession.Call.AgentName)
-        ? "Representative"
+        ? "Capt Propane"
         : CurrentSession.Call.AgentName;
     public string CallIdDisplay => HasActiveCall ? CurrentSession.Call.CallId : "Waiting for call";
     public string CustomerDisplayName => HasActiveCall && !string.IsNullOrWhiteSpace(CurrentSession.Call.CustomerName)
