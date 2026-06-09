@@ -204,6 +204,30 @@ public sealed class WebHomepageSmokeTests(WebApplicationFactory<CallCenterTransc
     }
 
     [Fact]
+    public async Task Homepage_WhenLiveModeEnabled_RendersSignalrDrivenAssistPanels()
+    {
+        using var webFactory = factory.WithWebHostBuilder(builder =>
+            builder.ConfigureAppConfiguration((_, configurationBuilder) =>
+                configurationBuilder.AddInMemoryCollection(new Dictionary<string, string?>
+                {
+                    ["BackendApi:BaseUrl"] = "https://example.test/",
+                    ["Frontend:LiveMode"] = "true"
+                })));
+        using var client = webFactory.CreateClient();
+
+        var html = await client.GetStringAsync("/");
+
+        Assert.Contains("data-live-mode=\"true\"", html, StringComparison.Ordinal);
+        Assert.Contains("data-live-churn-panel", html, StringComparison.Ordinal);
+        Assert.Contains("data-live-knowledge-panel", html, StringComparison.Ordinal);
+        Assert.Contains("data-live-nba-panel", html, StringComparison.Ordinal);
+        Assert.Contains("data-live-sentiment-panel", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("data-console-refresh-region=\"sentiment\"", html, StringComparison.Ordinal);
+        Assert.Contains("signalr.min.js", html, StringComparison.Ordinal);
+        Assert.Contains("live-transcript.js", html, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task Healthz_DoesNotRequireHttpsRedirect()
     {
         using var client = factory.CreateClient(new WebApplicationFactoryClientOptions
