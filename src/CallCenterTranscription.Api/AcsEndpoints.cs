@@ -248,6 +248,10 @@ internal static class AcsEndpoints
         using var ws = await ctx.WebSockets.AcceptWebSocketAsync();
         logger.LogInformation("ACS media-stream WebSocket connection established.");
 
+        // Start a fresh per-call audio session so the transcription consumer builds a new
+        // recognizer for this call (and stays alive for the next one after it ends).
+        acsSource.BeginSession();
+
         var buffer = new byte[8192]; // ACS sends 640-byte frames; 8 KB covers a few frames per read.
         using var ms = new MemoryStream();
 

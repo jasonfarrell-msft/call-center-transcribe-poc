@@ -6,48 +6,89 @@ using Microsoft.Extensions.Logging;
 namespace CallCenterTranscription.Telephony;
 
 /// <summary>
-/// IAudioSource implementation backed by an ACS media-streaming WebSocket.
+/// IAudioSource implementation backed by ACS media-streaming WebSocket calls.
 ///
 /// Design (POC — single replica, maxReplicas=1 per Athrun's spec):
-///   • An internal bounded Channel&lt;AudioFrame&gt; (capacity 1000, DropOldest) buffers frames.
-///   • The media-stream WebSocket handler (API layer) calls HandleWebSocketMessageAsync to
-///     push decoded PCM frames in.
-///   • ReadAsync yields frames via the Channel reader as IAsyncEnumerable&lt;AudioFrame&gt;.
-///   • On WebSocket close, CompleteStream() signals end-of-stream to all consumers.
+///   • Each call is a SESSION. <see cref="BeginSession"/> (called by the media-stream WebSocket
+///     handler when a call connects) allocates a fresh bounded Channel&lt;AudioFrame&gt; and
+///     enqueues its reader on an internal sessions queue.
+///   • <see cref="HandleWebSocketMessageAsync"/> decodes PCM frames and writes them to the
+///     CURRENT session's channel.
+///   • <see cref="ReadAsync"/> dequeues the next session and yields its frames until the call
+///     ends — then completes. The consumer (SpeechTranscriptionService) loops, calling ReadAsync
+///     once per call, building a fresh recognizer each time and idling between calls.
+///   • <see cref="CompleteStream"/> completes the CURRENT session's channel on WebSocket close.
 ///
-/// Active only when AudioSource:Mode = "Acs". The Channel is always instantiated but stays
-/// empty when Mode=Mock because no calls are answered in that mode.
+/// This per-call model fixes the prior single-shot bug where completing one shared channel
+/// permanently shut the transcription pipeline down after the first call.
+///
+/// Active only when AudioSource:Mode = "Acs".
 ///
 /// Audio format: PCM 16-bit mono 16,000 Hz — matches IAudioSource contract defaults.
 /// Frame rate: 50 fps / 20 ms packets / 640 bytes per frame (ACS default).
-///
-/// To go live: set AudioSource__Mode=Acs on the ACA Container App env var.
-/// Prerequisite: Event Grid subscription + PSTN number + ACS RBAC role on ACA identity.
 /// </summary>
 public sealed class AcsAudioSource : IAudioSource
 {
-    private readonly Channel<AudioFrame> _channel;
+    // Queue of per-call session readers. Unbounded: a session is enqueued per call; the single
+    // consumer drains them one at a time and idles here between calls.
+    private readonly Channel<ChannelReader<AudioFrame>> _sessions =
+        Channel.CreateUnbounded<ChannelReader<AudioFrame>>(new UnboundedChannelOptions
+        {
+            SingleReader = true,
+            SingleWriter = true
+        });
+
     private readonly ILogger<AcsAudioSource> _logger;
+
+    // The current call's frame channel writer target. Written/read only on the single
+    // media-stream WebSocket handler context (single replica ⇒ one call at a time). volatile
+    // for safe publication across the accept/receive continuations.
+    private volatile Channel<AudioFrame>? _current;
+
+    private long _frameCount;
+    private long _silentFrameCount;
 
     public AcsAudioSource(ILogger<AcsAudioSource> logger)
     {
         _logger = logger;
-        // Bounded with DropOldest: TryWrite always succeeds; oldest frame is silently dropped
-        // if the consumer falls behind. Prevents unbounded memory growth in a dropped-consumer
-        // scenario. 1000 frames = ~20 seconds of audio at 50 fps — ample buffer for a single consumer.
-        _channel = Channel.CreateBounded<AudioFrame>(new BoundedChannelOptions(1000)
+    }
+
+    // Bounded with DropOldest: TryWrite always succeeds; oldest frame is silently dropped if the
+    // consumer falls behind. 1000 frames ≈ 20 s of audio at 50 fps — ample for a single consumer.
+    private static Channel<AudioFrame> CreateFrameChannel() =>
+        Channel.CreateBounded<AudioFrame>(new BoundedChannelOptions(1000)
         {
             FullMode = BoundedChannelFullMode.DropOldest,
             SingleReader = true,
-            SingleWriter = true  // single WebSocket connection → single writer
+            SingleWriter = true
         });
+
+    /// <summary>
+    /// Starts a new per-call audio session. Called by the media-stream WebSocket handler when a
+    /// call connects, BEFORE any frames arrive. Allocates a fresh frame channel and enqueues its
+    /// reader for the consumer.
+    /// </summary>
+    public void BeginSession()
+    {
+        var channel = CreateFrameChannel();
+        Interlocked.Exchange(ref _frameCount, 0);
+        Interlocked.Exchange(ref _silentFrameCount, 0);
+        _current = channel;
+        _sessions.Writer.TryWrite(channel.Reader);
+        _logger.LogInformation("AcsAudioSource: new audio session started.");
     }
 
     /// <inheritdoc />
+    /// <remarks>
+    /// Yields frames for the NEXT call session, completing when that call ends. Blocks (idle)
+    /// between calls. Designed to be called repeatedly — once per call — by the consumer loop.
+    /// </remarks>
     public async IAsyncEnumerable<AudioFrame> ReadAsync(
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        await foreach (var frame in _channel.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
+        var reader = await _sessions.Reader.ReadAsync(cancellationToken).ConfigureAwait(false);
+
+        await foreach (var frame in reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
         {
             yield return frame;
         }
@@ -55,11 +96,11 @@ public sealed class AcsAudioSource : IAudioSource
 
     /// <summary>
     /// Parses a raw ACS media-streaming WebSocket message (JSON text) and — for AudioData
-    /// messages — base64-decodes the PCM payload and writes an AudioFrame to the channel.
+    /// messages — base64-decodes the PCM payload and writes an AudioFrame to the current session.
     ///
     /// ACS message kinds:
     ///   • "AudioMetadata" — stream metadata (sampleRate, channels, etc.); logged, no frame emitted.
-    ///   • "AudioData"     — PCM payload (base64); decoded and written to the channel.
+    ///   • "AudioData"     — PCM payload (base64) with a "silent" flag; decoded and written.
     ///
     /// Malformed frames are skipped with a warning — never thrown to the caller.
     /// </summary>
@@ -106,6 +147,12 @@ public sealed class AcsAudioSource : IAudioSource
 
                 var payload = Convert.FromBase64String(base64Data);
 
+                // ACS marks frames with no speaker audio as silent. Tracking these separately is
+                // the key diagnostic: "all frames silent" ⇒ audio routing problem (caller not in
+                // the mixed stream); "non-silent frames but no transcript" ⇒ Speech/auth problem.
+                var silent = audioData.TryGetProperty("silent", out var silentProp)
+                             && silentProp.ValueKind == JsonValueKind.True;
+
                 // Best-effort timestamp from ACS; fall back to UtcNow.
                 DateTimeOffset timestamp = DateTimeOffset.UtcNow;
                 if (audioData.TryGetProperty("timestamp", out var tsProp))
@@ -126,9 +173,28 @@ public sealed class AcsAudioSource : IAudioSource
                     Payload     = payload
                 };
 
-                // TryWrite with DropOldest never blocks and always returns true (oldest is
-                // silently dropped if the channel is at capacity).
-                _channel.Writer.TryWrite(frame);
+                // TryWrite with DropOldest never blocks and always returns true. Null-safe if a
+                // frame somehow arrives before BeginSession (frame is dropped).
+                _current?.Writer.TryWrite(frame);
+
+                var count = Interlocked.Increment(ref _frameCount);
+                if (silent)
+                    Interlocked.Increment(ref _silentFrameCount);
+
+                // Diagnostic logging: first frame, then every ~5 s (250 frames @ 50 fps).
+                if (count == 1)
+                {
+                    _logger.LogInformation(
+                        "AcsAudioSource: first AudioData frame received ({Bytes} bytes, silent={Silent}).",
+                        payload.Length, silent);
+                }
+                else if (count % 250 == 0)
+                {
+                    var silentSoFar = Interlocked.Read(ref _silentFrameCount);
+                    _logger.LogInformation(
+                        "AcsAudioSource: {Count} AudioData frames received ({Silent} silent).",
+                        count, silentSoFar);
+                }
 
                 return ValueTask.CompletedTask;
             }
@@ -148,16 +214,19 @@ public sealed class AcsAudioSource : IAudioSource
     }
 
     /// <summary>
-    /// Signals end-of-stream to all ReadAsync consumers. Call this when the WebSocket
-    /// connection closes (normally or abnormally). After this call, ReadAsync drains any
-    /// remaining buffered frames and then completes without blocking.
-    ///
-    /// NOTE: No reconnect logic is implemented for the POC. A dropped stream = restart the call.
-    /// This is a known limitation; document before going live.
+    /// Completes the CURRENT session's channel, signalling end-of-call to the consumer's ReadAsync
+    /// loop. Call this when the call's WebSocket closes. The transcription pipeline stays alive and
+    /// idles for the next call (no permanent shutdown).
     /// </summary>
     public void CompleteStream()
     {
-        _channel.Writer.TryComplete();
-        _logger.LogWarning("ACS audio stream completed — WebSocket closed. No reconnect (POC limitation).");
+        _current?.Writer.TryComplete();
+
+        var total  = Interlocked.Read(ref _frameCount);
+        var silent = Interlocked.Read(ref _silentFrameCount);
+        _logger.LogInformation(
+            "AcsAudioSource: audio session completed — {Total} AudioData frames received " +
+            "({Silent} silent, {NonSilent} with audio).",
+            total, silent, total - silent);
     }
 }
