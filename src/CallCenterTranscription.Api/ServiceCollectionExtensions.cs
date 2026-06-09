@@ -28,7 +28,10 @@ public static class ServiceCollectionExtensions
     {
         services.AddSignalR();
         services.AddHttpClient();
-        services.AddSingleton<IReasoningClient, MockReasoningClient>();
+        services.Configure<ReasoningOptions>(configuration.GetSection("Reasoning"));
+        services.AddSingleton<MockReasoningClient>();
+        services.AddSingleton<AzureAiFoundryReasoningClient>();
+        services.AddSingleton<IReasoningClient, ConfiguredReasoningClient>();
         services.AddSingleton<IScriptedScenarioFeed, ScriptedPropaneRetentionScenarioFeed>();
         services.AddSingleton<PipelineCurrentStateStore>();
         services.AddSingleton<PipelineReplayPublisher>();

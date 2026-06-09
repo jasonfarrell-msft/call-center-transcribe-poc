@@ -162,6 +162,42 @@ static MissionControlHealthResponse BuildMissionControlHealth(
     IConfiguration configuration)
 {
     var baseline = scriptedScenarioFeed.GetMissionControlHealth();
+    var reasoningMode = configuration.GetValue<string>("Reasoning:Mode") ?? "Mock";
+    var normalizedReasoningMode = reasoningMode.Trim().ToLowerInvariant() switch
+    {
+        "live" => "live",
+        "hybrid" => "hybrid",
+        _ => "mock"
+    };
+    var foundryConfigured = !string.IsNullOrWhiteSpace(configuration["Reasoning:FoundryChatCompletionsUrl"]);
+    var reasoningComponent = new MissionControlComponentHealth
+    {
+        ComponentId = "agent-assist-reasoning",
+        DisplayName = "Agent Assist Reasoning",
+        Status = normalizedReasoningMode switch
+        {
+            "live" when foundryConfigured => "healthy",
+            "live" => "degraded",
+            "hybrid" => "degraded",
+            _ => "mock"
+        },
+        Readiness = normalizedReasoningMode,
+        IsLive = normalizedReasoningMode == "live" && foundryConfigured,
+        Evidence = normalizedReasoningMode switch
+        {
+            "live" when foundryConfigured => "Azure AI Foundry reasoning is live with grounding in Kira content pack.",
+            "live" => "Live reasoning requested but Reasoning:FoundryChatCompletionsUrl is missing; fallback will be used.",
+            "hybrid" => "Hybrid reasoning enabled: Azure AI Foundry primary with mock fallback for reliability.",
+            _ => "Mock reasoning mode active for deterministic demo reliability."
+        },
+        LastCheckedUtc = DateTimeOffset.UtcNow
+    };
+
+    var baselineComponents = baseline.Components
+        .Where(component => !string.Equals(component.ComponentId, reasoningComponent.ComponentId, StringComparison.OrdinalIgnoreCase))
+        .Append(reasoningComponent)
+        .ToArray();
+
     var liveAudioMode = string.Equals(
         configuration.GetValue<string>("AudioSource:Mode"),
         "Acs",
@@ -169,7 +205,10 @@ static MissionControlHealthResponse BuildMissionControlHealth(
 
     if (!liveAudioMode)
     {
-        return baseline;
+        return baseline with
+        {
+            Components = baselineComponents
+        };
     }
 
     var speechConfigured = !string.IsNullOrWhiteSpace(configuration["Speech:Endpoint"])
@@ -178,7 +217,7 @@ static MissionControlHealthResponse BuildMissionControlHealth(
     var acsConfigured = !string.IsNullOrWhiteSpace(configuration["Acs:Endpoint"]);
     var now = DateTimeOffset.UtcNow;
 
-    var componentsById = baseline.Components.ToDictionary(component => component.ComponentId, StringComparer.OrdinalIgnoreCase);
+    var componentsById = baselineComponents.ToDictionary(component => component.ComponentId, StringComparer.OrdinalIgnoreCase);
 
     MissionControlComponentHealth Resolve(string componentId, Func<MissionControlComponentHealth, MissionControlComponentHealth> update)
     {
@@ -233,11 +272,12 @@ static MissionControlHealthResponse BuildMissionControlHealth(
             : "ACS endpoint configuration missing; incoming call/media stream cannot activate."
     });
 
-    var orderedComponents = baseline.Components
+    var orderedComponents = baselineComponents
         .Select(component => componentsById.TryGetValue(component.ComponentId, out var updated) ? updated : component with { LastCheckedUtc = now })
         .ToArray();
 
-    var allLiveDependenciesHealthy = speechConfigured && translatorConfigured && acsConfigured;
+    var reasoningLiveHealthy = normalizedReasoningMode != "live" || foundryConfigured;
+    var allLiveDependenciesHealthy = speechConfigured && translatorConfigured && acsConfigured && reasoningLiveHealthy;
     var overallStatus = allLiveDependenciesHealthy ? "healthy" : "degraded";
 
     return baseline with
