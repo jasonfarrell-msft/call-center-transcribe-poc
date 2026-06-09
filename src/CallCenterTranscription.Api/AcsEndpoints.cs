@@ -171,6 +171,21 @@ internal static class AcsEndpoints
                         continue;
                     }
 
+                    var callStore = ctx.RequestServices.GetRequiredService<ActiveCallStore>();
+                    if (!string.IsNullOrWhiteSpace(callStore.CallId))
+                    {
+                        logger.LogInformation(
+                            "IncomingCall ignored because call {CallId} is already active.",
+                            callStore.CallId);
+                        return Results.Ok();
+                    }
+
+                    if (!callStore.TryBeginIncomingClaim())
+                    {
+                        logger.LogInformation("IncomingCall ignored because another call answer claim is already in progress.");
+                        return Results.Ok();
+                    }
+
                     // ACA external ingress provides HTTPS/WSS — always use secure schemes.
                     var callbackUri    = new Uri($"https://{ctx.Request.Host}/api/events/acs/callbacks");
                     var mediaStreamUri = new Uri($"wss://{ctx.Request.Host}/api/calls/media-stream");
@@ -199,9 +214,8 @@ internal static class AcsEndpoints
 
                         // Capture the ACS call connection ID so SpeechTranscriptionService can
                         // route transcript events to the correct SignalR group.
-                        var callStore = ctx.RequestServices.GetRequiredService<ActiveCallStore>();
                         var answeredCallId = result.Value.CallConnection.CallConnectionId;
-                        callStore.SetCallId(answeredCallId);
+                        callStore.CompleteIncomingClaim(answeredCallId);
 
                         // Broadcast call-started so every console client transitions Disconnected → Connecting
                         // and subscribes to call:{answeredCallId}. Broadcast group == publish group (reviewer fix).
@@ -222,6 +236,7 @@ internal static class AcsEndpoints
                     }
                     catch (Exception ex)
                     {
+                        callStore.CancelIncomingClaim();
                         // Log and return 200 — retrying the IncomingCall event won't recover a
                         // missed call. Investigate in logs then restart the call for the demo.
                         logger.LogError(ex, "Failed to answer ACS incoming call.");

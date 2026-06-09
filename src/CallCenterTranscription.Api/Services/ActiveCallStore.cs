@@ -20,9 +20,12 @@ public sealed class ActiveCallStore
     private const int RepAddNone = 0;
     private const int RepAddInProgress = 1;
     private const int RepAddDone = 2;
+    private const int IncomingClaimNone = 0;
+    private const int IncomingClaimInProgress = 1;
 
     private volatile string? _callId;
     private int _repAddState = RepAddNone;
+    private int _incomingClaimState = IncomingClaimNone;
 
     /// <summary>Returns the current active call ID, or null if no call is in progress.</summary>
     public string? CallId => _callId;
@@ -42,7 +45,24 @@ public sealed class ActiveCallStore
     {
         _callId = null;
         Interlocked.Exchange(ref _repAddState, RepAddNone);
+        Interlocked.Exchange(ref _incomingClaimState, IncomingClaimNone);
     }
+
+    /// <summary>Claims ownership of answering the next incoming call.</summary>
+    public bool TryBeginIncomingClaim() =>
+        Interlocked.CompareExchange(ref _incomingClaimState, IncomingClaimInProgress, IncomingClaimNone) == IncomingClaimNone;
+
+    /// <summary>Commits the active call after AnswerCall succeeds and clears the incoming claim.</summary>
+    public void CompleteIncomingClaim(string callId)
+    {
+        _callId = callId;
+        Interlocked.Exchange(ref _repAddState, RepAddNone);
+        Interlocked.Exchange(ref _incomingClaimState, IncomingClaimNone);
+    }
+
+    /// <summary>Releases a failed incoming-call answer claim so a later event may retry.</summary>
+    public void CancelIncomingClaim() =>
+        Interlocked.CompareExchange(ref _incomingClaimState, IncomingClaimNone, IncomingClaimInProgress);
 
     /// <summary>
     /// Atomically claims the right to add the rep to the current call. Returns true to EXACTLY
