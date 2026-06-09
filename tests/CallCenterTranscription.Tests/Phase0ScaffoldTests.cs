@@ -1,6 +1,7 @@
 using System.Text.Json;
 using CallCenterTranscription.Ai;
 using CallCenterTranscription.Api;
+using CallCenterTranscription.Api.Services;
 using CallCenterTranscription.Shared.Events;
 using CallCenterTranscription.Telephony;
 using Microsoft.Extensions.Configuration;
@@ -68,6 +69,6 @@ public sealed class Phase0ScaffoldTests
         var reasoningClient = provider.GetRequiredService<IReasoningClient>();
 
         Assert.IsType<MockAudioSource>(audioSource);
-        Assert.IsType<MockReasoningClient>(reasoningClient);
+        Assert.IsType<ConfiguredReasoningClient>(reasoningClient);
     }
 }

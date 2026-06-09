@@ -5,6 +5,7 @@ using System.Text.Json;
 using Azure.Core;
 using Azure.Identity;
 using CallCenterTranscription.Api.Hubs;
+using CallCenterTranscription.Ai;
 using CallCenterTranscription.Shared.Events;
 using CallCenterTranscription.Telephony;
 using Microsoft.AspNetCore.SignalR;
@@ -19,6 +20,7 @@ public sealed class SpeechTranscriptionService : BackgroundService
     private readonly IHubContext<PipelineHub> _hub;
     private readonly ActiveCallStore _callStore;
     private readonly LiveSentimentStore _liveSentiment;
+    private readonly IReasoningClient _reasoningClient;
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly IConfiguration _config;
     private readonly ILogger<SpeechTranscriptionService> _logger;
@@ -28,6 +30,7 @@ public sealed class SpeechTranscriptionService : BackgroundService
         IHubContext<PipelineHub> hub,
         ActiveCallStore callStore,
         LiveSentimentStore liveSentiment,
+        IReasoningClient reasoningClient,
         IHttpClientFactory httpClientFactory,
         IConfiguration config,
         ILogger<SpeechTranscriptionService> logger)
@@ -36,6 +39,7 @@ public sealed class SpeechTranscriptionService : BackgroundService
         _hub = hub;
         _callStore = callStore;
         _liveSentiment = liveSentiment;
+        _reasoningClient = reasoningClient;
         _httpClientFactory = httpClientFactory;
         _config = config;
         _logger = logger;
@@ -255,6 +259,10 @@ public sealed class SpeechTranscriptionService : BackgroundService
                 translatorRegion,
                 translatorTargetLanguage);
 
+            _ = PublishReasoningAsync(
+                group,
+                transcriptEvent);
+
             _logger.LogInformation(
                 "SpeechTranscriptionService: FINAL utterance seq={Seq} callId={CallId} language={Language} text=\"{Text}\"",
                 seq,
@@ -366,6 +374,43 @@ public sealed class SpeechTranscriptionService : BackgroundService
                 "SpeechTranscriptionService: translation failed for call {CallId} utterance {UtteranceId}; transcript continues without translation.",
                 callId,
                 transcriptEvent.UtteranceId);
+        }
+    }
+
+    private async Task PublishReasoningAsync(
+        string group,
+        TranscriptEvent transcriptEvent)
+    {
+        try
+        {
+            await foreach (var reasoningEvent in _reasoningClient.ProcessTranscriptAsync(transcriptEvent, CancellationToken.None).ConfigureAwait(false))
+            {
+                switch (reasoningEvent)
+                {
+                    case ChurnRiskEvent churnRiskEvent:
+                        await _hub.Clients.Group(group)
+                            .SendAsync(PipelineContract.StreamNames.ChurnRisk, churnRiskEvent, CancellationToken.None)
+                            .ConfigureAwait(false);
+                        break;
+                    case KnowledgeCardEvent knowledgeCardEvent:
+                        await _hub.Clients.Group(group)
+                            .SendAsync(PipelineContract.StreamNames.KnowledgeCards, knowledgeCardEvent, CancellationToken.None)
+                            .ConfigureAwait(false);
+                        break;
+                    case NextBestActionEvent nextBestActionEvent:
+                        await _hub.Clients.Group(group)
+                            .SendAsync(PipelineContract.StreamNames.NextBestAction, nextBestActionEvent, CancellationToken.None)
+                            .ConfigureAwait(false);
+                        break;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "SpeechTranscriptionService: reasoning failed for transcript {TranscriptEventId}; call continues without assist updates.",
+                transcriptEvent.EventId);
         }
     }
 
