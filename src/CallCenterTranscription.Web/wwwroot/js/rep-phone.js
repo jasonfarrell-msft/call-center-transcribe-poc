@@ -52,6 +52,10 @@
                 show(acceptBtn, true); show(declineBtn, true);
                 show(muteBtn, false); show(hangupBtn, false);
                 break;
+            case "connecting":
+                show(acceptBtn, false); show(declineBtn, false);
+                show(muteBtn, false); show(hangupBtn, false);
+                break;
             case "incall":
                 show(acceptBtn, false); show(declineBtn, false);
                 show(muteBtn, true); show(hangupBtn, true);
@@ -140,7 +144,7 @@
 
     function wireCall(call) {
         currentCall = call;
-        call.on("stateChanged", () => {
+        const applyCallState = () => {
             const s = call.state;
             if (s === "Connected") {
                 applyState("incall");
@@ -151,9 +155,15 @@
                 applyState("idle");
                 setStatus("Ready — waiting for a call");
             } else {
+                applyState("connecting");
                 setStatus(`Call ${s.toLowerCase()}…`);
             }
-        });
+        };
+
+        call.on("stateChanged", applyCallState);
+        // Ensure UI reflects the current call state immediately even if the SDK transitions to
+        // Connected before we attach the stateChanged listener.
+        applyCallState();
         call.on("isMutedChanged", syncMute);
     }
 

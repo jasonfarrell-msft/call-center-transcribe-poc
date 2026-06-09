@@ -184,13 +184,33 @@ internal static class RepEndpoints
                 operationContext,
                 InvitationTimeoutSeconds);
             await connection.AddParticipantAsync(options, ct);
-            callStore.MarkRepAdded();
             logger.LogInformation(
-                "AddParticipant accepted by ACS for call {CallId}; invite sent to rep {UserId} (Accept budget {Timeout}s, operationContext={OperationContext}).",
+                "AddParticipant accepted by ACS for call {CallId}; invite sent to rep {UserId} (Accept budget {Timeout}s, operationContext={OperationContext}). Waiting for AddParticipantSucceeded to mark rep connected.",
                 callId,
                 repUserId,
                 InvitationTimeoutSeconds,
                 operationContext);
+
+            // Safety net: if ACS callback delivery is delayed/missed, release the in-flight add
+            // claim after the invite budget so /register heartbeat can retry.
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(InvitationTimeoutSeconds + 5)).ConfigureAwait(false);
+                    if (string.Equals(callStore.CallId, callId, StringComparison.Ordinal))
+                    {
+                        callStore.ResetAddRep();
+                        logger.LogInformation(
+                            "AddParticipant claim timeout elapsed for call {CallId}; attempted claim release for retry if rep is still not connected.",
+                            callId);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    logger.LogWarning(ex, "Failed to run AddParticipant claim-timeout recovery task.");
+                }
+            });
         }
         catch (Azure.RequestFailedException ex)
         {

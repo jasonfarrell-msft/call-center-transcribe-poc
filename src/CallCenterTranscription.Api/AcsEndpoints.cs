@@ -364,13 +364,15 @@ internal static class AcsEndpoints
                     break;
 
                 case AddParticipantSucceeded ok:
+                    var successStore = ctx.RequestServices.GetRequiredService<ActiveCallStore>();
                     if (string.Equals(
-                            ctx.RequestServices.GetRequiredService<ActiveCallStore>().CallId,
+                            successStore.CallId,
                             ok.CallConnectionId,
                             StringComparison.Ordinal))
                     {
+                        successStore.MarkRepAdded();
                         logger.LogInformation(
-                            "ACS AddParticipant succeeded (rep answered) for call {CallId}; operationContext={OperationContext}.",
+                            "ACS AddParticipant succeeded (rep answered) for call {CallId}; operationContext={OperationContext}. Rep marked connected.",
                             ok.CallConnectionId,
                             ok.OperationContext ?? "(none)");
                     }
@@ -379,7 +381,7 @@ internal static class AcsEndpoints
                         logger.LogWarning(
                             "Ignoring AddParticipantSucceeded for stale call {CallbackCallId}; active tracked call is {TrackedCallId}; operationContext={OperationContext}.",
                             ok.CallConnectionId,
-                            ctx.RequestServices.GetRequiredService<ActiveCallStore>().CallId ?? "(none)",
+                            successStore.CallId ?? "(none)",
                             ok.OperationContext ?? "(none)");
                     }
                     break;
