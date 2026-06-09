@@ -50,7 +50,7 @@ public sealed class AcsAudioSource : IAudioSource
     private long _frameCount;
     private long _silentFrameCount;
     private long _repFrameCount;
-    private int _sawNonCommunicationParticipantFrame;
+    private int _sawPstnParticipantFrame;
     private int _communicationPassThroughEnabled;
     private int _loggedCommunicationFrameFallback;
     private const int CommunicationProbeFrameThreshold = 50;
@@ -81,7 +81,7 @@ public sealed class AcsAudioSource : IAudioSource
         Interlocked.Exchange(ref _frameCount, 0);
         Interlocked.Exchange(ref _silentFrameCount, 0);
         Interlocked.Exchange(ref _repFrameCount, 0);
-        Interlocked.Exchange(ref _sawNonCommunicationParticipantFrame, 0);
+        Interlocked.Exchange(ref _sawPstnParticipantFrame, 0);
         Interlocked.Exchange(ref _communicationPassThroughEnabled, 0);
         Interlocked.Exchange(ref _loggedCommunicationFrameFallback, 0);
         lock (_participantGate)
@@ -200,44 +200,53 @@ public sealed class AcsAudioSource : IAudioSource
 
                 if (hasParticipantRawId)
                 {
-                    if (!isCommunicationUserFrame)
+                    if (participantRawId.StartsWith("4:", StringComparison.Ordinal))
                     {
-                        Interlocked.Exchange(ref _sawNonCommunicationParticipantFrame, 1);
+                        Interlocked.Exchange(ref _sawPstnParticipantFrame, 1);
                         DropBufferedCommunicationFrames();
                         WriteFrame(frame, silent, payload.Length);
                         return ValueTask.CompletedTask;
                     }
 
-                    if (Volatile.Read(ref _sawNonCommunicationParticipantFrame) == 1)
+                    if (isCommunicationUserFrame)
                     {
-                        Interlocked.Increment(ref _repFrameCount);
-                        return ValueTask.CompletedTask;
-                    }
-
-                    lock (_participantGate)
-                    {
-                        if (Volatile.Read(ref _communicationPassThroughEnabled) == 1)
+                        if (Volatile.Read(ref _sawPstnParticipantFrame) == 1)
                         {
-                            WriteFrame(frame, silent, payload.Length);
+                            Interlocked.Increment(ref _repFrameCount);
                             return ValueTask.CompletedTask;
                         }
 
-                        _pendingCommunicationFrames.Enqueue(new PendingCommunicationFrame(frame, silent, payload.Length));
-                        if (_pendingCommunicationFrames.Count >= CommunicationProbeFrameThreshold)
+                        lock (_participantGate)
                         {
-                            Interlocked.Exchange(ref _communicationPassThroughEnabled, 1);
-                            if (Interlocked.CompareExchange(ref _loggedCommunicationFrameFallback, 1, 0) == 0)
+                            if (Volatile.Read(ref _communicationPassThroughEnabled) == 1)
                             {
-                                _logger.LogInformation(
-                                    "AcsAudioSource: no non-communication participant observed after {ProbeFrames} frames; " +
-                                    "passing through communication-user audio for this call.",
-                                    CommunicationProbeFrameThreshold);
+                                WriteFrame(frame, silent, payload.Length);
+                                return ValueTask.CompletedTask;
                             }
 
-                            FlushBufferedCommunicationFrames();
+                            _pendingCommunicationFrames.Enqueue(new PendingCommunicationFrame(frame, silent, payload.Length));
+                            if (_pendingCommunicationFrames.Count >= CommunicationProbeFrameThreshold)
+                            {
+                                Interlocked.Exchange(ref _communicationPassThroughEnabled, 1);
+                                if (Interlocked.CompareExchange(ref _loggedCommunicationFrameFallback, 1, 0) == 0)
+                                {
+                                    _logger.LogInformation(
+                                        "AcsAudioSource: no PSTN participant observed after {ProbeFrames} frames; " +
+                                        "passing through communication-user audio for this call.",
+                                        CommunicationProbeFrameThreshold);
+                                }
+
+                                FlushBufferedCommunicationFrames();
+                            }
                         }
+
+                        return ValueTask.CompletedTask;
                     }
 
+                    // Non-communication and non-PSTN participant raw IDs are treated as customer/
+                    // unknown-speaker audio and passed through to preserve transcription.
+                    FlushBufferedCommunicationFrames();
+                    WriteFrame(frame, silent, payload.Length);
                     return ValueTask.CompletedTask;
                 }
 
@@ -268,7 +277,7 @@ public sealed class AcsAudioSource : IAudioSource
     /// </summary>
     public void CompleteStream()
     {
-        if (Volatile.Read(ref _sawNonCommunicationParticipantFrame) == 1)
+        if (Volatile.Read(ref _sawPstnParticipantFrame) == 1)
         {
             DropBufferedCommunicationFrames();
         }
