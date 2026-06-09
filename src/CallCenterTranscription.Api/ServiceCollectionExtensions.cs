@@ -27,6 +27,7 @@ public static class ServiceCollectionExtensions
         IConfiguration configuration)
     {
         services.AddSignalR();
+        services.AddHttpClient();
         services.AddSingleton<IReasoningClient, MockReasoningClient>();
         services.AddSingleton<IScriptedScenarioFeed, ScriptedPropaneRetentionScenarioFeed>();
         services.AddSingleton<PipelineCurrentStateStore>();
