@@ -194,14 +194,12 @@ internal static class AcsEndpoints
                     {
                         // SDK 1.5.1 API: ctor takes (audioChannelType, streamingTransport);
                         // TransportUri and MediaStreamingContent are set as properties.
-                        // Unmixed (per-participant audio) so the rep's mic — once they join — can be
-                        // dropped from the transcript/sentiment pipeline, keeping the sentiment meter
-                        // CUSTOMER-only. Before the rep joins there is only the caller, so behaviour
-                        // is identical to the prior Mixed stream.
+                        // Use Mixed audio for stability. The prior Unmixed + participant filtering
+                        // path could starve recognizer input on some live call topologies.
                         var answerOptions = new AnswerCallOptions(incomingCallContext, callbackUri)
                         {
                             MediaStreamingOptions = new MediaStreamingOptions(
-                                MediaStreamingAudioChannel.Unmixed,
+                                MediaStreamingAudioChannel.Mixed,
                                 StreamingTransport.Websocket)
                             {
                                 TransportUri           = mediaStreamUri,

@@ -74,6 +74,7 @@ public sealed class AcsAudioSource : IAudioSource
         var channel = CreateFrameChannel();
         Interlocked.Exchange(ref _frameCount, 0);
         Interlocked.Exchange(ref _silentFrameCount, 0);
+        Interlocked.Exchange(ref _repFrameCount, 0);
         _current = channel;
         _sessions.Writer.TryWrite(channel.Reader);
         _logger.LogInformation("AcsAudioSource: new audio session started.");
@@ -139,17 +140,13 @@ public sealed class AcsAudioSource : IAudioSource
                 if (!root.TryGetProperty("audioData", out var audioData))
                     return ValueTask.CompletedTask;
 
-                // Unmixed media streaming tags each frame with the source participant's raw id.
-                // ACS raw-id prefixes: "4:" = PSTN (the CUSTOMER), "8:" = CommunicationUser (the REP
-                // we AddParticipant-ed). Drop the rep's audio so the single recognizer — and thus the
-                // transcript AND the customer sentiment meter — stays CUSTOMER-only. Fail-open: if the
-                // field is absent (e.g., a Mixed fallback) we INCLUDE the frame, so we never silently
-                // lose the customer; worst case the rep briefly leaks in (the prior behaviour).
+                // Some ACS payloads include participant raw ids ("8:" CommunicationUser).
+                // Track these for diagnostics, but do not filter frames here; filtering at this
+                // layer can starve recognition input when stream topology differs from assumptions.
                 if (TryGetParticipantRawId(audioData, out var participantRawId) &&
                     participantRawId.StartsWith("8:", StringComparison.Ordinal))
                 {
                     Interlocked.Increment(ref _repFrameCount);
-                    return ValueTask.CompletedTask;
                 }
 
                 if (!audioData.TryGetProperty("data", out var dataProp))
@@ -240,8 +237,8 @@ public sealed class AcsAudioSource : IAudioSource
         var silent = Interlocked.Read(ref _silentFrameCount);
         var rep    = Interlocked.Read(ref _repFrameCount);
         _logger.LogInformation(
-            "AcsAudioSource: audio session completed — {Total} customer AudioData frames received " +
-            "({Silent} silent, {NonSilent} with audio); {Rep} rep frames dropped (unmixed).",
+            "AcsAudioSource: audio session completed — {Total} AudioData frames received " +
+            "({Silent} silent, {NonSilent} with audio); {RepTagged} frames tagged as CommunicationUser.",
             total, silent, total - silent, rep);
     }
 
