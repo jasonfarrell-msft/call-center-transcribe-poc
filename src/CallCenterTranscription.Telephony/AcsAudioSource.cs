@@ -40,6 +40,10 @@ public sealed class AcsAudioSource : IAudioSource
 
     private readonly ILogger<AcsAudioSource> _logger;
 
+    // Tracks the most recently started session so CallDisconnected callbacks can complete
+    // it without needing the session reference that lives inside the WebSocket handler.
+    private volatile Session? _currentSession;
+
     public sealed class Session
     {
         internal Session(Channel<AudioFrame> channel) => Channel = channel;
@@ -73,6 +77,7 @@ public sealed class AcsAudioSource : IAudioSource
     {
         var channel = CreateFrameChannel();
         var session = new Session(channel);
+        _currentSession = session; // volatile write — visible to ForceCompleteCurrentSession
         _sessions.Writer.TryWrite(channel.Reader);
         _logger.LogInformation("AcsAudioSource: new audio session started.");
         return session;
@@ -230,6 +235,7 @@ public sealed class AcsAudioSource : IAudioSource
     /// </summary>
     public void CompleteStream(Session session)
     {
+        _currentSession = null; // volatile write — clear before completing so ForceComplete is a no-op
         session.Channel.Writer.TryComplete();
 
         var total  = Interlocked.Read(ref session.FrameCount);
@@ -239,6 +245,20 @@ public sealed class AcsAudioSource : IAudioSource
             "AcsAudioSource: audio session completed — {Total} AudioData frames received " +
             "({Silent} silent, {NonSilent} with audio); {RepTagged} frames tagged as CommunicationUser.",
             total, silent, total - silent, rep);
+    }
+
+    /// <summary>
+    /// Completes the current session's channel without holding a session reference — for use by
+    /// ACS callback handlers (e.g., <c>CallDisconnected</c>) that need to signal end-of-audio but
+    /// do not have access to the <see cref="Session"/> object that lives inside the WebSocket
+    /// handler. Safe to call concurrently with <see cref="CompleteStream"/>; <c>TryComplete</c> is
+    /// idempotent. No-op if no session is currently active (e.g., Mock mode).
+    /// </summary>
+    public void ForceCompleteCurrentSession()
+    {
+        var session = _currentSession; // volatile read
+        if (session is not null)
+            CompleteStream(session);
     }
 
     /// <summary>

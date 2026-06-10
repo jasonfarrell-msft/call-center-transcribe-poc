@@ -254,6 +254,55 @@ public sealed class RepCallControlTests
         // - Add a test here once the filtering seam is confirmed.
     }
 
+    // ── TC-19: ActiveCallStore — TryBeginTeardown idempotency ──────────────────────────
+    // Exactly ONE teardown path must win per call (media-stream WebSocket finally-block OR
+    // ACS CallDisconnected callback, whichever fires first). The loser must get false and
+    // skip its teardown work entirely. Clear() resets the latch so the next call lifecycle
+    // can claim teardown.
+    //
+    // FINDING: There is no EndTeardown() / CancelTeardown() — unlike MediaClaim, teardown
+    // is intentionally terminal per call. The latch can only be reset by Clear() (or
+    // CompleteIncomingClaim()). This is correct design: if teardown started it should not
+    // be unwound; the next call begins cleanly via Clear().
+
+    [Fact]
+    public void ActiveCallStore_Teardown_FirstCallReturnsTrue()
+    {
+        var store = new ActiveCallStore();
+
+        var first = store.TryBeginTeardown();
+        Assert.True(first, "first caller must claim teardown");
+    }
+
+    [Fact]
+    public void ActiveCallStore_Teardown_SubsequentCallsReturnFalse()
+    {
+        var store = new ActiveCallStore();
+
+        Assert.True(store.TryBeginTeardown(), "first caller claims teardown");
+        Assert.False(store.TryBeginTeardown(), "second concurrent caller is blocked");
+        Assert.False(store.TryBeginTeardown(), "third caller is also blocked — no double-teardown");
+    }
+
+    [Fact]
+    public void ActiveCallStore_Teardown_ClaimResetsAfterClear_NewCallCanClaim()
+    {
+        var store = new ActiveCallStore();
+
+        store.SetCallId("call-tear-1");
+        Assert.True(store.TryBeginTeardown(), "first call teardown claimed");
+        Assert.False(store.TryBeginTeardown(), "teardown still locked before Clear");
+
+        // Teardown completes — Clear() resets the latch for the next call lifecycle.
+        store.Clear();
+        Assert.Null(store.CallId);
+
+        // A new call can now claim teardown.
+        store.SetCallId("call-tear-2");
+        Assert.True(store.TryBeginTeardown(), "teardown claim available after Clear for new call");
+        Assert.False(store.TryBeginTeardown(), "new call teardown also locks after first claim");
+    }
+
     // ── TC-03 (partial): ActiveCallStore — RepAccepted state machine ────────────────────
     // MarkAccepted() fires on AddParticipantSucceeded. Clear() and CompleteIncomingClaim()
     // both reset it so the flag cannot bleed from one call to the next.

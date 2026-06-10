@@ -1,3 +1,4 @@
+using Azure.Communication;
 using Azure.Communication.CallAutomation;
 using CallCenterTranscription.Api.Hubs;
 using CallCenterTranscription.Api.Services;
@@ -363,6 +364,93 @@ internal static class AcsEndpoints
                     }
                     break;
 
+                case ParticipantsUpdated updated:
+                    // When the PSTN customer hangs up while the rep is still in the call, ACS
+                    // fires ParticipantsUpdated with a list that no longer includes a
+                    // PhoneNumberIdentifier. The call stays alive on the rep's VoIP leg, so
+                    // CallDisconnected does NOT fire yet. Hang up for everyone here to trigger
+                    // the media-stream WebSocket close → finally-block teardown path.
+                    if (updated.Participants.Count > 0 &&
+                        !updated.Participants.Any(p => p.Identifier is PhoneNumberIdentifier))
+                    {
+                        var storeForPU = ctx.RequestServices.GetRequiredService<ActiveCallStore>();
+                        var callIdForPU = storeForPU.CallId;
+                        if (!string.IsNullOrEmpty(callIdForPU))
+                        {
+                            logger.LogInformation(
+                                "ParticipantsUpdated: no PSTN party in call {CallId} — customer hung up; " +
+                                "hanging up for everyone to trigger full teardown.",
+                                callIdForPU);
+                            var hangupClient = ctx.RequestServices.GetService<CallAutomationClient>();
+                            if (hangupClient is not null)
+                            {
+                                try
+                                {
+                                    await hangupClient.GetCallConnection(callIdForPU)
+                                        .HangUpAsync(forEveryone: true, ct);
+                                }
+                                catch (Exception ex)
+                                {
+                                    logger.LogError(ex,
+                                        "Failed to hang up call {CallId} after PSTN party left.",
+                                        callIdForPU);
+                                }
+                            }
+                        }
+                    }
+                    else
+                    {
+                        logger.LogDebug(
+                            "ParticipantsUpdated: {Count} participants; PSTN party still present or list empty — no action.",
+                            updated.Participants.Count);
+                    }
+                    break;
+
+                case CallDisconnected disconnected:
+                    // Belt-and-suspenders: the call ended at the ACS platform level.
+                    // Normally the media-stream WebSocket close fires first (triggering the
+                    // finally-block teardown). This handler covers the case where the WebSocket
+                    // close is delayed or never arrives cleanly (e.g., abrupt PSTN drop with
+                    // no prior ParticipantsUpdated handling).
+                    //
+                    // TryBeginTeardown() is an atomic claim — exactly ONE path (this callback OR
+                    // the WebSocket finally-block) wins the claim and runs the full teardown;
+                    // the other path is a no-op. Clear() resets the claim for the next call.
+                    logger.LogInformation(
+                        "ACS CallDisconnected for call {CallId}.",
+                        disconnected.CallConnectionId);
+                    var storeForDisc = ctx.RequestServices.GetRequiredService<ActiveCallStore>();
+                    if (!storeForDisc.TryBeginTeardown())
+                    {
+                        logger.LogDebug(
+                            "CallDisconnected: teardown already claimed (WebSocket finally ran first); no-op.");
+                        break;
+                    }
+                    var callIdForDisc = storeForDisc.CallId;
+                    if (string.IsNullOrEmpty(callIdForDisc))
+                    {
+                        // No active call to tear down (store was already cleared, e.g. the
+                        // WebSocket closed before the claim check above).
+                        break;
+                    }
+                    var acsSourceForDisc = ctx.RequestServices.GetRequiredService<AcsAudioSource>();
+                    acsSourceForDisc.ForceCompleteCurrentSession();
+                    storeForDisc.Clear();
+                    ctx.RequestServices.GetRequiredService<LiveSentimentStore>().Clear();
+                    var hubForDisc = ctx.RequestServices.GetRequiredService<IHubContext<PipelineHub>>();
+                    await hubForDisc.Clients.All.SendAsync(
+                        PipelineContract.StreamNames.CallEnded,
+                        new CallLifecycleEvent
+                        {
+                            CallId = callIdForDisc,
+                            Status = "ended",
+                            TimestampUtc = DateTimeOffset.UtcNow
+                        },
+                        ct);
+                    logger.LogInformation(
+                        "CallDisconnected: full teardown complete for call {CallId}.", callIdForDisc);
+                    break;
+
                 default:
                     logger.LogDebug("Unhandled ACS callback event '{Type}'.", evt.GetType().Name);
                     break;
@@ -464,29 +552,44 @@ internal static class AcsEndpoints
         }
         finally
         {
-            // Capture the callId BEFORE Clear() so the CallEnded broadcast carries it (reviewer fix).
-            var endedCallId = callStore.CallId;
-
-            // Signal end-of-stream to all ReadAsync consumers regardless of how the loop ended.
-            if (audioSession is not null)
+            // TryBeginTeardown() is atomic: exactly ONE path (this finally-block OR the
+            // CallDisconnected callback) wins the claim and runs the full teardown.
+            // The loser path still cleans up the audio session (idempotent) and always
+            // releases the media claim so the next call can start.
+            if (callStore.TryBeginTeardown())
             {
-                acsSource.CompleteStream(audioSession);
+                // Capture the callId BEFORE Clear() so the CallEnded broadcast carries it.
+                var endedCallId = callStore.CallId;
+
+                // Signal end-of-stream to all ReadAsync consumers regardless of how the loop ended.
+                if (audioSession is not null)
+                    acsSource.CompleteStream(audioSession);
+                callStore.Clear();
+                liveSentiment.Clear();
+
+                if (!string.IsNullOrEmpty(endedCallId))
+                {
+                    // Broadcast call-ended so every console client transitions back to Disconnected.
+                    await hub.Clients.All.SendAsync(
+                        PipelineContract.StreamNames.CallEnded,
+                        new CallLifecycleEvent
+                        {
+                            CallId = endedCallId,
+                            Status = "ended",
+                            TimestampUtc = DateTimeOffset.UtcNow
+                        },
+                        CancellationToken.None);
+                }
             }
-            callStore.Clear();  // call is over; new calls start fresh
-            liveSentiment.Clear();  // drop rolling sentiment so the panel returns to waiting
-
-            if (!string.IsNullOrEmpty(endedCallId))
+            else
             {
-                // Broadcast call-ended so every console client transitions back to Disconnected.
-                await hub.Clients.All.SendAsync(
-                    PipelineContract.StreamNames.CallEnded,
-                    new CallLifecycleEvent
-                    {
-                        CallId = endedCallId,
-                        Status = "ended",
-                        TimestampUtc = DateTimeOffset.UtcNow
-                    },
-                    CancellationToken.None);
+                // CallDisconnected callback already ran the full teardown (broadcast + Clear).
+                // Still complete the audio session (TryComplete is idempotent) so the
+                // transcription consumer doesn't hang waiting for frames.
+                if (audioSession is not null)
+                    acsSource.CompleteStream(audioSession);
+                logger.LogInformation(
+                    "ACS media-stream WebSocket closed; teardown already claimed by CallDisconnected callback.");
             }
 
             logger.LogInformation("ACS media-stream handler ended; audio Channel completed.");

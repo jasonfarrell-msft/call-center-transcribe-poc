@@ -26,12 +26,15 @@ public sealed class ActiveCallStore
     private const int MediaClaimInProgress = 1;
     private const int RepAcceptedFalse = 0;
     private const int RepAcceptedTrue  = 1;
+    private const int TeardownNone = 0;
+    private const int TeardownInProgress = 1;
 
     private volatile string? _callId;
     private int _repAddState = RepAddNone;
     private int _incomingClaimState = IncomingClaimNone;
     private int _mediaClaimState = MediaClaimNone;
     private int _repAccepted = RepAcceptedFalse;
+    private int _teardownState = TeardownNone;
 
     /// <summary>Returns the current active call ID, or null if no call is in progress.</summary>
     public string? CallId => _callId;
@@ -60,6 +63,7 @@ public sealed class ActiveCallStore
         Interlocked.Exchange(ref _repAddState, RepAddNone);
         Interlocked.Exchange(ref _incomingClaimState, IncomingClaimNone);
         Interlocked.Exchange(ref _repAccepted, RepAcceptedFalse);
+        Interlocked.Exchange(ref _teardownState, TeardownNone);
     }
 
     /// <summary>Claims ownership of answering the next incoming call.</summary>
@@ -73,6 +77,7 @@ public sealed class ActiveCallStore
         Interlocked.Exchange(ref _repAddState, RepAddNone);
         Interlocked.Exchange(ref _incomingClaimState, IncomingClaimNone);
         Interlocked.Exchange(ref _repAccepted, RepAcceptedFalse);
+        Interlocked.Exchange(ref _teardownState, TeardownNone);
     }
 
     /// <summary>Releases a failed incoming-call answer claim so a later event may retry.</summary>
@@ -86,6 +91,17 @@ public sealed class ActiveCallStore
     /// <summary>Releases the active ACS media-stream WebSocket session claim.</summary>
     public void EndMediaClaim() =>
         Interlocked.CompareExchange(ref _mediaClaimState, MediaClaimNone, MediaClaimInProgress);
+
+    /// <summary>
+    /// Atomically claims the right to run teardown for the current call (e.g., broadcast
+    /// CallEnded, clear store). Returns true to EXACTLY ONE caller; all other concurrent or
+    /// subsequent callers get false until <see cref="Clear"/> resets state for the next call.
+    ///
+    /// Used to prevent a race between the media-stream WebSocket finally-block and the
+    /// <c>CallDisconnected</c> ACS callback both attempting a full teardown simultaneously.
+    /// </summary>
+    public bool TryBeginTeardown() =>
+        Interlocked.CompareExchange(ref _teardownState, TeardownInProgress, TeardownNone) == TeardownNone;
 
     /// <summary>
     /// Atomically claims the right to add the rep to the current call. Returns true to EXACTLY
