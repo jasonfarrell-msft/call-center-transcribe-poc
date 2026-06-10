@@ -48,21 +48,8 @@
     const sentimentUpdatedEl = root.querySelector("[data-live-sentiment-updated]");
     const sentimentSummaryEl = root.querySelector("[data-live-sentiment-summary]");
 
-    const churnEmptyEl = root.querySelector("[data-live-churn-empty]");
-    const churnBodyEl = root.querySelector("[data-live-churn-body]");
-    const churnLevelEl = root.querySelector("[data-live-churn-level]");
-    const churnRationaleEl = root.querySelector("[data-live-churn-rationale]");
-    const churnUpdatedEl = root.querySelector("[data-live-churn-updated]");
-
     const knowledgeEmptyEl = root.querySelector("[data-live-knowledge-empty]");
     const knowledgeListEl = root.querySelector("[data-live-knowledge-list]");
-
-    const nbaEmptyEl = root.querySelector("[data-live-nba-empty]");
-    const nbaBodyEl = root.querySelector("[data-live-nba-body]");
-    const nbaActionEl = root.querySelector("[data-live-nba-action]");
-    const nbaReasoningEl = root.querySelector("[data-live-nba-reasoning]");
-    const nbaConfidenceEl = root.querySelector("[data-live-nba-confidence]");
-    const nbaUpdatedEl = root.querySelector("[data-live-nba-updated]");
 
     const WAITING = "Waiting for call";
     const nearBottomThreshold = 80;
@@ -487,25 +474,6 @@
         }
     }
 
-    function onChurnRisk(evt) {
-        if (!evt) {
-            return;
-        }
-
-        const riskScore = Number.isFinite(evt.riskScore)
-            ? evt.riskScore <= 1
-                ? Math.round(evt.riskScore * 100)
-                : Math.round(evt.riskScore)
-            : null;
-
-        const riskLabel = toDisplayLabel(evt.riskLevel, "Unknown");
-        setHidden(churnEmptyEl, true);
-        setHidden(churnBodyEl, false);
-        setText(churnLevelEl, riskScore === null ? riskLabel : `${riskLabel} • ${riskScore}/100`);
-        setText(churnRationaleEl, evt.rationale || "No rationale available.");
-        setText(churnUpdatedEl, formatTime(evt.timestampUtc) || "Now");
-    }
-
     function appendKnowledgeCardItem(card) {
         if (!knowledgeListEl) {
             return;
@@ -553,26 +521,6 @@
         const hasCards = evt.cards.length > 0;
         setHidden(knowledgeEmptyEl, hasCards);
         setHidden(knowledgeListEl, !hasCards);
-    }
-
-    function onNextBestAction(evt) {
-        if (!evt) {
-            return;
-        }
-
-        setHidden(nbaEmptyEl, true);
-        setHidden(nbaBodyEl, false);
-        setText(nbaActionEl, evt.action || "No action available");
-        setText(nbaReasoningEl, evt.reasoning || "No reasoning available.");
-        if (typeof evt.confidence === "number" && Number.isFinite(evt.confidence)) {
-            const confidencePercent = evt.confidence <= 1
-                ? Math.round(evt.confidence * 100)
-                : Math.round(evt.confidence);
-            setText(nbaConfidenceEl, `${confidencePercent}%`);
-        } else {
-            setText(nbaConfidenceEl, "--");
-        }
-        setText(nbaUpdatedEl, formatTime(evt.timestampUtc) || "Now");
     }
 
     async function subscribeToCall(callId) {
@@ -710,9 +658,7 @@
     connection.on("stream.transcript", onTranscript);
     connection.on("stream.translation", onTranslation);
     connection.on("stream.sentiment", onSentiment);
-    connection.on("stream.churnRisk", onChurnRisk);
     connection.on("stream.knowledgeCards", onKnowledgeCards);
-    connection.on("stream.nextBestAction", onNextBestAction);
 
     connection.onreconnecting(() => {
         setState("connecting", "Reconnecting…");

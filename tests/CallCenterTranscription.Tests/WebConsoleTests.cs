@@ -220,9 +220,7 @@ public sealed class WebHomepageSmokeTests(WebApplicationFactory<CallCenterTransc
         var html = await client.GetStringAsync("/");
 
         Assert.Contains("data-live-mode=\"true\"", html, StringComparison.Ordinal);
-        Assert.Contains("data-live-churn-panel", html, StringComparison.Ordinal);
         Assert.Contains("data-live-knowledge-panel", html, StringComparison.Ordinal);
-        Assert.Contains("data-live-nba-panel", html, StringComparison.Ordinal);
         Assert.Contains("data-live-sentiment-panel", html, StringComparison.Ordinal);
         Assert.DoesNotContain("data-console-refresh-region=\"sentiment\"", html, StringComparison.Ordinal);
         Assert.Contains("signalr.min.js", html, StringComparison.Ordinal);
