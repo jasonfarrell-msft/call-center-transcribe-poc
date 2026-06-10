@@ -91,3 +91,56 @@
 
 **Build: 0 errors. Tests: 56 pass, 3 skip, 0 fail.**
 
+## 2026-06-10 — Speaker Label Flip Fix Review (Lacus, commit cf3694e)
+
+**Reviewed:** `SpeakerAttributionState.cs` (new), `SpeechTranscriptionService.cs` (updated), `SpeakerAttributionStateTests.cs` (14 new tests). Replaces single-slot "first-seen = customer" heuristic with phase-aware two-slot state machine gated on `ActiveCallStore.RepAccepted`.
+
+**Verdict: ✅ APPROVE** with one non-blocking advisory.
+
+**Build/Test:** `dotnet build` 0 errors, 0 warnings. `dotnet test` 75 passed, 3 skipped, 0 failed.
+
+### Findings
+
+1. **CORRECTNESS — PASS.** State transitions are sound for both main scenarios:
+   - **Phase 1 (normal):** Customer speaks while on hold pre-accept → latched as Customer; rep speaks post-accept → latched as Rep (Phase 2A). ✅
+   - **Phase 2B (the reported bug):** Customer silent on hold; rep greets first post-accept → correctly latched as Rep; customer responds → latched as Customer. The flip is fixed. ✅
+   - **Residual edge (advisory, not blocking):** If the customer was completely silent pre-accept AND speaks first after accept (before the rep utters anything), Phase 2B incorrectly latches the customer as Rep. This scenario requires: (a) customer silent while on hold (no diarization events pre-accept), AND (b) customer speaks before the rep after accept. In a propane call center demo — especially on mock audio — the rep greeting first is the invariant. Not a blocking concern for the demo.
+
+2. **ROBUSTNESS — PASS.** The PSTN "4:" / CommunicationUser "8:" identifier is available in ACS `ParticipantsUpdated` events but is NOT exposed through `ConversationTranscriptionResult.SpeakerId` — the Speech SDK returns opaque diarization cluster IDs ("Guest-1", etc.) with no native link to ACS participant identities. A deterministic identity mapping would require a non-trivial side-channel correlation table. For a POC, the phase-aware heuristic is the correct tradeoff. Lacus made the right call.
+
+3. **SENTIMENT INTEGRITY — PASS.** `attribution.IsCustomer(speakerId)` is the gate for both `Transcribing` (partials) and `Transcribed` (finals) handlers. `IsCustomer()` returns true only for the latched `CustomerSpeakerId`. Rep utterances (different SpeakerId) are transcribed but `isCustomer = false` → excluded from sentiment pipeline. No regression to scoring.
+
+4. **R1 CONSTRAINT — PASS.** `SpeakerAttributionState` is purely a text-level labeling layer. `MediaStreamingOptions` with `Mixed` + `Pcm16KMono` is untouched. Sacred. ✓
+
+5. **TEST QUALITY — PASS with advisory.** 14 tests cover Phase 1, Phase 2A, Phase 2B (bug scenario), Phase 2B resolution, slot stability, Unknown handling, IsCustomer edge cases, IsSpeakerKnown theory test, and Observe return-value contract. The exact reported bug scenario (`Phase2B_RepSpeaksFirstPostAccept_IsLatchedAsRep`) is explicitly tested. **Missing:** no test for the residual edge case (customer speaks first post-accept, no pre-accept speech). Non-blocking.
+
+### Advisory (non-blocking)
+- **Advisory A:** Add one test `Phase2B_CustomerSpeaksFirstPostAccept_NoPreAcceptSpeech` to document the known residual flip scenario. It should assert that `CustomerSpeakerId` is incorrectly latched as null and `RepSpeakerId` is set to the customer's Guest ID — i.e., explicitly document the known limitation so it's visible if the heuristic is ever revisited. Assign to Yzak.
+
+**Lockout applied (N/A — APPROVE).**
+
+## 2026-06-10 — NBA/Churn UI Removal Review (Lunamaria, commit f3cccf0)
+
+**Reviewed:** Removal of "Churn Risk" and "Next Best Action" cards from the agent-assist metadata column.
+
+**Verdict: ✅ APPROVE**
+
+**Build/Test:** `dotnet build` 0 errors, 0 warnings. `dotnet test` 76 passed, 3 skipped, 0 failed.
+
+### Findings
+
+1. **CORRECTNESS — PASS.** Both card sections fully removed from `Index.cshtml` (live-mode branch only). All churn/NBA DOM selector variables, `onChurnRisk()`, `onNextBestAction()`, and `stream.churnRisk`/`stream.nextBestAction` SignalR registrations removed from `live-transcript.js`. Dead CSS classes `.assist-kicker`, `.assist-copy`, `.assist-meta` cleaned up. No orphaned references remain in the Web project.
+
+2. **SCOPE DISCIPLINE — PASS.** Sentiment gauge, transcript panel, and knowledge-article cards all intact. `SpeechTranscriptionService.cs` and backend pipeline untouched — backend still fires `stream.churnRisk` and `stream.nextBestAction`; the UI simply no longer listens. Correct approach for a UI-only change.
+
+3. **NO BROKEN REFERENCES — PASS.** `grep` over `src/CallCenterTranscription.Web/` found zero remaining references to removed DOM IDs or functions. Remaining references in `tests/` (`ApiWiringSmokeTests`, `PipelineReplayPublisherTests`) are for the backend API routes `/api/events/churn-risk` and `/api/events/next-best-action` — these are live API tests for the intact pipeline, not dead UI refs.
+
+4. **TESTS — PASS.** Build 0 errors. 76 pass, 3 skip, 0 fail. `WebConsoleTests` assertions for `data-live-churn-panel` and `data-live-nba-panel` correctly removed.
+
+5. **SECURITY — PASS.** Trivial UI removal; no new attack surface.
+
+### Advisory (non-blocking)
+- `site.css:555` contains stale comment: `/* Side column: scrollable so future stacked panels (knowledge cards, churn, etc.) work */`. Cosmetic only — update at leisure.
+
+**Lockout applied (N/A — APPROVE).**
+

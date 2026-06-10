@@ -3,7 +3,7 @@
 ## Project Seed
 
 - **Project:** CallCenterTranscription — real-time AI agent-assist POC for a propane call center.
-- **My focus:** The live agent-assist dashboard — transcript w/ speaker labels + translation, sentiment gauge, churn-risk meter, knowledge cards, next-step suggestions.
+- **My focus:** The live agent-assist dashboard — transcript w/ speaker labels + translation, sentiment gauge, knowledge cards.
 - **Constraints:** POC may be scripted; mocked data is fine. Real-time feel is the point. Accessibility required.
 - **Requested by:** local user (git user.name not set).
 - **Created:** 2026-06-05.
@@ -28,3 +28,23 @@
 - **`stream.callStarted` retired:** No longer registered; backend doesn't emit.
 - **Files changed:** `live-transcript.js`, `rep-phone.js`, `Index.cshtml`, `site.css`.
 - **Test result:** 53 pass (up from 51), 0 fail, 3 skip. Badge + teardown paths fully verified.
+
+## 2026-06-10 — Remove Churn Risk & Next Best Action Cards (Commit f3cccf0)
+
+**Requested by:** Jason
+
+### Removed
+- **Index.cshtml (live-mode branch):** Entire `<section data-live-churn-panel>` and `<section data-live-nba-panel>` markup.
+- **live-transcript.js:** Six DOM selector consts (`churnEmptyEl`, `churnBodyEl`, `churnLevelEl`, `churnRationaleEl`, `churnUpdatedEl`, `nbaEmptyEl`, `nbaBodyEl`, `nbaActionEl`, `nbaReasoningEl`, `nbaConfidenceEl`, `nbaUpdatedEl`), `onChurnRisk()` function, `onNextBestAction()` function, and the `connection.on("stream.churnRisk", ...)` / `connection.on("stream.nextBestAction", ...)` SignalR registrations.
+- **site.css:** `.assist-kicker`, `.assist-copy`, `.assist-meta` rules (exclusive to those two cards). Updated section comment from "churn / knowledge / NBA" to "knowledge cards".
+- **WebConsoleTests.cs:** Removed `Assert.Contains("data-live-churn-panel", ...)` and `Assert.Contains("data-live-nba-panel", ...)`.
+
+### Deliberately Kept
+- **Sentiment gauge** (`data-live-sentiment-panel`, `onSentiment`, related selectors) — untouched.
+- **Knowledge cards** (`data-live-knowledge-panel`, `onKnowledgeCards`, `.assist-panel`, `.assist-list`) — untouched.
+- **All transcript, translation, badge, call-lifecycle JS** — untouched.
+- **Backend pipeline** — Lacus's churn/NBA model logic and the SignalR event contract (`stream.churnRisk`, `stream.nextBestAction`) were NOT touched. The backend still emits these events; the frontend now simply ignores them. **Flag for future backend cleanup** by Lacus/Meyrin to stop generating churn/NBA events if they are confirmed permanently removed from the UI.
+
+### Test Results
+- `dotnet build` ✅ succeeded.
+- `dotnet test`: **76 pass, 0 fail, 3 skip** — all green.
