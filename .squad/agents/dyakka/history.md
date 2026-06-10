@@ -1,240 +1,73 @@
 # Dyakka — History
 
-## Current Focus (2026-06-08)
+## Current Focus (2026-06-10)
 
-### ACS Option C Plumbing — COMPLETE ✅
+### Customer (PSTN) Hangup Teardown — COMPLETE ✅
 
-Delivered **Option C** (media-streaming plumbing + mock audio default):
+**Shipped commit 173afea.**
 
-**Code delivered:**
-- `AcsAudioSource : IAudioSource` — Channel-backed, deserializes ACS JSON frames (AudioMetadata logged, AudioData base64→PCM)
-- Routes: `POST /api/events/acs/incoming-call` (SubscriptionValidationEvent + IncomingCall), `POST /api/events/acs/callbacks`, WebSocket `/api/calls/media-stream`
-- DI swap: `AudioSource:Mode` config (default `"Mock"` preserves existing behavior; flip to `"Acs"` for live path)
-- NuGet: `Azure.Communication.CallAutomation` 1.5.1 GA, `Azure.Identity` 1.21.0
-- **Build:** 0 errors, 0 warnings, 25/26 tests pass (1 pre-existing UI failure)
+**Gap fixed:** When PSTN customer hangs up while rep is in call, ACS fires `ParticipantsUpdated` but call stayed alive (no teardown, phantom live call on dashboard).
 
-**Dormant until live flip:**
-- All routes (no Event Grid, no phone number)
-- AcsAudioSource Channel (empty in Mock mode)
-- CallAutomationClient (registered but never called)
+**Solution:**
+- `ParticipantsUpdated` handler: detects PSTN party left, calls `HangUpAsync(forEveryone:true)`
+- `CallDisconnected` belt-and-suspenders fallback
+- `TryBeginTeardown()` CAS latch ensures exactly one teardown path wins (WebSocket finally-block OR callback)
+- Result: Call state cleaned, `callEnded` broadcast fires
 
-**Key decisions (Athrun signed off):**
-- RBAC: `Communication Services Contributor` scoped to ACS resource on ACA system identity
-- minReplicas: 1 (prevents cold-start call drops; ~$15–30/month cost negligible for POC)
-- Webhook security: SubscriptionValidationEvent handshake + schema validation (Entra auth deferred to Event Grid wiring)
-- Auth: `DefaultAzureCredential` (managed identity), zero secrets in code
+**Idempotency:** 3-layer approach (TryBeginTeardown CAS, volatile _currentSession, idempotent Channel.TryComplete)
 
-**Residual TODOs (deferred):**
-1. PSTN phone number purchase — subscription eligibility check needed
-2. Event Grid system topic + subscription — deferred until webhook validated
-3. Microsoft Entra delivery auth on Event Grid — blocking for going live
-4. ACS RBAC role assignment (Bicep) — **[Meyrin delivered](2026-06-08)**
-5. minReplicas = 1 (Bicep param) — **[Meyrin delivered](2026-06-08)**
-6. Audio → Speech consumer (IHostedService) — Lacus + Meyrin next round
+**Files:** `ActiveCallStore.cs` (TryBeginTeardown + _teardownState), `AcsAudioSource.cs` (ForceCompleteCurrentSession), `AcsEndpoints.cs` (ParticipantsUpdated/CallDisconnected handlers)
 
-### US Phone Number Feasibility Advisory — COMPLETE ✅
+**Build: 0 errors, 0 warnings. Tests: 56 pass, 3 skip, 0 fail.**
 
-Jason asked: "Can we use US numbers? Deploy to East US or East US 2?"
-
-**Answer:** YES — but with one critical correction.
-
-**Key distinction:**
-- ACS has no per-region deployment. `location` is always `'global'`.
-- **`dataLocation`** (data residency, set at create time) controls number geography:
-  - `'Europe'` → European numbers only (Swedish, German, etc.)
-  - `'United States'` → US toll-free + US geographic
-
-**US number types:**
-- **Toll-free (1-800, 1-888):** No US address, no regulatory wait, instant provision. **Recommended for demo.**
-- **Geographic:** Requires US address, regulatory form, days–weeks approval.
-
-**Critical detail:** `dataLocation` is IMMUTABLE. In-place update fails. Requires delete + recreate ACS resource.
-
-**Safe to switch now** because:
-- No PSTN phone number purchased
-- No Event Grid subscription wired
-- Zero sunk assets
-- Ideal time to flip
-
-**Path forward:**
-1. Verify subscription eligibility (portal: ACS → Phone Numbers → Get → search US toll-free; if blocked, subscription type is the issue)
-2. Change Bicep: `communicationDataLocation: 'Europe'` → `'United States'`
-3. Delete existing ACS resource (required, immutable)
-4. `azd provision` (recreates with US residency; RBAC auto-reapplies)
-5. Purchase US toll-free (portal)
-6. Wire Event Grid + Entra delivery auth (next round)
-7. Flip `AudioSource__Mode=Acs` (one env var, no rebuild)
-
-**[Meyrin implemented dataLocation flip (2026-06-08); awaiting operator delete + provision](2026-06-08)**
+**Review: Athrun APPROVED (2 non-blocking Phase 2 advisories).**
 
 ---
 
-## Archive — Earlier Learnings & Context
+## Prior Sessions — Summary
 
-### 2026-06-05 — ACS Audio Streaming & Call Topology Research
+### Initial Delivery (2026-06-08): ACS Option C Plumbing
 
-**Audio Streaming (GA in Call Automation .NET SDK):**
-- ACS Call Automation supports Start/Stop audio streaming to WebSocket endpoint (GA across .NET, Java, JS, Python)
-- Mixed (all participants flattened) and Unmixed (per-participant, 4 dominant) modes
-- PCM 16-bit mono, 16,000 Hz default (or 24,000 Hz), 50 fps (20ms packets, 640 bytes/frame at 16kHz)
-- Bidirectional streaming supported (we only need inbound for STT)
-- WebSocket: JSON frames with AudioMetadata (encoding, sampleRate, channels) + AudioData (base64 PCM, timestamp, participantRawID, silent flag)
+Implemented WebSocket media-streaming plumbing (AcsAudioSource, routes, DI swap) with mock audio default. Build clean, tests pass. Decisions documented in decisions.md.
 
-**Call Topology for POC:**
-- Inbound PSTN → Call Automation answers → AddParticipant (rep via PSTN or ACS web client) → two-party call with audio streaming to WebSocket
-- Alt: Group Call / Rooms + Connect (heavier, deferred)
+**Key context:**
+- ACS media streaming: PCM 16-bit mono, 50fps, JSON frames (base64-encoded)
+- Managed identity + zero secrets in code
+- DI: `AudioSource:Mode` config (default "Mock", flip to "Acs" for live)
+- Deferred: PSTN number purchase, Event Grid subscription, Entra auth
 
-**Authentication:** Call Automation SDK supports Microsoft Entra ID / Managed Identity (no connection strings).
+### US Number Feasibility (2026-06-08)
 
-**Event Grid & Callbacks:**
-- IncomingCall event via Event Grid subscription (Webhook)
-- Mid-call events (CallConnected, AddParticipantSucceeded, MediaStreamingStarted, etc.) via callback URI specified at answer time
-- Requires publicly reachable HTTPS endpoint (ACA ingress handles this)
-- Best practice: Event Grid max 2 attempts, TTL 1 minute (call rings 30s max)
+ACS dataLocation controls number geography (immutable at create time). Can switch from Europe→United States; requires delete+reprovision. Path documented for operator.
 
-**Prerequisites:** ACS resource, PSTN phone number, Event Grid subscription, public ACA ingress with webhook + WebSocket endpoints, managed identity with RBAC role on ACS resource.
+### Rep Call-Control Lifecycle (2026-06-10)
 
-**Known gotchas:**
-- ACS must have stable public URL (custom domain or default `*.azurecontainerapps.io`)
-- WebSocket must be WSS (TLS); ACA ingress automatic
-- Call rings 30 seconds only; answer must be fast
-- Unmixed audio cleaner for speaker separation but limited to 4 dominant speakers; mixed is simpler
+Shipped full Accept/Reject/Hangup flow (Tasks 1–5):
+- New events: CallPending, CallAccepted (replaces old CallStarted)
+- ActiveCallStore: RepAccepted flag for sentiment gating
+- AcsEndpoints: AddParticipantSucceeded broadcasts CallAccepted; AddParticipantFailed calls HangUpAsync
+- RepEndpoints: new POST /api/rep/hangup for rep-initiated teardown
+- Web: proxy + rep-phone.js hangup handler
 
-### 2026-06-06 — Sweden Central Real-Call Resource Nuance
-
-- ACS is special: resource configured with geography/data location, not regional compute placement
-- Keep regional pieces (ACA, logging) in swedencentral; do not describe ACS as Sweden-Central-hosted without explicit docs
-- Event Grid system topic is global, not swedencentral; webhook needs public HTTPS, SubscriptionValidationEvent handling, Entra or shared-secret auth
-- Swedish ACS phone numbers require paid subscription with billing location in eligible-country list; verify before promising Sweden number
-- Demo reliability: keep telephony API at minReplicas=1 during demo windows (30-second ring risk with cold-start)
-
-### 2026-06-08 Morning — ACS Opening Assessment
-
-**Current repo state (2026-06-08):**
-- IAudioSource contract clean: `IAsyncEnumerable<AudioFrame> ReadAsync(CancellationToken)` with AudioFrame{TimestampUtc, Encoding, SampleRateHz, Payload}
-- MockAudioSource exists (yields one silent frame); registered as IAudioSource singleton
-- **No AcsAudioSource** — does not exist
-- **Critical gap:** IAudioSource never called; entire pipeline is scripted propane-retention feed (ScriptedPropaneRetentionScenarioFeed); no audio→Speech→transcript flow yet (Lacus + Meyrin territory)
-- Infra: ACS resource provisioned (global/Europe dataLocation), endpoint wired as env var (Acs__Endpoint); missing: phone number, Event Grid subscription, RBAC role assignment, minReplicas=1
-- ACA public ingress ready (external HTTPS, WSS automatic), minReplicas=0 (must raise to 1 for demo)
-
-**Options presented to Jason:**
-- **Option A (Full real PSTN):** Swedish number, wire everything, live inbound end-to-end. Highest demo impact; requires billing eligibility + number provisioning.
-- **Option B (ACS web call, no PSTN):** Both rep and customer join via ACS Calling SDK from browser. Cheaper/faster; no phone number cost; slightly heavier client setup.
-- **Option C (Plumbing + mock default, RECOMMENDED):** Implement WebSocket handler, AcsAudioSource, routes; keep MockAudioSource active in DI; defer phone number. Lets Lacus+Meyrin build/test audio→Speech pipeline against the interface without real call. Lowest risk; demo reliable from mock.
-
-**Jason's decisions (captured in decisions.md):**
-1. Option C selected (Option C → Option A after billing eligibility confirmed)
-2. US dataLocation approved (flip 'Europe' → 'United States')
-3. Architect (Athrun) signed off architecture + RBAC + minReplicas + DI swap + webhook security decisions
+Build clean, ready for customer-hangup teardown follow-up.
 
 ---
 
-## Prior Sessions (Seed Phase)
+## Archive: Technical Research & Decisions
 
-**Project seed:** Hired 2026-06-05 to implement real ACS integration — inbound call answering, media streaming fork of live audio, dual-party call script (rep + customer) for demo. Backend C# / .NET on ACA; use ACS .NET SDK (Call Automation + media streaming). Managed identity, zero secrets in code.
-
-**Stack context:** Azure Communication Services for PSTN calling + Call Automation + media streaming; WebSocket endpoint on ACA; Azure AI Speech SDK for STT (Lacus+Meyrin deliverable); AI reasoning downstream. Dashboard live-updates via SignalR.
-
----
-
-## Summary of Dyakka's Delivered Work
-
-- **Research phase (2026-06-05/06):** ACS audio streaming research, call topology analysis, Swedish region constraints
-- **Assessment phase (2026-06-08 morning):** Comprehensive gap analysis of current repo; recommended 4-phase plan; presented 3 options to Jason
-- **Implementation phase (2026-06-08):** Option C code delivery — AcsAudioSource + routes + DI swap; build 0/0; 25/26 tests pass
-- **Advisory phase (2026-06-08):** US number feasibility analysis; dataLocation immutability explanation; subscription eligibility risk identification
-- **Sign-offs:** Athrun approved Option C architecture; Meyrin implemented Bicep infra (RBAC, minReplicas, env var); Athrun approved dataLocation flip
-
----
-
-## Next Steps
-
-1. Jason/Operator: Delete existing ACS resource (immutable constraint)
-2. Operator: Run `azd provision` (ACS recreates with dataLocation=United States)
-3. Jason/Operator: Verify subscription eligibility in portal
-4. Jason/Operator: Purchase US toll-free number (portal, minutes)
-5. Next round (Meyrin+Lacus): Wire Event Grid + Entra delivery auth + build audio→Speech consumer
-6. Activation: Flip `AudioSource__Mode=Acs` on ACA env var (one-liner, no rebuild)
+- ACS audio streaming: Media Streaming GA, mixed/unmixed modes, WebSocket JSON frames
+- Call topology: Inbound PSTN → Answer → AddParticipant (rep) → two-party audio streaming
+- Authentication: Microsoft Entra / Managed Identity (no connection strings)
+- Event Grid: IncomingCall via subscription, callbacks via URI at answer time
+- Known gotchas: 30-second ring max, public HTTPS endpoint required, minReplicas=1 for demo reliability
 
 ---
 
 ## Contact / Handoff
 
-All code committed. All decisions documented in `.squad/decisions.md`. Awaiting operator action (ACS resource delete + reprovision).
+All code committed to origin/main (commit 173afea). All decisions in decisions.md. Team is coordinating on:
+1. Event Grid + Entra delivery auth wiring (Meyrin/Lacus)
+2. Operator: ACS resource delete + reprovision (dataLocation flip)
+3. Operator: Verify subscription eligibility, purchase US toll-free
 
-Dyakka is ready for next round coordination with Lacus + Meyrin on audio→Speech consumer service and Event Grid wiring.
-
-## 2026-06-10 — Rep Call-Control: Decline→HangUp Teardown (Task 4)
-
-**Athrun + Yzak decision:** Rep call-control feature incoming. **Dyakka owns Task 4** (Meyrin owns Task 3 on same file — Dyakka rebases after Meyrin).
-
-**Task 4 — Backend: rep-decline→call teardown**
-- **Owner:** Dyakka (telephony owner)
-- **Description:** When `AddParticipantFailed` fires (rep declined/timed out), the backend should `HangUp` the call via `CallAutomationClient` so the customer isn't left in silence. The media stream WebSocket will close naturally (ACS closes it on HangUp), which triggers existing teardown logic (CompleteStream, callStore.Clear, callEnded broadcast).
-- **Files:** `src/CallCenterTranscription.Api/AcsEndpoints.cs` (callbacks section)
-- **Dependencies:** Must NOT conflict with Task 3 changes to same file. **Sequence: Task 3 merges first, Task 4 rebases.**
-- **Build validation:** `dotnet build` → 0 errors
-
-**Risk mitigation:** Set ACS AddParticipant invitation timeout to a generous value (60s) so slow-to-answer reps aren't treated as declines (defin only real failures on definitive failure codes, not timeouts).
-
-**Key insight:** Closing the customer's call on rep decline prevents ghost calls where the customer is connected but nobody is listening.
-
-**Related:** Task 2 (Lunamaria) ensures the softphone fires a signal that triggers this backend teardown (or the backend auto-detects `AddParticipantFailed`).
-
----
-
-## Learnings — 2026-06-10T06:38:30-04:00 — Rep Call-Control Full Lifecycle
-
-### What was built
-
-Implemented the full Accept/Reject/Hangup lifecycle for rep call-control (Tasks 1–5 of Jason's request):
-
-**Contract additions (PipelineContract.cs):**
-- `CallPending = "stream.callPending"` — fires at answer time; rep has NOT accepted
-- `CallAccepted = "stream.callAccepted"` — fires on AddParticipantSucceeded; rep clicked Accept
-- `CallStarted` kept as a constant but no longer emitted (backward-compat stub)
-
-**ActiveCallStore additions:**
-- `_repAccepted` int field (Interlocked pattern, consistent with existing code)
-- `RepAccepted` bool property — read by Lacus to gate sentiment
-- `MarkAccepted()` — called ONLY from AddParticipantSucceeded handler (Dyakka writes; Lacus reads)
-- Reset added to both `Clear()` and `CompleteIncomingClaim()` — ensures clean state per call
-
-**AcsEndpoints.cs changes:**
-- Answer-time broadcast changed from `CallStarted` to `CallPending`
-- `AddParticipantSucceeded`: added `MarkAccepted()` + `CallAccepted` broadcast
-- `AddParticipantFailed`: added `HangUpAsync(forEveryone:true)` after `ResetAddRep()` — this is the reject=full-teardown path. The media-stream WebSocket closes on HangUp, which fires the existing `finally` teardown (CompleteStream → Clear → liveSentiment.Clear → CallEnded broadcast).
-
-**RepEndpoints.cs + Web proxy:**
-- New `POST /api/rep/hangup` endpoint calls `HangUpAsync(forEveryone:true)` for rep-initiated teardown
-- New `POST /rep/hangup` proxy in Web/Program.cs injects X-Rep-Key header (same pattern as /register)
-
-**rep-phone.js hangup:**
-- `hangupBtn` handler now calls `currentCall.hangUp()` (stops local audio) AND `POST /rep/hangup` (kills the full call on the backend). Previously only the rep's leg was severed; customer stayed connected to a ghost call.
-
-### Key technical insights
-
-1. **Why AddParticipantFailed → HangUp is the right call:** ACS doesn't auto-hang up the answered call when the rep declines. The PSTN customer stays on hold indefinitely. HangUp(forEveryone:true) is the only clean exit.
-
-2. **Finally-block teardown fires for ALL paths:** Whether the customer hangs up, the rep hangs up (via new endpoint), or the rep declines (via HangUpAsync), the media-stream WebSocket closes. The `finally` block in `HandleMediaStreamAsync` is the single source of truth for teardown — no duplication needed.
-
-3. **rep.hangUp() alone is insufficient:** The ACS Calling SDK `call.hangUp()` only terminates the participant's leg (VoIP side). The backend Call Automation connection remains open. For a full teardown, the backend must also call `HangUpAsync(forEveryone:true)`.
-
-4. **RepAccepted as a thin seam for Lacus:** Keeping the flag in ActiveCallStore (not a new service) preserves the existing singleton pattern. Lacus can gate sentiment `Append()` calls on `callStore.RepAccepted` without any additional DI plumbing.
-
-5. **CallPending replaces CallStarted in practice:** The constant is kept for backward compat but the broadcast was replaced. Lunamaria's UI should migrate from `callStarted` to `callPending`/`callAccepted`/`callEnded`.
-
-### Build result
-
-`dotnet build CallCenterTranscription.sln -c Release` → **succeeded, 0 errors, 0 warnings**
-
-### Files touched
-
-- `src/CallCenterTranscription.Shared/Events/PipelineContract.cs`
-- `src/CallCenterTranscription.Api/Services/ActiveCallStore.cs`
-- `src/CallCenterTranscription.Api/AcsEndpoints.cs`
-- `src/CallCenterTranscription.Api/RepEndpoints.cs`
-- `src/CallCenterTranscription.Web/Program.cs`
-- `src/CallCenterTranscription.Web/wwwroot/js/rep-phone.js`
-- `.squad/decisions/inbox/dyakka-call-lifecycle.md` (new)
+Dyakka ready for next round: Event Grid wiring, live PSTN integration, audio→Speech consumer coordination.

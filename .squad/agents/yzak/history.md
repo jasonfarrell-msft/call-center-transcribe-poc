@@ -33,3 +33,26 @@
 - **TC-16 production-sequence gap found and closed.** The original TC-16 test called `EndMediaClaim()` before `Clear()`, not matching the actual `AcsEndpoints` finally-block order (which calls `Clear()` then `EndMediaClaim()`). Added TC-16b to cover the production sequence. Both pass.
 - **Final test count: 56 total (53 pass, 3 skip, 0 fail).** 2 new `[Fact]` tests added: `ActiveCallStore_RepAccepted_StateTransitions` and `ActiveCallStore_MediaClaim_ReleasedWhenClearCalledBeforeEnd_ProductionSequence`.
 - **Verdict: APPROVE.** 16/22 scenarios PASS (unit tested or verified in code), 6/22 MANUAL-ONLY (live ACS / browser). No blockers, no regressions.
+
+## Learnings — 2026-06-10T10:46:25-04:00 (TryBeginTeardown Idempotency Tests)
+
+- **3 new [Fact] tests added for `TryBeginTeardown()` in `RepCallControlTests.cs`:**
+  - `ActiveCallStore_Teardown_FirstCallReturnsTrue` — first caller wins the latch.
+  - `ActiveCallStore_Teardown_SubsequentCallsReturnFalse` — second and third callers are blocked (no double-teardown).
+  - `ActiveCallStore_Teardown_ClaimResetsAfterClear_NewCallCanClaim` — after `Clear()`, a new call lifecycle can claim teardown.
+- **FINDING: No `EndTeardown()` / `CancelTeardown()` method exists.** Unlike `MediaClaim` (which has `EndMediaClaim()`), teardown is intentionally terminal per call. The `_teardownState` latch only resets via `Clear()` or `CompleteIncomingClaim()`. This is correct design — once teardown begins it cannot be unwound mid-call; the next call starts fresh via `Clear()`. Noted in test comments; no production code changed.
+- **Final test count: 59 total (56 pass, 3 skip, 0 fail).** Up from 56/53/3 last session. All 3 new teardown tests pass. No regressions.
+
+## 2026-06-10 — TryBeginTeardown Idempotency Tests (Session Complete)
+
+**Shipped commit 173afea.**
+
+**Added 3 [Fact] tests to RepCallControlTests.cs:**
+- `ActiveCallStore_Teardown_FirstCallReturnsTrue` — CAS claim succeeds first time
+- `ActiveCallStore_Teardown_SubsequentCallsReturnFalse` — subsequent calls are no-op
+- `ActiveCallStore_Teardown_ClaimResetsAfterClear_NewCallCanClaim` — lifecycle reset for next call
+
+**Test suite: 59 total (56 pass, 3 skip, 0 fail).**
+
+**Finding documented:** TryBeginTeardown has no paired `EndTeardown()` / `CancelTeardown()` — intentional (one-way per call).
+

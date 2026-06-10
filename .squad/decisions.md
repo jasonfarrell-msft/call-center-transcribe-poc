@@ -1,5 +1,5 @@
+---
 ## Active Decisions
-
 - **2026-06-05 | Squad** — Keep both diarization and translation: Azure AI Speech handles real-time STT/diarization, and Azure Translator handles non-English text so the POC supports both live attribution and rep comprehension.
 - **2026-06-05 | Squad** — Translation is split by consumer: backend always translates for AI; the rep UI uses `detectedLanguage` plus a click-to-translate affordance. `transcript.detectedLanguage` is now part of the shared schema.
 - **2026-06-05 | Lacus** — Translation trigger follows `transcript.detectedLanguage`; the backend may translate immediately or defer UI reveal, while still normalizing non-English text for churn/NBA/RAG.
@@ -10,31 +10,19 @@
 - **2026-06-05 | Squad** — Real ACS is part of the final demo, with public callback/WebSocket endpoints on ACA and a fallback `MockAudioSource` for reliability.
 - **2026-06-05 | Squad** — ACS call topology is Option A: customer dials the ACS number, backend answers, starts media streaming, then adds the rep via `AddParticipant`; mixed audio is the POC starting point, with a Phase-2 spike to validate rep audio after join.
 - **2026-06-05 | Dyakka** — ACS dual-call/runbook work owns inbound answering, media streaming, rep join mechanics, and the repeatable demo script; Dyakka was hired mid-session to solve the two-party ACS path.
-
-
 - **2026-06-08T15:24:21-04:00 | Jason (Directive)** — US toll-free number **+18774178275** has been purchased on the recreated ACS resource (acs-cctrans-kdarok). This enables real inbound PSTN calls for the live ACS demo. Next: Event Grid IncomingCall subscription → webhook, the audio→Speech consumer, then flip AudioSource__Mode=Acs.
-
 # 2026-06-08T15:24:21-04:00 — ACS Go-Live Architecture Sign-Off
-
 **By:** Athrun (Lead/Architect)  
 **Requested by:** Jason  
 **Status:** APPROVE TO BUILD  
 **Scope:** Inbound call → live transcript on rep dashboard
-
 ## Summary
-
 Go-live sequence is defined across 5 correlated decisions:
-
 1. **Event Grid IncomingCall Wiring** — Plain webhook (SubscriptionValidationEvent handshake only); Entra-protected delivery auth deferred for POC. Justification: endpoint is AllowAnonymous; forged IncomingCall POST → ACS rejects bogus context; no data exfiltration or state corruption.
-
 2. **minReplicas + AudioSource Mode Mechanism** — Surgical `az containerapp update` (lower-risk path than full `azd provision`). Critical sequencing: (1) Build+deploy consumer, (2) Verify Speech RBAC, (3) Create Event Grid system topic+subscription, (4) Flip minReplicas=1 + Mode=Acs ATOMICALLY.
-
 3. **Audio→Speech Consumer Shape** — `SpeechTranscriptionService : BackgroundService` reads IAudioSource, creates PushAudioInputStream (PCM 16-bit, 16kHz, mono), continuous recognition, emits interim (Recognizing/isFinal=false) + final (Recognized/isFinal=true) TranscriptEvents via SignalR on "stream.transcript" group. SDK: Microsoft.CognitiveServices.Speech (1.42.x+). Auth: DefaultAzureCredential → token scoped to https://cognitiveservices.azure.com/.default; formatted as aad#{resourceId}#{token}. Coexists with scripted feed (no conflict).
-
 4. **Speech Resource + RBAC** — Already provisioned (speech-cctrans-kdarok, swedencentral, SKU=S0, custom subdomain enabled). RBAC role "Cognitive Services User" (GUID a97b65f3-24c7-4388-baec-2e87135dc908) already assigned to ACA system MI on Speech resource (verified live).
-
 5. **Scope Guard** — IN: SpeechTranscriptionService, Event Grid, mode flip, RBAC verification, DemoSafety:DataMode guard removal, end-to-end test call, Bicep consistency. OUT: Entra auth, diarization, full azd provision, translation/sentiment/NBA from live audio, AddParticipant, reconnect logic, multi-replica, production error recovery.
-
 **Go-Live Sequence:**
 1. Lacus: Build SpeechTranscriptionService + remove DemoSafety:DataMode guard
 2. Lacus: Verify consumer PR passes build + test
@@ -44,29 +32,21 @@ Go-live sequence is defined across 5 correlated decisions:
 6. Meyrin: az containerapp update: minReplicas=1, AudioSource__Mode=Acs, Speech__Region, Speech__ResourceId
 7. Dyakka: Test call to +18774178275 → verify call connects, audio streams, transcript appears
 8. Dyakka: Document demo runbook + fallback (flip AudioSource__Mode=Mock if live path fails)
-
 **Fallback:** MockAudioSource + scripted feed remain intact. 30-second recovery via `az containerapp update --set-env-vars AudioSource__Mode=Mock`.
-
 **Guardrails:**
 - Do NOT flip Mode=Acs until Steps 1–5 confirmed green
 - Meyrin verifies ALL role GUIDs against live subscription (lesson from ACS RBAC burn)
 - DemoSafety:DataMode guard removal code-reviewed
 - Event Grid subscription creation triggers SubscriptionValidationEvent — endpoint MUST be live at creation time
 - If Speech SDK + push stream hits blocker, fallback to REST-based batch recognition (no interim results)
-
 **Owners:** Lacus (consumer+guard), Meyrin (Event Grid+RBAC+deploy+flip), Dyakka (test+runbook), Athrun (gate review)
-
 **VERDICT: APPROVE TO BUILD**
-
 # 2026-06-08T15:24:21-04:00 — Go-Live Build Review (REQUEST CHANGES → FIXED)
-
 **Date:** 2026-06-08T15:24:21-04:00  
 **Reviewer:** Athrun  
 **Artifacts reviewed:** SpeechTranscriptionService (Lacus), Event Grid Bicep + RBAC (Meyrin)  
 **Status:** REQUEST CHANGES (one blocking gap) → FIXED by Meyrin
-
 ### Blocking Issue (FIXED)
-
 **File:** `infra/main.bicep` (ACA container env vars, ~lines 280–315)  
 **Gap:** `Speech__Region` and `Speech__ResourceId` were missing from ACA environment variables.  
 **Impact:** Consumer's startup guard requires both; without them, consumer logs warning and exits → zero transcription despite mode flip.  
@@ -81,53 +61,34 @@ Go-live sequence is defined across 5 correlated decisions:
   value: speechAccount.id
 }
 ```
-
 ### All Other Criteria: PASS ✅
-
 - **Security:** No Speech key in code/config/infra; DefaultAzureCredential → token formatted as aad#{resourceId}#{token} correct; token refresh 9min; RBAC GUID a97b65f3 verified live
 - **Consumer:** Reads IAudioSource, writes to PushAudioInputStream (PCM 16k); SignalR "stream.transcript" on TranscriptEvent DTO (no UI changes); self-gates on missing config; coexists with scripted feed
 - **Event Grid Bicep:** System topic + subscription correct; filters IncomingCall only; apiMinReplicas=1; AudioSource__Mode=Mock (not premature flip); RBAC GUID verified live
 - **Build:** `dotnet build` → 0 errors; `az bicep build` → 0 errors
 - **Deploy Sequence:** Correct order (build→update→webhook live→create topic→create subscription→flip mode); Advisory: Step 6 now includes Speech__Region + Speech__ResourceId env vars
-
 **Overall:** APPROVED (after Meyrin's Speech env vars fix).
-
 # 2026-06-08T15:24:21.856-04:00 — Speech Consumer Built — SpeechTranscriptionService
-
 **Author:** Lacus (AI Engineer)  
 **Status:** IMPLEMENTED & COMMITTED (7426ebe)  
 **Build:** `dotnet build CallCenterTranscription.sln -c Release` → 0 errors
-
 **Location:** `src/CallCenterTranscription.Api/Services/SpeechTranscriptionService.cs` + `ActiveCallStore.cs`
-
 **Design:** BackgroundService that reads IAudioSource, creates PushAudioInputStream (PCM 16-bit, 16kHz, mono), wires Recognizing→isFinal=false + Recognized→isFinal=true TranscriptEvents to SignalR "stream.transcript" group. Token refresh via PeriodicTimer (9min). No DemoSafety:DataMode guard (removed). Coexists with scripted feed (separate paths, no conflict).
-
 **Auth:** DefaultAzureCredential → scope cognitiveservices.azure.com/.default → aad#{resourceId}#{token} on SpeechConfig.FromEndpoint. No keys in code/config.
-
 **RBAC:** Cognitive Services User (a97b65f3) already on Speech resource, assigned to ACA system MI (verified live by Meyrin).
-
 **Package:** Microsoft.CognitiveServices.Speech v1.50.0 (latest GA).
-
 **Coexistence:** Mock mode yields no frames → service idles; Acs mode consumes live Channel → produces transcripts. Scripted feed REST endpoints unchanged.
-
 **Status:** Closes Step 1 of Athrun's go-live sequence. Fallback remains: flip AudioSource__Mode=Mock if live path fails during demo.
-
 # 2026-06-08T15:24:21.856-04:00 — ACS Event Grid Wiring, Speech RBAC Verification, Deploy Recipe
-
 **By:** Meyrin (Backend Dev)  
 **Requested by:** Jason  
 **Status:** READY — pending API image deploy + live subscription create
-
 ### Event Grid — Bicep Added (IaC Complete)
-
 **System Topic** (evgt-acs-kdarok, global, source=communicationService.id, topicType=Microsoft.Communication.CommunicationServices)  
 **Event Subscription** (sub-incoming-call, filters IncomingCall, webhook to /api/events/acs/incoming-call, 30 retries, 1440 min TTL)  
 **Bicep build:** 0 errors. Outputs include eventGridSystemTopic + acsEventGridWebhookEndpoint.
-
 **Why Bicep is IaC-complete but NOT live activation path:** Future `azd provision` will create/upsert both; however, subscription creation fires SubscriptionValidationEvent at creation time. Safe live path is surgical `az` commands sequenced AFTER API deploy.
-
 ### Speech RBAC — Verified LIVE
-
 **Verification result (live on production subscription):**
 ```
 Role: Cognitive Services User
@@ -136,72 +97,48 @@ Principal: ACA system MI (6edcf409-903a-49ec-ae48-aed391da1fa7)
 Scope: speech-cctrans-kdarok
 Status: PRESENT ✅
 ```
-
 No surgical fix required. Consumer will auth successfully via DefaultAzureCredential.
-
 ### API Deploy Recipe — Safest Path
-
 **Problem:** No API CI/CD pipeline; azd env bare (only AZURE_ENV_NAME set); full `azd deploy api` risky.  
 **Solution:** `az acr build` + `az containerapp update` (uses existing ACR registry, already wired to ACA via UAMI).
-
 **Go-Live Command Sequence:**
-
 1. **Build image:** `az acr build --registry acrcctranskdarok --image api:live-$(date +%Y%m%d%H%M) --file src/CallCenterTranscription.Api/Dockerfile .`
 2. **Update ACA:** `az containerapp update --name ca-api-cctrans-kdarok --resource-group rg-callcentertranscribe-swc-mx01 --image acrcctranskdarok.azurecr.io/api:<TAG>`
 3. **Verify webhook:** `curl -I https://ca-api-cctrans-kdarok.gentlegrass-79ff7e16.swedencentral.azurecontainerapps.io/healthz` (expect 200)
 4. **Create topic:** `az eventgrid system-topic create --name evgt-acs-kdarok --source /subscriptions/bb4b2781-6739-4fa1-994e-4ad6ce55c59c/resourceGroups/rg-callcentertranscribe-swc-mx01/providers/Microsoft.Communication/communicationServices/acs-cctrans-kdarok --topic-type Microsoft.Communication.CommunicationServices --location global`
 5. **Create subscription:** `az eventgrid system-topic event-subscription create --name sub-incoming-call --system-topic-name evgt-acs-kdarok --resource-group rg-callcentertranscribe-swc-mx01 --endpoint https://ca-api-cctrans-kdarok.gentlegrass-79ff7e16.swedencentral.azurecontainerapps.io/api/events/acs/incoming-call --endpoint-type webhook --included-event-types Microsoft.Communication.IncomingCall --max-delivery-attempts 30 --event-ttl 1440`
 6. **Flip (Coordinator step):** `az containerapp update --name ca-api-cctrans-kdarok --resource-group rg-callcentertranscribe-swc-mx01 --min-replicas 1 --set-env-vars AudioSource__Mode=Acs Speech__Region=swedencentral Speech__ResourceId=/subscriptions/bb4b2781-6739-4fa1-994e-4ad6ce55c59c/resourceGroups/rg-callcentertranscribe-swc-mx01/providers/Microsoft.CognitiveServices/accounts/speech-cctrans-kdarok`
-
 ### Bicep Consistency
-
 Both Speech__Region + Speech__ResourceId wired in Bicep (lines ~300–315). Future `azd provision` includes them; surgical command also sets them explicitly for live instance.
-
 **Status:** Ready for Steps 1–3 (consumer built, verified); Steps 4–6 blocked on Lacus consumer PR merge + image deploy.
-
 # 2026-06-08T15:24:21.856-04:00 — Speech Env Vars Fix (Meyrin)
-
 **Status:** COMPLETE & COMMITTED (4decb78)
-
 **Fix:** Added `Speech__Region=swedencentral` + `Speech__ResourceId=<ARM ID>` to ACA container env vars in `infra/main.bicep`. These unblock managed-identity Speech auth for the consumer.
-
 **Corrected flip command:**
 ```bash
 az containerapp update -n ca-api-cctrans-kdarok -g rg-callcentertranscribe-swc-mx01 --min-replicas 1 --set-env-vars AudioSource__Mode=Acs Speech__Region=swedencentral Speech__ResourceId=/subscriptions/bb4b2781-6739-4fa1-994e-4ad6ce55c59c/resourceGroups/rg-callcentertranscribe-swc-mx01/providers/Microsoft.CognitiveServices/accounts/speech-cctrans-kdarok
 ```
-
 **Bicep build:** 0 errors.
 - **2026-06-05 | Squad** — Two review passes ran this session and both returned APPROVE-WITH-CHANGES; the canonical plan was updated with the required fixes before archive merge.
-
 - **2026-06-05T16:20:08.868-04:00 — Phase 0 .NET scaffold baseline and seams**
 - **By:** Meyrin
 - **What:** Implemented the Phase 0 baseline as a `net9.0` multi-project solution (`Api`, `Web`, `Shared`, `Ai`, `Telephony`, `Tests`) with swappable interfaces (`IAudioSource`, `IReasoningClient`), shared real-time event DTO contracts (including `transcript.detectedLanguage`), SignalR-ready API routing, and mock-first DI registrations. Added an optional API auth seam (`Security:RequireAuth`) to enable route/hub authorization in later phases without changing contracts.
 - **Why:** This keeps the demo seam clean between scripted mock audio and real ACS integration, preserves stream-first contract shape for UI/AI consumers, and de-risks Phase 1 by front-loading compile-safe wiring and contract tests while avoiding secrets and hardcoded environment credentials.
 - **Source:** `.squad/decisions/inbox/meyrin-phase-0-scaffold.md`
-
 - **2026-06-05T16:20:08.868-04:00 — Phase 0 reviewer gate verdict**
 - **By:** Yzak
 - **What:** Approved Meyrin's Phase 0 `.NET` scaffold after QA gate validation against the accepted architecture and acceptance criteria (solution shape, project references, core interfaces/contracts, `transcript.detectedLanguage`, SignalR-ready API/Web startup, and no hardcoded secrets/connection strings).
 - **Why:** Live-demo reliability depends on compile-safe seams and predictable startup wiring before Phase 1+ integration. Validation evidence includes successful `dotnet build CallCenterTranscription.sln` and `dotnet test CallCenterTranscription.sln` (4/4 passing), so this scaffold is safe to advance.
 - **Source:** `.squad/decisions/inbox/yzak-phase-0-review.md`
-
 - **Source:** `.squad/decisions/inbox/athrun-azure-deployment-architecture.md`
-
 # 2026-06-06T15:20:19.326-04:00 — Minimal Azure deployment architecture for the Sweden Central POC
-
 - **By:** Athrun
 - **Decision proposal:** Keep the POC architecture as the thinnest viable split already accepted by Squad: **API on Azure Container Apps**, **Web on Azure App Service**, **real ACS for the live demo**, **Azure AI Speech + Translator + Language + Azure AI Foundry** for the AI path, and **mock audio** as the fallback path.
-
-
 ## Assumptions
-
 1. The deployment target is **resource group `rg-callcentertranscribe-swc-mx01`**.
 2. Regional Azure resources should use **`swedencentral`** unless the service itself only supports **geography/global semantics**.
 3. If a required service cannot satisfy strict Sweden Central processing, that is a **named blocker/exception**, not something we silently route around.
-
-
 ## Must-have resources
-
 1. **Azure Container Registry (Basic)** in `swedencentral`
    - Hosts the API container image for ACA.
 2. **Azure Container Apps managed environment** in `swedencentral`
@@ -236,10 +173,7 @@ az containerapp update -n ca-api-cctrans-kdarok -g rg-callcentertranscribe-swc-m
 15. **Azure AI Translator**
    - Functionally required by the accepted translation decision
    - See blocker below: strict Sweden Central processing is not currently achievable with Translator Text
-
-
 ## Explicit blockers / region exceptions
-
 1. **ACS is not a normal per-datacenter regional service**
    - The ACS resource is created against a **geography**, not a Sweden Central datacenter stamp.
    - Microsoft documents that ACS data **may transit or be processed in other geographies**.
@@ -250,10 +184,7 @@ az containerapp update -n ca-api-cctrans-kdarok -g rg-callcentertranscribe-swc-m
 3. **Azure AI Foundry must be pinned to an exact regional deployment**
    - “GPT-5.x” is too vague for deployment.
    - If the exact reasoning model or embedding model is not available as a **regional** deployment in `swedencentral`, treat that as a blocker instead of falling back to Data Zone or Global without approval.
-
-
 ## Phase-later / explicitly deferred
-
 - Azure AI Search
 - Redis / caching tier
 - Cosmos DB / SQL DB / durable transcript persistence
@@ -263,10 +194,7 @@ az containerapp update -n ca-api-cctrans-kdarok -g rg-callcentertranscribe-swc-m
 - Separate ACA services/jobs for pipeline subdivision
 - Provisioned Foundry throughput
 - Multi-region resiliency
-
-
 ## Security requirements
-
 1. **Managed identity first**
    - ACA and App Service use system-assigned managed identity by default.
 2. **No secrets in code or appsettings**
@@ -280,10 +208,7 @@ az containerapp update -n ca-api-cctrans-kdarok -g rg-callcentertranscribe-swc-m
    - Grant only required data-plane roles to ACA/App Service identities.
 6. **Transcript privacy**
    - Avoid logging raw transcripts, phone numbers, or translated content into App Insights unless redacted and retention-bounded.
-
-
 ## Resource inventory for quota checks
-
 | Resource / asset | Qty | Proposed shape | Region / scope | Quota / validation focus |
 | --- | --- | --- | --- | --- |
 | Resource group | 1 | `rg-callcentertranscribe-swc-mx01` | `swedencentral` | Subscription-level deployment access |
@@ -303,22 +228,15 @@ az containerapp update -n ca-api-cctrans-kdarok -g rg-callcentertranscribe-swc-m
 | ACS phone number | 1 | Inbound PSTN demo number | Service asset | Country availability, billing eligibility |
 | Event Grid subscription | 1 | ACS `IncomingCall` webhook | Global/system-topic semantics | Handshake/retry behavior |
 | Azure AI Translator | 1 | Text Translation | Europe processing geography | Accept EU processing or block deployment |
-
-
 ## Bottom line
-
 - If the requirement means **“put every regional ARM resource in Sweden Central and keep exceptions explicit,”** this architecture is the minimal viable POC shape.
 - If the requirement means **“all data must be processed only in Sweden Central,”** the current accepted scope is blocked by **ACS** and **Translator**, and deployment should stop until the requirement or scope is changed.
-
 - **Source:** `.squad/decisions/inbox/athrun-dashboard-redesign-review.md`
-
 # Review: Agent-Assist Dashboard Visual Redesign
-
 **Date:** 2026-06-08T09:48:02.673-04:00
 **Reviewer:** Athrun (Lead / Architect)
 **Subject:** Lunamaria's visual/layout redesign — `Index.cshtml` + `site.css`
 **Verdict:** ⛔ REQUEST CHANGES
-
 ---
 
 
@@ -3253,3 +3171,200 @@ No blocking defects. All 22 scenarios verified. 53/56 tests green (3 Skip retain
 - `src/CallCenterTranscription.Web/wwwroot/js/live-transcript.js`
 - `src/CallCenterTranscription.Web/wwwroot/js/rep-phone.js`
 - `tests/CallCenterTranscription.Tests/RepCallControlTests.cs` (Yzak — 2 new tests added)
+
+# Decision: Customer (PSTN) Hangup → Full Teardown
+
+**Author:** Dyakka  
+**Date:** 2026-06-10T10:46:25-04:00  
+**Status:** Implemented  
+**Requested by:** Jason
+
+---
+
+## Problem
+
+When the PSTN customer hangs up mid-call, the backend call state was NOT cleaned up if the rep was already in the call. ACS fires `ParticipantsUpdated` (PSTN party left) but keeps the Call Automation call alive for the rep's VoIP leg. `CallDisconnected` only fires when ALL legs are gone. With neither event handled, the call lingered: `ActiveCallStore.CallId` remained set, the media-stream WebSocket stayed open, no `callEnded` SignalR broadcast fired, and the dashboard showed a phantom live call.
+
+---
+
+## Decision
+
+Handle both ACS events that signal customer departure:
+
+### 1. `ParticipantsUpdated` (primary path)
+
+When the updated participant list has entries but no `PhoneNumberIdentifier` (PSTN party), call `HangUpAsync(forEveryone: true)`. This terminates the Call Automation call cleanly, which causes ACS to close the media-stream WebSocket → the existing `HandleMediaStreamAsync` finally-block runs the full teardown chain: `CompleteStream` → `Clear` → `liveSentiment.Clear` → `CallEnded` broadcast.
+
+Guard: only act when `Participants.Count > 0` (non-empty list, PSTN definitely left) AND `callStore.CallId != null` (active call). Empty-list events are ignored to prevent false-positive hangups during early call setup.
+
+### 2. `CallDisconnected` (belt-and-suspenders)
+
+For abrupt drops where `ParticipantsUpdated` didn't fire or the WebSocket close was delayed/missed. Runs full teardown directly from the callback: `ForceCompleteCurrentSession` → `callStore.Clear` → `liveSentiment.Clear` → `CallEnded` broadcast.
+
+---
+
+## Idempotency Guarantee
+
+`ActiveCallStore.TryBeginTeardown()` — a new `Interlocked.CompareExchange` claim — ensures exactly ONE of {WebSocket finally-block, `CallDisconnected` callback} wins teardown. The other path is a safe no-op. `callStore.Clear()` resets the claim for the next call. `Channel.Writer.TryComplete()` is idempotent (second call returns false, no throw), so `CompleteStream` can be called from both paths safely.
+
+---
+
+## Constraint Preserved
+
+Audio topology is unchanged: `MediaStreamingAudioChannel.Mixed` + `Pcm16KMono` (R1 constraint). This is purely lifecycle wiring.
+
+---
+
+## Files Changed
+
+- `src/CallCenterTranscription.Api/Services/ActiveCallStore.cs` — `TryBeginTeardown()` + `_teardownState` reset in `Clear()` / `CompleteIncomingClaim()`
+- `src/CallCenterTranscription.Telephony/AcsAudioSource.cs` — `_currentSession` volatile tracking + `ForceCompleteCurrentSession()`
+- `src/CallCenterTranscription.Api/AcsEndpoints.cs` — `ParticipantsUpdated` + `CallDisconnected` cases in `HandleCallbacksAsync`; `TryBeginTeardown()` gate in `HandleMediaStreamAsync` finally-block
+
+---
+
+## Build / Test
+
+- `dotnet build` → 0 errors, 0 warnings
+- `dotnet test` → 53 passed, 3 skipped (pre-existing JS), 0 failed
+
+---
+
+## Test Gap (for Yzak)
+
+No automated unit test for `TryBeginTeardown()` idempotency (trivial to add in `RepCallControlTests` — same pattern as `TryBeginIncomingClaim` tests). The customer-hangup integration path (ACS SDK event construction) needs a Playwright or integration test harness.
+
+# Decision: TryBeginTeardown Has No Cancel/End Path (By Design)
+
+**Date:** 2026-06-10T10:46:25-04:00  
+**Author:** Yzak (QA)  
+**Status:** Finding — no action required; documenting for team awareness.
+
+## Context
+
+Dyakka added `ActiveCallStore.TryBeginTeardown()` as a one-shot `Interlocked.CompareExchange`
+latch that ensures exactly one teardown path runs per call (WebSocket finally-block OR ACS
+`CallDisconnected` callback). I was asked to add idempotency unit tests covering:
+1. First call returns `true`.
+2. Subsequent calls return `false`.
+3. `Clear()` resets the latch for the next call lifecycle.
+
+## Finding
+
+**`TryBeginTeardown()` has no corresponding `EndTeardown()` or `CancelTeardown()` method.**
+
+Unlike `MediaClaim` — which has a paired `EndMediaClaim()` to allow re-claiming within a call
+(e.g., reconnect scenarios) — the teardown latch is strictly one-way per call. Once claimed,
+`_teardownState` stays at `TeardownInProgress` until `Clear()` (or `CompleteIncomingClaim()`)
+resets it to `TeardownNone`.
+
+## Decision
+
+**This is intentional and correct.** Teardown is not a retryable operation within a call's
+lifecycle. If a teardown is in-flight, there is no safe "cancel and retry" semantic — the
+call is ending. The next call's latch resets cleanly through `Clear()`.
+
+No production code change needed. The asymmetry vs. `MediaClaim` is a deliberate design
+choice, not a gap.
+
+## Tests Added
+
+Three new `[Fact]` tests in `RepCallControlTests.cs`:
+- `ActiveCallStore_Teardown_FirstCallReturnsTrue`
+- `ActiveCallStore_Teardown_SubsequentCallsReturnFalse`
+- `ActiveCallStore_Teardown_ClaimResetsAfterClear_NewCallCanClaim`
+
+All pass. Total suite: **59 tests (56 pass, 3 skip, 0 fail).**
+
+# Athrun Code Review — Customer Hangup Teardown
+
+**Reviewer:** Athrun (Lead/Architect)  
+**Author:** Dyakka  
+**Date:** 2026-06-10T10:46:25-04:00  
+**Verdict:** ✅ **APPROVE** (with two non-blocking advisories)
+
+---
+
+## Build / Test
+
+- `dotnet restore && dotnet build` → **0 errors, 0 warnings** ✓
+- `dotnet test` → **56 passed, 3 skipped (pre-existing JS-only), 0 failed** ✓
+
+---
+
+## Findings by Criterion
+
+### 1. CORRECTNESS — PASS
+
+**`ParticipantsUpdated` detection logic** (`AcsEndpoints.cs:373–374`):
+```csharp
+if (updated.Participants.Count > 0 &&
+    !updated.Participants.Any(p => p.Identifier is PhoneNumberIdentifier))
+```
+
+Sound for the POC single-PSTN-party scenario. In ACS Call Automation, the PSTN caller is listed as a participant from the moment `AnswerCall` succeeds, so `Count > 0 && no PhoneNumber` reliably means the customer left. The `!string.IsNullOrEmpty(callIdForPU)` guard at line 378 additionally prevents firing before any call is active.
+
+**Advisory A (non-blocking):** ACS documentation does not guarantee `ParticipantsUpdated` fires on every PSTN hangup for all carriers (it is documented primarily for group-call participant changes). The `CallDisconnected` belt-and-suspenders handler is the correct mitigation. This combination is appropriate for POC; note for Phase 2 that `CallDisconnected` should be treated as the authoritative teardown signal.
+
+---
+
+### 2. IDEMPOTENCY / RACE SAFETY — PASS with advisory
+
+**`TryBeginTeardown()` CAS pattern** (`ActiveCallStore.cs:103–104`):
+```csharp
+Interlocked.CompareExchange(ref _teardownState, TeardownInProgress, TeardownNone) == TeardownNone
+```
+Correctly guarantees exactly one winner between the WebSocket finally-block and the `CallDisconnected` callback. Both paths then call `CompleteStream` (idempotent `TryComplete`) and `Clear()` (idempotent resets). No duplicate `CallEnded` broadcast can fire: the loser path's `endedCallId` is null after `Clear()` cleared `_callId`, so the null guard at line 570 suppresses the broadcast. ✓
+
+**Advisory B (non-blocking) — `_teardownState` phantom re-win:** There is a narrow race where `_teardownState` is left stuck at `TeardownInProgress` without a matching `Clear()`:
+
+1. WebSocket finally wins `TryBeginTeardown()` → runs full teardown → calls `Clear()` → resets `_teardownState = TeardownNone`
+2. `CallDisconnected` callback now wins a second `TryBeginTeardown()` (the reset made it available again)
+3. Reads `callId` — already null → hits the `string.IsNullOrEmpty` early-break at line 430
+4. **Breaks WITHOUT calling `Clear()`** → `_teardownState` left at `TeardownInProgress`
+
+This is harmless for the POC: `CompleteIncomingClaim()` (called on every new call answer) resets `_teardownState` unconditionally. No call can be dropped by this; the stuck state self-heals before any future teardown is needed. No fix required for POC. **Recommend Yzak add a `TryBeginTeardown`-idempotency unit test to pin this contract.**
+
+**`_currentSession` volatile pattern** (`AcsAudioSource.cs:45, 80, 238, 259`):  
+The "clear before complete" ordering (`_currentSession = null` at line 238 before `TryComplete()`) ensures `ForceCompleteCurrentSession` racing concurrently either sees null (no-op) or grabs the session and calls `CompleteStream`, where `TryComplete` is idempotent. Volatile read/write gives correct C# acquire/release semantics. ✓
+
+---
+
+### 3. R1 CONSTRAINT — PASS ✓
+
+`AcsEndpoints.cs:203+208` — `MediaStreamingAudioChannel.Mixed` and `AudioFormat.Pcm16KMono` are untouched by this diff. The new handlers add lifecycle wiring only; no `StartMediaStreaming` or audio topology parameters are touched.
+
+---
+
+### 4. SECURITY — PASS (pre-existing risk, no regression)
+
+The `/api/events/acs/callbacks` endpoint is `AllowAnonymous` — a pre-existing documented design constraint (Event Grid cannot present Bearer tokens). A spoofed `ParticipantsUpdated` event with no PSTN participants could trigger `HangUpAsync` on an active call. This risk predates this PR and is bounded by the `callIdForPU != null` guard. **The pre-existing TODO for Event Grid Entra delivery authentication remains a blocking prerequisite before production** (noted in file header at line 22–26). No new attack surface introduced by this change.
+
+---
+
+### 5. RESOURCE LEAKS — PASS ✓
+
+- `EndMediaClaim()` at line 596 is outside both branches of the `if/else` in finally — always executes, unblocking the next incoming call. ✓
+- Both teardown paths (winner and loser) call `acsSource.CompleteStream(audioSession)` — the transcription consumer's `ReadAsync` loop never hangs. ✓
+- `MemoryStream ms` is `using`-declared (line 491) — disposed on exit. ✓
+- `_currentSession = null` before `TryComplete()` in `CompleteStream` prevents `ForceCompleteCurrentSession` from re-entering on an already-closed channel. ✓
+
+---
+
+## Required Fixes
+
+**None.** No blocking issues found.
+
+## Advisories (non-blocking, Phase 2 / follow-up)
+
+| # | Advisory | Owner |
+|---|----------|-------|
+| A | `ParticipantsUpdated` reliability varies by carrier; `CallDisconnected` is the authoritative teardown signal — document this in Phase 2 design | Dyakka (next sprint) |
+| B | Add unit test for `TryBeginTeardown()` idempotency / double-win scenario to pin the contract | Yzak |
+
+---
+
+## Verdict
+
+**✅ APPROVE** — Implementation is correct, race-safe, R1-compliant, and resource-clean. The CAS teardown pattern is solid. Advisories are non-blocking for POC.
+
