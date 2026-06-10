@@ -129,3 +129,30 @@
 - **Accept-gate placed in event handler:** `RepAccepted` bool check at top of `Transcribing`/`Transcribed` handlers. Transcriber warms up and latches customer SpeakerId pre-accept; only emission is gated.
 - **Decision documented:** `lacus-conversationtranscriber-impl.md` + `lacus-sentiment-stream-analysis.md` (merged to decisions.md).
 - **Test result:** 51 pass, 3 skip, 0 fail. No regression.
+
+## Learnings
+
+### 2026-06-10 — Speaker Label Flip Bug: Root Cause and Fix
+
+**Bug:** Rep and Customer transcript labels were consistently swapped in live testing. Customer-only sentiment was scoring the rep's audio.
+
+**Root cause:** `ConversationTranscriber` assigns Guest IDs by diarization cluster — NOT chronological audio arrival. The "first `Transcribed` event = Customer" heuristic failed when the customer was silent on hold and the rep said the first complete utterance after accepting. The rep's greeting became the first final result, latching the rep as Customer.
+
+**New approach — two-slot phase-aware attribution (`SpeakerAttributionState`):**
+- `RepAccepted` (set by `MarkAccepted()` on `AddParticipantSucceeded`) is the phase boundary
+- Pre-accept speakers = Customer (rep physically absent from Mixed stream — definitive)
+- Post-accept, customer already latched → new speaker = Rep
+- Post-accept, neither latched (Phase 2B): first speaker = Rep (greeting), second = Customer
+- Slots are write-once per call lifetime; no flip after resolution
+
+**Key files/regions:**
+- `src/CallCenterTranscription.Api/Services/SpeakerAttributionState.cs` — new testable state machine (internal sealed)
+- `src/CallCenterTranscription.Api/Services/SpeechTranscriptionService.cs` — `WireTranscriberHandlers()` — uses `SpeakerAttributionState`; old `IsSpeakerKnown`/`IsCustomerSpeaker` static helpers removed
+- `tests/CallCenterTranscription.Tests/SpeakerAttributionStateTests.cs` — 14 unit tests; `Phase2B_RepSpeaksFirstPostAccept_IsLatchedAsRep` encodes the exact flip scenario
+- `InternalsVisibleTo` added to Api.csproj to expose `SpeakerAttributionState` to test project
+
+**Decision note:** `.squad/decisions/inbox/lacus-speaker-label-fix.md`  
+**Commit:** `cf3694e`  
+**Test result:** 75 pass, 3 skip, 0 fail (all new tests pass)
+
+**Production path:** Replace with deterministic ACS participant identity mapping — Unmixed audio (per-frame `participantRawID`) or ACS participant role API. POC heuristic is pragmatic and correct for the rep-greets-first call pattern.
