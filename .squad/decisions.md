@@ -3368,3 +3368,243 @@ The `/api/events/acs/callbacks` endpoint is `AllowAnonymous` — a pre-existing 
 
 **✅ APPROVE** — Implementation is correct, race-safe, R1-compliant, and resource-clean. The CAS teardown pattern is solid. Advisories are non-blocking for POC.
 
+
+---
+
+# Decision: Speaker Label Fix — Two-Slot Phase-Aware Attribution
+
+**Date:** 2026-06-10T11:20:14-04:00  
+**Author:** Lacus  
+**Status:** Implemented (commit cf3694e)  
+**Supersedes:** `lacus-conversationtranscriber-impl` heuristic (first-seen = customer)
+
+---
+
+## Problem
+
+Jason (live-tested) reported Rep and Customer labels were consistently flipped. Transcription was working, but:
+- Speech labeled **Customer** was actually the **Rep**
+- Speech labeled **Rep** was actually the **Customer**
+- Customer-only sentiment was therefore scoring the rep's audio, not the customer's
+
+## Root Cause
+
+`ConversationTranscriber` assigns opaque Guest IDs (`Guest-1`, `Guest-2`, `Unknown`) by diarization cluster, **NOT chronological arrival order**. The previous heuristic latched the first non-Unknown SpeakerId from a `Transcribed` event as the customer.
+
+This fails consistently in the common call flow:
+1. Customer calls, is silent on hold
+2. Rep accepts invite quickly (5–15 s)
+3. **Rep says "Hello, [Company], how can I help?" — first complete `Transcribed` result**
+4. Rep's SpeakerId latched as Customer → all labels inverted
+
+The assumption "customer is on the stream before the rep, so first speaker = customer" was correct in theory but wrong in practice: the **first COMPLETE utterance** (not first audio presence) determines what gets latched, and the rep's greeting is typically that first utterance.
+
+## Fix: Two-Slot Phase-Aware Attribution
+
+`RepAccepted` (set by `MarkAccepted()` on `AddParticipantSucceeded`) is used as the authoritative phase boundary.
+
+| Phase | Condition | Action |
+|-------|-----------|--------|
+| **1 — Pre-accept** | `RepAccepted = false` | Rep physically absent from Mixed stream → any speaker = **Customer** (definitive) |
+| **2A — Post-accept, customer already latched** | Customer slot set, rep slot null, new speaker | New distinct speaker = **Rep** |
+| **2B — Post-accept, neither latched** | Both slots null, `RepAccepted = true` | First speaker = **Rep** (greeting); second distinct speaker = **Customer** |
+
+### Key implementation details
+
+- Extracted to `SpeakerAttributionState` (internal sealed class) for testability — ConversationTranscriber is sealed in the SDK so the state machine must be tested separately.
+- `IsCustomer(speakerId)` replaces the old `IsCustomerSpeaker(speakerId, customerSpeakerId)` static helper.
+- Slots are **write-once** per call session. No flip after resolution.
+- `InternalsVisibleTo` added to Api project to expose `SpeakerAttributionState` to the test project.
+- 14 unit tests added (`SpeakerAttributionStateTests.cs`), including `Phase2B_RepSpeaksFirstPostAccept_IsLatchedAsRep` which directly encodes the flip scenario.
+
+## Audio Topology
+
+**Unchanged.** Mixed + Pcm16KMono (R1 sacred). This is labeling logic only, inside the `Transcribed` event handler.
+
+## Customer-Only Sentiment
+
+Unchanged in structure. `_liveSentiment.Append(...)` is still gated on `attribution.IsCustomer(speakerId)`. The fix ensures `IsCustomer` now returns `true` for the **actual customer**, not the rep.
+
+## Files Changed
+
+| File | Change |
+|------|--------|
+| `src/…/Services/SpeakerAttributionState.cs` | New — testable state machine |
+| `src/…/Services/SpeechTranscriptionService.cs` | Uses SpeakerAttributionState; old static helpers removed |
+| `src/…/CallCenterTranscription.Api.csproj` | InternalsVisibleTo test project |
+| `tests/…/SpeakerAttributionStateTests.cs` | 14 unit tests |
+
+## Mapping Rule Going Forward
+
+> **Customer = first non-Unknown speaker seen PRE-accept, OR second distinct speaker seen POST-accept.**  
+> **Rep = first distinct speaker seen POST-accept if neither was heard pre-accept, OR second distinct speaker if customer was latched first.**
+
+For production, replace with deterministic ACS participant identity mapping (Unmixed audio or ACS participant role API). POC heuristic remains pragmatic and correct for the rep-greets-first call flow.
+
+---
+
+# Athrun Review: Speaker Label Flip Fix
+
+**Date:** 2026-06-10T11:20:14-04:00
+**Author of change:** Lacus (commit cf3694e)
+**Reviewer:** Athrun (Lead/Architect)
+**Files reviewed:**
+- `src/CallCenterTranscription.Api/Services/SpeakerAttributionState.cs` (new)
+- `src/CallCenterTranscription.Api/Services/SpeechTranscriptionService.cs` (updated)
+- `tests/CallCenterTranscription.Tests/SpeakerAttributionStateTests.cs` (14 new tests)
+
+---
+
+## Verdict: ✅ APPROVE
+
+Build: 0 errors, 0 warnings. Tests: 75 pass / 3 skip / 0 fail.
+
+---
+
+## Findings by Criterion
+
+### 1. Correctness of Phase-Aware Mapping — PASS
+
+State machine transitions are sound for all main scenarios:
+
+**Phase 1 — Customer speaks pre-accept (normal path):**
+- `Observe("Guest-1", repAccepted: false)` → CustomerSpeakerId = "Guest-1" (definitive, rep physically absent)
+- Post-accept: `Observe("Guest-2", repAccepted: true)` → Phase 2A: RepSpeakerId = "Guest-2"
+- ✅ Correct. Unchanged from prior logic, now explicitly guarded.
+
+**Phase 2B — The reported flip scenario (customer silent, rep greets first):**
+- No pre-accept observations (customer silent on hold)
+- `Observe("Guest-1", repAccepted: true)` → Both slots null + post-accept → Phase 2B: RepSpeakerId = "Guest-1"
+- `Observe("Guest-2", repAccepted: true)` → RepSpeakerId set + CustomerSpeakerId null + distinct → Phase 2B resolution: CustomerSpeakerId = "Guest-2"
+- ✅ **Flip is fixed.** Old code would have latched Guest-1 as Customer; new code correctly identifies it as Rep.
+
+**Residual edge case (advisory, not blocking):**
+- Scenario: Customer silent pre-accept AND customer speaks first post-accept (rep accepts silently, customer says "Hello?" before rep greets).
+- `Observe("Guest-1", repAccepted: true)` → Both slots null + post-accept → Phase 2B: **incorrectly** RepSpeakerId = "Guest-1" (customer misidentified as Rep)
+- Second speaker (rep): CustomerSpeakerId = "Guest-2" (rep misidentified as Customer)
+- This residual flip is real but **demo-unlikely**: rep greeting first is the industry norm and the demo runs mock audio by default. Non-blocking.
+
+### 2. Robustness of Heuristic vs. Deterministic Identity Signal — PASS
+
+The PSTN "4:" / CommunicationUser "8:" identifier is exposed in ACS `ParticipantsUpdated` events but **NOT** in `ConversationTranscriptionResult.SpeakerId`. The Speech SDK returns opaque diarization cluster IDs ("Guest-1", "Guest-2") with no native link to ACS participant identifiers. A deterministic mapping would require:
+1. Tracking ACS participant identifiers from `ParticipantsUpdated` (already done for lifecycle)
+2. A side-channel correlation table mapping ACS participant IDs → Speech SDK Guest IDs (non-trivial; not natively provided by either SDK)
+
+Lacus did not have access to a reliable deterministic signal at the `Transcribed` event handler layer. The phase-aware heuristic is the correct POC tradeoff. Acceptable.
+
+### 3. Sentiment Integrity — PASS
+
+- `attribution.IsCustomer(speakerId)` gates both `Transcribing` (partials, line 264) and `Transcribed` (finals, line 302) handlers.
+- `IsCustomer()` returns true **only** when `CustomerSpeakerId is not null && IsSpeakerKnown(speakerId) && speakerId == CustomerSpeakerId` (Ordinal comparison).
+- Rep utterances produce `isCustomer = false` → excluded from churn sentiment pipeline.
+- No regression: sentiment scoring path unchanged; attribution input is corrected.
+
+### 4. R1 Audio Constraint — PASS ✓ Sacred
+
+`SpeakerAttributionState` operates entirely at the text/label layer post-transcription. No changes to:
+- `MediaStreamingOptions` (Mixed channel, Websocket transport)
+- `Pcm16KMono` audio format
+- `ConversationTranscriber` configuration
+- Audio streaming pipeline
+
+R1 topology untouched. ✓
+
+### 5. Test Quality — PASS with advisory
+
+14 tests covering:
+| Test | Scenario | Status |
+|------|----------|--------|
+| `Phase1_FirstSpeakerPreAccept_IsCustomer` | Basic Phase 1 latch | ✅ |
+| `Phase1_SecondDistinctSpeakerAfterCustomerLatched_IsRep` | Phase 2A path | ✅ |
+| `Phase1_SameSpeakerRepeated_NoChangeToSlots` | Idempotency | ✅ |
+| `Phase2B_RepSpeaksFirstPostAccept_IsLatchedAsRep` | **THE BUG SCENARIO** | ✅ |
+| `Phase2B_CustomerRespondsAfterRepGreeting_IsLatchedAsCustomer` | Phase 2B resolution | ✅ |
+| `Phase2B_SlotsDoNotFlipAfterResolution` | Post-resolution stability | ✅ |
+| `UnknownSpeakerId_NeverLatched` | Unknown/null/empty guard | ✅ |
+| `UnknownThenKnown_KnownSpeakerLatchedPreAccept_IsCustomer` | Warm-up noise | ✅ |
+| `IsCustomer_BeforeAnyLatch_ReturnsFalse` | Pre-latch state | ✅ |
+| `IsCustomer_RepSpeakerId_ReturnsFalse` | Rep exclusion | ✅ |
+| `IsSpeakerKnown_ReturnsExpected` (Theory, 7 cases) | Guard utility | ✅ |
+| `Observe_ReturnsTransitionStringOnNewLatch` | Logging contract | ✅ |
+| `Observe_ReturnsNullForRepeatOrUnknown` | Logging contract | ✅ |
+
+**Gap:** No test for the residual edge (customer speaks first post-accept, no pre-accept speech). This gap means the known limitation is not pinned to code. Non-blocking.
+
+---
+
+## Advisories
+
+**Advisory A (non-blocking):** Add test `Phase2B_CustomerSpeaksFirstPostAccept_NoPreAcceptSpeech` to document the known residual flip limitation. Assert that in this scenario `RepSpeakerId` is incorrectly set to the customer's Guest ID (documenting the known behavior, not a fix). Assign to **Yzak** (not Lacus — lockout protocol does not apply since this is APPROVE, but Yzak already holds the test-advisory queue from the prior review).
+
+---
+
+## Lockout
+
+APPROVE — lockout not triggered.
+
+---
+
+## Cross-references
+- Prior heuristic decision: `.squad/decisions.md` → lacus-conversationtranscriber-impl (2026-06-08)
+- R1 audio constraint: `.squad/decisions.md` → Mixed audio + customer-only sentiment (2026-06-10)
+- Related: `.squad/decisions/inbox/lacus-speaker-label-fix.md`
+
+---
+
+# Decision: Phase-2B Speaker Attribution Limitation — Pinned by Documentation Test
+
+**Date:** 2026-06-10T11:20:14-04:00  
+**Author:** Yzak (QA)  
+**Requested by:** Jason  
+**Related commits:** cf3694e (Lacus — SpeakerAttributionState fix)
+
+---
+
+## Summary
+
+A documentation test has been added to `SpeakerAttributionStateTests.cs` that pins the known residual limitation in `SpeakerAttributionState` Phase 2B, as identified in Athrun's code review (see `athrun-speaker-label-review.md`).
+
+## The Limitation
+
+**Scenario:** Customer speaks first post-accept AND there is no pre-accept speech (Phase 1 never fires).
+
+**Root cause:** Phase 2B assumes the first post-accept speaker is the rep (greeting scenario). When the customer happens to speak first, Phase 2B cannot distinguish them from the rep and incorrectly latches:
+- Customer → labeled as **Rep** ❌  
+- Rep → labeled as **Customer** ❌
+
+This corrupts customer-only sentiment scoring for that call.
+
+## Probability
+
+Demo-unlikely. Requires both:
+1. Customer is completely silent while on hold (no pre-accept utterances), AND
+2. Customer speaks before the rep greeting fires a `Transcribed` event post-accept.
+
+Standard call flow (rep greets first, or customer says anything on hold) is unaffected.
+
+## Decision
+
+- **No production code change** at this time. Risk is low for the POC demo.
+- The limitation is **pinned by a documentation test** (`Phase2B_CustomerSpeaksFirstPostAccept_NoPreAcceptSpeech`) that:
+   - Asserts **current (known-wrong) behavior** — test is green today.
+   - Will **turn red automatically** when a fix is implemented, providing immediate visibility.
+   - Includes comments clearly marking it as a documented limitation, not desired behavior.
+
+## Future Fix Options (deferred)
+
+A Phase 2B fix would require additional signal beyond diarization order, e.g.:
+- ACS participant metadata (caller vs. called-party)
+- Timing heuristic (rep greeting latency threshold)
+- Explicit rep identity from ACS AddParticipant callback
+
+These require deeper ACS integration and are out of scope for the Phase-0/1 POC.
+
+## Test Location
+
+`tests/CallCenterTranscription.Tests/SpeakerAttributionStateTests.cs`  
+Method: `Phase2B_CustomerSpeaksFirstPostAccept_NoPreAcceptSpeech`
+
+## Test Suite Status
+
+**78 total (75 pass, 3 skip, 0 fail)** as of 2026-06-10T11:20:14-04:00.
+
