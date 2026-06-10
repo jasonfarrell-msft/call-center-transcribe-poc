@@ -101,6 +101,38 @@ public sealed class SpeakerAttributionStateTests
     }
 
     [Fact]
+    public void Phase2B_CustomerSpeaksFirstPostAccept_NoPreAcceptSpeech()
+    {
+        // ── DOCUMENTED PHASE-2 LIMITATION ───────────────────────────────────────────────────────
+        // When the customer speaks FIRST post-accept AND there is no pre-accept speech to establish
+        // Phase 1 attribution, Phase 2B cannot distinguish who greeted first. The state machine
+        // assumes the first post-accept speaker is the REP (greeting scenario), so a customer who
+        // speaks first is incorrectly latched as Rep, and the actual rep who follows is latched as
+        // Customer — a label flip.
+        //
+        // This test asserts CURRENT (known-incorrect) behavior so any future fix is immediately
+        // visible as a failing test. This is NOT desired behavior; it is a demo-unlikely edge case
+        // documented for Phase-2 visibility. See .squad/decisions/inbox/yzak-speaker-edge-test.md.
+        // ────────────────────────────────────────────────────────────────────────────────────────
+
+        var s = new SpeakerAttributionState();
+
+        // No pre-accept speech — Phase 1 never fires.
+        // Customer speaks first post-accept (e.g., impatient caller or locale where callers
+        // don't wait for the rep greeting). Phase 2B has no way to detect this.
+        s.Observe("Guest-1", repAccepted: true);  // actually the CUSTOMER — Phase 2B latches as REP
+        s.Observe("Guest-2", repAccepted: true);  // actually the REP — Phase 2B resolution latches as CUSTOMER
+
+        // Current (known-wrong) behavior: labels are flipped.
+        Assert.Equal("Guest-2", s.CustomerSpeakerId); // WRONG: this is actually the rep
+        Assert.Equal("Guest-1", s.RepSpeakerId);       // WRONG: this is actually the customer
+        Assert.False(s.IsCustomer("Guest-1"),
+            "known limitation: real customer is mislabeled as rep when they speak first post-accept with no pre-accept speech");
+        Assert.True(s.IsCustomer("Guest-2"),
+            "known limitation: real rep is mislabeled as customer in the same scenario");
+    }
+
+    [Fact]
     public void Phase2B_SlotsDoNotFlipAfterResolution()
     {
         // After both slots are latched, additional observations from the same speakers must

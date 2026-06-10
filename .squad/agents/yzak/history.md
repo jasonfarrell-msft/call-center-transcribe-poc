@@ -10,7 +10,7 @@
 
 ## Learnings
 
-(empty — append test scenarios, known fragile spots, and validation results here)
+(append test scenarios, known fragile spots, and validation results here)
 
 - **Team update:** POC plan drafted; shared WebSocket event contracts cover `transcript`, `translation`, `sentiment`, `churn_risk`, `knowledge_cards`, and `next_best_action`; real-time loop now uses GPT-4o, with MAI-DS-R1 reserved for optional post-call analysis.
 - **Team update (2026-06-05):** Tests now target the C#/.NET + Razor + SignalR stack on ACA/App Service, real ACS Option A, and shared events that include `transcript.detectedLanguage`.
@@ -55,4 +55,10 @@
 **Test suite: 59 total (56 pass, 3 skip, 0 fail).**
 
 **Finding documented:** TryBeginTeardown has no paired `EndTeardown()` / `CancelTeardown()` — intentional (one-way per call).
+
+## Learnings — 2026-06-10T11:20:14-04:00 (Phase-2B Speaker Edge-Case Documentation Test)
+
+- **Documented known limitation pinned by test.** `Phase2B_CustomerSpeaksFirstPostAccept_NoPreAcceptSpeech` in `SpeakerAttributionStateTests.cs` captures the residual Phase-2B edge case identified in Athrun's review: if the customer speaks first post-accept with NO pre-accept speech, Phase 2B cannot distinguish who greeted and latches the customer as Rep and the rep as Customer (label flip). Test asserts the *current* (known-wrong) behavior — it is green today and will turn red when the limitation is fixed, providing automatic visibility.
+- **Scenario is demo-unlikely** (requires customer to speak before rep greeting AND complete silence before accept), but the pinned test ensures it cannot regress silently.
+- **Final test count: 78 total (75 pass, 3 skip, 0 fail).** Up from 59 pre-Lacus; Lacus's 14 SpeakerAttributionStateTests + this 1 documentation test = 15 new since the teardown session.
 
