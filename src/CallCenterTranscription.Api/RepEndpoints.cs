@@ -103,6 +103,43 @@ internal static class RepEndpoints
             return Results.Ok(new { registered = true, callActive = !string.IsNullOrEmpty(callStore.CallId) });
         });
 
+        // ── Rep-initiated full teardown ──────────────────────────────────────────────────────────
+        // Called by the rep's browser after currentCall.hangUp() so the entire ACS call is
+        // terminated (forEveryone=true), not just the rep's leg. This closes the media-stream
+        // WebSocket, which triggers the existing finally-block teardown in AcsEndpoints:
+        //   CompleteStream → callStore.Clear → liveSentiment.Clear → CallEnded broadcast.
+        rep.MapPost("/hangup", async (
+            HttpContext ctx,
+            IConfiguration config,
+            ActiveCallStore callStore,
+            ILoggerFactory loggerFactory,
+            CancellationToken ct) =>
+        {
+            var logger = loggerFactory.CreateLogger("RepEndpoints");
+            if (!IsAuthorized(ctx, config))
+                return Results.Unauthorized();
+
+            var callId = callStore.CallId;
+            if (string.IsNullOrEmpty(callId))
+                return Results.Ok(new { hungUp = false, reason = "no-active-call" });
+
+            var callClient = ctx.RequestServices.GetService<CallAutomationClient>();
+            if (callClient is null)
+                return Results.Ok(new { hungUp = false, reason = "no-client" });
+
+            try
+            {
+                await callClient.GetCallConnection(callId).HangUpAsync(forEveryone: true, ct);
+                logger.LogInformation("Rep-initiated HangUp for call {CallId}.", callId);
+                return Results.Ok(new { hungUp = true });
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "Failed to HangUp call {CallId} on rep request.", callId);
+                return Results.Problem("HangUp failed.", statusCode: StatusCodes.Status502BadGateway);
+            }
+        });
+
         return app;
     }
 

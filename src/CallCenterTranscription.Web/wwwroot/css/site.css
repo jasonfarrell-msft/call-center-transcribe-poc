@@ -1106,6 +1106,22 @@ body {
 }
 .conn-status--ended .conn-dot { background: var(--cc-text-muted); }
 
+/* "Call Pending" — incoming ring, rep has not yet accepted */
+.conn-status--pending {
+  background: var(--cc-warn-light);
+  color: var(--cc-warn-text);
+  border-color: var(--cc-warn);
+}
+.conn-status--pending .conn-dot {
+  background: var(--cc-warn);
+  animation: conn-ring 0.75s ease-in-out infinite;
+}
+
+@keyframes conn-ring {
+  0%, 100% { opacity: 1; transform: scale(1.15); }
+  50%      { opacity: 0.2; transform: scale(0.6); }
+}
+
 @keyframes conn-pulse {
   0%, 100% { opacity: 1; transform: scale(1); }
   50%      { opacity: 0.45; transform: scale(0.82); }

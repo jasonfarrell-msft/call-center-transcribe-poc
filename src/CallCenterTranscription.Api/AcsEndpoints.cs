@@ -216,15 +216,16 @@ internal static class AcsEndpoints
                         var answeredCallId = result.Value.CallConnection.CallConnectionId;
                         callStore.CompleteIncomingClaim(answeredCallId);
 
-                        // Broadcast call-started so every console client transitions Disconnected → Connecting
-                        // and subscribes to call:{answeredCallId}. Broadcast group == publish group (reviewer fix).
+                        // Broadcast call-pending so every console client transitions Disconnected → Pending
+                        // (the rep softphone is now ringing; rep has NOT accepted yet).
+                        // CallAccepted fires later on AddParticipantSucceeded to transition Pending → Live.
                         var hub = ctx.RequestServices.GetRequiredService<IHubContext<PipelineHub>>();
                         await hub.Clients.All.SendAsync(
-                            PipelineContract.StreamNames.CallStarted,
+                            PipelineContract.StreamNames.CallPending,
                             new CallLifecycleEvent
                             {
                                 CallId = answeredCallId,
-                                Status = "started",
+                                Status = "pending",
                                 TimestampUtc = DateTimeOffset.UtcNow
                             },
                             ct);
@@ -315,17 +316,51 @@ internal static class AcsEndpoints
                     break;
 
                 case AddParticipantSucceeded ok:
+                    // Rep clicked Accept on their softphone — ACS confirmed the join.
+                    // Mark the store so Lacus can read RepAccepted, and broadcast CallAccepted
+                    // so the UI transitions Pending → Live and begins showing transcript lines.
                     logger.LogInformation(
                         "ACS AddParticipant succeeded (rep answered) for call {CallId}.", ok.CallConnectionId);
+                    ctx.RequestServices.GetRequiredService<ActiveCallStore>().MarkAccepted();
+                    var acceptedHub = ctx.RequestServices.GetRequiredService<IHubContext<PipelineHub>>();
+                    await acceptedHub.Clients.All.SendAsync(
+                        PipelineContract.StreamNames.CallAccepted,
+                        new CallLifecycleEvent
+                        {
+                            CallId = ok.CallConnectionId,
+                            Status = "accepted",
+                            TimestampUtc = DateTimeOffset.UtcNow
+                        },
+                        ct);
                     break;
 
                 case AddParticipantFailed failed:
-                    // Rep declined / didn't answer in time / error → release the claim so a later
-                    // /register (e.g., rep retries) can re-invite within the call's lifetime.
+                    // Rep declined / timed out → FULL TEARDOWN.
+                    // Hang up the ACS call so the customer leg drops and the media-stream
+                    // WebSocket closes. The existing finally-block in HandleMediaStreamAsync
+                    // then runs: CompleteStream → callStore.Clear → liveSentiment.Clear → CallEnded.
                     logger.LogWarning(
-                        "ACS AddParticipant failed for call {CallId}: {Code} {Message}",
+                        "ACS AddParticipant failed for call {CallId}: {Code} {Message} — hanging up.",
                         failed.CallConnectionId, failed.ResultInformation?.Code, failed.ResultInformation?.Message);
                     ctx.RequestServices.GetRequiredService<ActiveCallStore>().ResetAddRep();
+                    var failedCallClient = ctx.RequestServices.GetService<CallAutomationClient>();
+                    if (failedCallClient is not null && !string.IsNullOrEmpty(failed.CallConnectionId))
+                    {
+                        try
+                        {
+                            await failedCallClient.GetCallConnection(failed.CallConnectionId)
+                                .HangUpAsync(forEveryone: true, ct);
+                            logger.LogInformation(
+                                "Hung up call {CallId} after rep decline/timeout; media stream will close and teardown will fire.",
+                                failed.CallConnectionId);
+                        }
+                        catch (Exception ex)
+                        {
+                            logger.LogError(ex,
+                                "Failed to hang up call {CallId} after AddParticipantFailed; customer may remain connected.",
+                                failed.CallConnectionId);
+                        }
+                    }
                     break;
 
                 default:

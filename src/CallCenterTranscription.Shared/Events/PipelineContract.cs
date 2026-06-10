@@ -21,9 +21,18 @@ public static class PipelineContract
         public const string CurrentState = "stream.currentState";
 
         // Call lifecycle — broadcast to all console clients so the dashboard can drive its
-        // Disconnected → Connecting → Live state machine without pre-knowing the ACS-generated callId.
-        public const string CallStarted = "stream.callStarted";
-        public const string CallEnded = "stream.callEnded";
+        // Disconnected → Pending → Accepted → Live state machine without pre-knowing the ACS callId.
+        //
+        // Sequence:
+        //   CallPending  — fired when ACS answers and rep softphone starts ringing (rep has NOT accepted)
+        //   CallAccepted — fired when AddParticipantSucceeded (rep clicked Accept); transcription is live
+        //   CallEnded    — fired when media-stream WebSocket finally-block runs (any disconnect path)
+        //
+        // CallStarted is kept for backward compatibility but is no longer broadcast in normal flow.
+        public const string CallStarted  = "stream.callStarted";
+        public const string CallPending  = "stream.callPending";
+        public const string CallAccepted = "stream.callAccepted";
+        public const string CallEnded    = "stream.callEnded";
     }
 
     public static class GroupNames

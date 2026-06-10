@@ -11,6 +11,7 @@ using CallCenterTranscription.Telephony;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.CognitiveServices.Speech;
 using Microsoft.CognitiveServices.Speech.Audio;
+using Microsoft.CognitiveServices.Speech.Transcription;
 
 namespace CallCenterTranscription.Api.Services;
 
@@ -112,7 +113,9 @@ public sealed class SpeechTranscriptionService : BackgroundService
         string translatorTargetLanguage,
         CancellationToken stoppingToken)
     {
-        SpeechRecognizer? recognizer = null;
+        // ConversationTranscriber gives speaker-attributed results (SpeakerId per utterance)
+        // on the same Mixed 16kHz mono push stream — no topology change required (R1 safe).
+        ConversationTranscriber? transcriber = null;
         AudioConfig? audioConfig = null;
         PushAudioInputStream? pushStream = null;
         long sequence = 0;
@@ -123,7 +126,7 @@ public sealed class SpeechTranscriptionService : BackgroundService
         {
             await foreach (var frame in _audioSource.ReadAsync(stoppingToken).ConfigureAwait(false))
             {
-                if (recognizer is null)
+                if (transcriber is null)
                 {
                     var accessToken = await credential.GetTokenAsync(tokenScope, stoppingToken).ConfigureAwait(false);
 
@@ -132,13 +135,14 @@ public sealed class SpeechTranscriptionService : BackgroundService
                     speechConfig.SpeechRecognitionLanguage = candidateLanguages[0];
 
                     var autoDetectConfig = AutoDetectSourceLanguageConfig.FromLanguages(candidateLanguages.ToArray());
+                    // Keep IDENTICAL format: PCM 16-bit, 16kHz, mono — same as AudioFrame contract.
                     var audioFormat = AudioStreamFormat.GetWaveFormatPCM(16000, 16, 1);
                     pushStream = AudioInputStream.CreatePushStream(audioFormat);
                     audioConfig = AudioConfig.FromStreamInput(pushStream);
-                    recognizer = new SpeechRecognizer(speechConfig, autoDetectConfig, audioConfig);
+                    transcriber = new ConversationTranscriber(speechConfig, autoDetectConfig, audioConfig);
 
-                    WireRecognitionHandlers(
-                        recognizer,
+                    WireTranscriberHandlers(
+                        transcriber,
                         () => Interlocked.Increment(ref sequence),
                         candidateLanguages[0],
                         credential,
@@ -147,9 +151,9 @@ public sealed class SpeechTranscriptionService : BackgroundService
                         translatorRegion,
                         translatorTargetLanguage);
 
-                    await recognizer.StartContinuousRecognitionAsync().ConfigureAwait(false);
+                    await transcriber.StartTranscribingAsync().ConfigureAwait(false);
                     _logger.LogInformation(
-                        "SpeechTranscriptionService: recognizer started for call {CallId}.",
+                        "SpeechTranscriptionService: ConversationTranscriber started for call {CallId}.",
                         _callStore.CallId ?? "(unknown)");
                 }
 
@@ -162,25 +166,42 @@ public sealed class SpeechTranscriptionService : BackgroundService
         }
         finally
         {
-            if (recognizer is not null)
+            if (transcriber is not null)
             {
                 pushStream!.Close();
-                await recognizer.StopContinuousRecognitionAsync().ConfigureAwait(false);
+                await transcriber.StopTranscribingAsync().ConfigureAwait(false);
                 _logger.LogInformation(
-                    "SpeechTranscriptionService: recognizer stopped — {Frames} audio frames over {Seconds:F1}s for call {CallId}.",
+                    "SpeechTranscriptionService: ConversationTranscriber stopped — {Frames} audio frames over {Seconds:F1}s for call {CallId}.",
                     framesWritten,
                     stopwatch.Elapsed.TotalSeconds,
                     _callStore.CallId ?? "(ended)");
 
-                recognizer.Dispose();
+                transcriber.Dispose();
                 audioConfig?.Dispose();
                 pushStream.Dispose();
             }
         }
     }
 
-    private void WireRecognitionHandlers(
-        SpeechRecognizer recognizer,
+    /// <summary>
+    /// Wires all ConversationTranscriber events for one call session.
+    ///
+    /// Customer-attribution heuristic (decision: lacus-conversationtranscriber-impl):
+    ///   In the ACS Mixed topology the customer (PSTN) dials in and is present on the stream
+    ///   BEFORE the rep is added via AddParticipant. ConversationTranscriber assigns SpeakerIds
+    ///   such as "Guest-1", "Guest-2", "Unknown". The first clearly-attributed (non-"Unknown",
+    ///   non-empty) SpeakerId that appears in a Transcribed event is latched as the customer for
+    ///   the duration of the call. Any later speaker is treated as the rep. Utterances with no
+    ///   clear attribution ("Unknown" / empty) are transcribed but NEVER scored — ambiguous audio
+    ///   must not pollute the customer sentiment signal.
+    ///
+    /// Accept-gate:
+    ///   Neither transcript nor sentiment events are emitted until RepAccepted is true. The
+    ///   transcriber may warm up and latch the customer speaker ID before accept, but all
+    ///   SignalR sends are suppressed — the rep console shows "Call Pending" until that point.
+    /// </summary>
+    private void WireTranscriberHandlers(
+        ConversationTranscriber transcriber,
         Func<long> nextSequence,
         string fallbackLanguage,
         DefaultAzureCredential credential,
@@ -191,7 +212,11 @@ public sealed class SpeechTranscriptionService : BackgroundService
     {
         var firstPartialLogged = false;
 
-        recognizer.Recognizing += (_, e) =>
+        // Latched on the first clearly-attributed Transcribed result for this call.
+        // null = no speaker seen yet; set once, never changed for the call lifetime.
+        string? customerSpeakerId = null;
+
+        transcriber.Transcribing += (_, e) =>
         {
             if (string.IsNullOrWhiteSpace(e.Result.Text))
             {
@@ -204,20 +229,29 @@ public sealed class SpeechTranscriptionService : BackgroundService
                 _logger.LogInformation("SpeechTranscriptionService: first partial recognized — audio is reaching Speech.");
             }
 
-            if (ResolveGroup() is not { } recognizing)
+            // Suppress emission until the rep has accepted the call (badge: "Call Pending").
+            if (!_callStore.RepAccepted)
             {
                 return;
             }
 
-            var (callId, group) = recognizing;
+            if (ResolveGroup() is not { } transcribing)
+            {
+                return;
+            }
+
+            var (callId, group) = transcribing;
             var seq = nextSequence();
             var detectedLanguage = ResolveDetectedLanguage(e.Result, fallbackLanguage);
-            var evt = BuildTranscriptEvent(callId, seq, e.Result.ResultId, e.Result.Text, isFinal: false, detectedLanguage);
+            var speakerId = e.Result.SpeakerId ?? string.Empty;
+            var isCustomer = IsCustomerSpeaker(speakerId, customerSpeakerId);
+            var evt = BuildTranscriptEvent(callId, seq, e.Result.ResultId, e.Result.Text,
+                                           isFinal: false, detectedLanguage, speakerId, isCustomer);
             _ = _hub.Clients.Group(group)
                 .SendAsync(PipelineContract.StreamNames.Transcript, evt, CancellationToken.None);
         };
 
-        recognizer.Recognized += (_, e) =>
+        transcriber.Transcribed += (_, e) =>
         {
             if (e.Result.Reason != ResultReason.RecognizedSpeech)
             {
@@ -234,6 +268,29 @@ public sealed class SpeechTranscriptionService : BackgroundService
                 return;
             }
 
+            var speakerId = e.Result.SpeakerId ?? string.Empty;
+            var speakerKnown = IsSpeakerKnown(speakerId);
+
+            // Latch the first clearly-attributed speaker as the customer for this call.
+            // The customer is on the stream before the rep joins (ACS AddParticipant topology),
+            // so the first real SpeakerId is always the customer.
+            if (customerSpeakerId is null && speakerKnown)
+            {
+                customerSpeakerId = speakerId;
+                _logger.LogInformation(
+                    "SpeechTranscriptionService: customer speaker latched as SpeakerId={SpeakerId} for call {CallId}.",
+                    customerSpeakerId,
+                    _callStore.CallId ?? "(unknown)");
+            }
+
+            var isCustomer = IsCustomerSpeaker(speakerId, customerSpeakerId);
+
+            // Suppress emission until the rep has accepted the call.
+            if (!_callStore.RepAccepted)
+            {
+                return;
+            }
+
             if (ResolveGroup() is not { } recognized)
             {
                 return;
@@ -242,16 +299,25 @@ public sealed class SpeechTranscriptionService : BackgroundService
             var (callId, group) = recognized;
             var seq = nextSequence();
             var detectedLanguage = ResolveDetectedLanguage(e.Result, fallbackLanguage);
-            var transcriptEvent = BuildTranscriptEvent(callId, seq, e.Result.ResultId, e.Result.Text, isFinal: true, detectedLanguage);
+            var transcriptEvent = BuildTranscriptEvent(callId, seq, e.Result.ResultId, e.Result.Text,
+                                                        isFinal: true, detectedLanguage, speakerId, isCustomer);
 
+            // Emit transcript for ALL speakers — diarization adds attribution, it does not drop
+            // rep speech. The SpeakerId and SpeakerRole fields let the UI style each side.
             _ = _hub.Clients.Group(group)
                 .SendAsync(PipelineContract.StreamNames.Transcript, transcriptEvent, CancellationToken.None);
 
-            var sentimentEvent = _liveSentiment.Append(callId, e.Result.Text);
-            if (sentimentEvent is not null)
+            // Score sentiment ONLY for the customer. Rep utterances (including empathy phrases
+            // like "I'm so sorry to hear that") must never move the customer sentiment meter —
+            // that is the entire point of this diarization upgrade.
+            if (isCustomer)
             {
-                _ = _hub.Clients.Group(group)
-                    .SendAsync(PipelineContract.StreamNames.Sentiment, sentimentEvent, CancellationToken.None);
+                var sentimentEvent = _liveSentiment.Append(callId, e.Result.Text);
+                if (sentimentEvent is not null)
+                {
+                    _ = _hub.Clients.Group(group)
+                        .SendAsync(PipelineContract.StreamNames.Sentiment, sentimentEvent, CancellationToken.None);
+                }
             }
 
             _ = PublishTranslationIfNeededAsync(
@@ -269,31 +335,44 @@ public sealed class SpeechTranscriptionService : BackgroundService
                 transcriptEvent);
 
             _logger.LogInformation(
-                "SpeechTranscriptionService: FINAL utterance seq={Seq} callId={CallId} language={Language} text=\"{Text}\"",
+                "SpeechTranscriptionService: FINAL utterance seq={Seq} callId={CallId} speaker={SpeakerId} isCustomer={IsCustomer} language={Language} text=\"{Text}\"",
                 seq,
                 callId,
+                speakerId,
+                isCustomer,
                 detectedLanguage,
                 e.Result.Text);
         };
 
-        recognizer.Canceled += (_, e) =>
+        transcriber.Canceled += (_, e) =>
         {
             if (e.Reason == CancellationReason.Error)
             {
                 _logger.LogWarning(
-                    "SpeechTranscriptionService: recognition canceled with ERROR — ErrorCode={Code} Details={Details}",
+                    "SpeechTranscriptionService: transcription canceled with ERROR — ErrorCode={Code} Details={Details}",
                     e.ErrorCode,
                     e.ErrorDetails);
             }
             else
             {
-                _logger.LogInformation("SpeechTranscriptionService: recognition canceled — Reason={Reason}.", e.Reason);
+                _logger.LogInformation("SpeechTranscriptionService: transcription canceled — Reason={Reason}.", e.Reason);
             }
         };
 
-        recognizer.SessionStopped += (_, _) =>
-            _logger.LogInformation("SpeechTranscriptionService: Speech recognition session stopped.");
+        transcriber.SessionStopped += (_, _) =>
+            _logger.LogInformation("SpeechTranscriptionService: ConversationTranscriber session stopped.");
     }
+
+    /// <summary>Returns true if the SpeakerId is a clear attribution (not empty, not "Unknown").</summary>
+    private static bool IsSpeakerKnown(string speakerId) =>
+        !string.IsNullOrEmpty(speakerId) &&
+        !string.Equals(speakerId, "Unknown", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Returns true only when speakerId is known AND matches the latched customer ID.</summary>
+    private static bool IsCustomerSpeaker(string speakerId, string? customerSpeakerId) =>
+        customerSpeakerId is not null &&
+        IsSpeakerKnown(speakerId) &&
+        string.Equals(speakerId, customerSpeakerId, StringComparison.Ordinal);
 
     private async Task PublishTranslationIfNeededAsync(
         string callId,
@@ -525,7 +604,9 @@ public sealed class SpeechTranscriptionService : BackgroundService
         string resultId,
         string text,
         bool isFinal,
-        string detectedLanguage) =>
+        string detectedLanguage,
+        string speakerId,
+        bool isCustomer) =>
         new()
         {
             CallId = callId,
@@ -534,10 +615,10 @@ public sealed class SpeechTranscriptionService : BackgroundService
             UtteranceId = resultId,
             TimestampUtc = DateTimeOffset.UtcNow,
             IsFinal = isFinal,
-            SpeakerId = "customer",
-            SpeakerDisplayLabel = "Customer",
-            SpeakerRole = "customer",
-            SpeakerLabelSource = "acs-unmixed-customer",
+            SpeakerId = string.IsNullOrEmpty(speakerId) ? "unknown" : speakerId,
+            SpeakerDisplayLabel = isCustomer ? "Customer" : string.IsNullOrEmpty(speakerId) ? "Speaker" : "Rep",
+            SpeakerRole = isCustomer ? "customer" : string.IsNullOrEmpty(speakerId) ? "unknown" : "rep",
+            SpeakerLabelSource = "conversation-transcriber-diarization",
             Text = text,
             DetectedLanguage = detectedLanguage,
             Source = "azure-ai-speech"

@@ -34,6 +34,9 @@
     const customerEl = root.querySelector("[data-meta-customer]");
     const connectedEl = root.querySelector("[data-meta-connected]");
 
+    // Transcript body placeholders.
+    const pendingEl = scroller.querySelector("[data-live-pending]");
+
     // Live side-rail surfaces.
     const sentimentEmptyEl = root.querySelector("[data-live-sentiment-empty]");
     const sentimentBodyEl = root.querySelector("[data-live-sentiment-body]");
@@ -67,11 +70,13 @@
     const STATE_CLASSES = {
         disconnected: "conn-status--disconnected",
         connecting: "conn-status--connecting",
+        pending: "conn-status--pending",
         live: "conn-status--live",
         ended: "conn-status--ended"
     };
 
     let currentCallId = null;
+    let isCallActive = false;   // true only after callAccepted; gates transcript/sentiment rendering
     let ghostLine = null;
     let endedTimer = null;
     let translationPanelCounter = 0;
@@ -149,6 +154,26 @@
         if (empty) {
             empty.remove();
         }
+    }
+
+    function showEmptyState() {
+        if (!scroller.querySelector("[data-live-empty]")) {
+            const p = document.createElement("p");
+            p.className = "console-empty-state";
+            p.setAttribute("data-live-empty", "");
+            p.textContent = "Waiting for a call. Transcription will appear here in real time once a call connects.";
+            scroller.prepend(p);
+        }
+        setHidden(pendingEl, true);
+    }
+
+    function showPendingState() {
+        clearEmptyState();
+        setHidden(pendingEl, false);
+    }
+
+    function hidePendingState() {
+        setHidden(pendingEl, true);
     }
 
     function clearTranscript() {
@@ -377,6 +402,10 @@
     }
 
     function onTranscript(evt) {
+        if (!isCallActive) {
+            return; // rep has not accepted yet — drop all pre-accept events
+        }
+
         if (!evt || !evt.text) {
             return;
         }
@@ -427,6 +456,10 @@
     }
 
     function onSentiment(evt) {
+        if (!isCallActive) {
+            return;
+        }
+
         if (!evt || typeof evt.score !== "number") {
             return;
         }
@@ -554,7 +587,9 @@
         }
     }
 
-    async function onCallStarted(evt) {
+    // stream.callPending — customer is ringing; backend has answered but rep has NOT accepted.
+    // Show "Call Pending" badge, empty/placeholder transcript body, gate all rendering.
+    async function onCallPending(evt) {
         const callId = evt && evt.callId;
         if (!callId) {
             return;
@@ -565,21 +600,54 @@
             endedTimer = null;
         }
 
-        const isNewCall = !currentCallId || currentCallId !== callId;
+        isCallActive = false;
         currentCallId = callId;
-        clearTranscript();
+        ghostLine = null;
+        lineByUtterance.clear();
+        translationByUtterance.clear();
+        expandedTranslationUtterances.clear();
 
-        if (isNewCall) {
-            expandedTranslationUtterances.clear();
+        // Wipe any old transcript so nothing flashes through.
+        scroller.innerHTML = "";
+        if (pendingEl) {
+            scroller.appendChild(pendingEl);
+        }
+        showPendingState();
+
+        setState("pending", "● Call Pending");
+        setText(summaryEl, "Live mode • Incoming call");
+        setText(callIdEl, callId);
+        setText(customerEl, "Inbound caller");
+        setText(connectedEl, WAITING);
+
+        // Subscribe to the call's SignalR group now so transcript events arrive the moment
+        // the rep accepts (backend starts emitting them post-accept).
+        await subscribeToCall(callId);
+    }
+
+    // stream.callAccepted — rep accepted; begin rendering transcript and sentiment.
+    function onCallAccepted(evt) {
+        const callId = (evt && evt.callId) || currentCallId;
+        if (!callId) {
+            return;
         }
 
-        setState("connecting", "Call connected — starting transcription…");
+        if (endedTimer) {
+            clearTimeout(endedTimer);
+            endedTimer = null;
+        }
+
+        currentCallId = callId;
+        isCallActive = true;
+
+        hidePendingState();
+        clearEmptyState();
+
+        setState("live", "● Live transcription");
         setText(summaryEl, "Live mode • Call connected");
         setText(callIdEl, callId);
         setText(customerEl, "Inbound caller");
         setText(connectedEl, formatTime());
-
-        await subscribeToCall(callId);
     }
 
     function onCallEnded(evt) {
@@ -587,15 +655,24 @@
             return;
         }
 
-        setState("ended", "Call ended");
-        setText(summaryEl, "Live mode • Call ended");
+        isCallActive = false;
         currentCallId = null;
         ghostLine = null;
         lineByUtterance.clear();
         translationByUtterance.clear();
         expandedTranslationUtterances.clear();
 
+        setState("ended", "Call ended");
+        setText(summaryEl, "Live mode • Call ended");
+
+        // Signal rep-phone.js to hang up the ACS call leg if it is still active,
+        // ensuring the mic/audio capture stops regardless of how the call ended.
+        document.dispatchEvent(new CustomEvent("rep.callEnded", { bubbles: false }));
+
         endedTimer = setTimeout(() => {
+            endedTimer = null;
+            scroller.innerHTML = "";
+            showEmptyState();
             setState("disconnected", "Disconnected — waiting for call");
             resetHeader();
         }, 4000);
@@ -604,6 +681,8 @@
     async function resync() {
         // Catch a call that started during the SignalR handshake / before this client connected,
         // or re-join the group after an automatic reconnect (groups don't survive reconnect).
+        // If an active call exists after reconnect we assume the rep already accepted (otherwise
+        // there would be nothing to resync to), so we treat it as callAccepted.
         try {
             const response = await fetch(apiBaseUrl + "/api/calls/active", { cache: "no-store" });
             if (!response.ok) {
@@ -612,7 +691,8 @@
 
             const data = await response.json();
             if (data && data.callId) {
-                await onCallStarted({ callId: data.callId });
+                await onCallPending({ callId: data.callId });
+                onCallAccepted({ callId: data.callId });
             }
         } catch (err) {
             console.debug("live-transcript: resync skipped.", err);
@@ -624,7 +704,8 @@
         .withAutomaticReconnect()
         .build();
 
-    connection.on("stream.callStarted", onCallStarted);
+    connection.on("stream.callPending", onCallPending);
+    connection.on("stream.callAccepted", onCallAccepted);
     connection.on("stream.callEnded", onCallEnded);
     connection.on("stream.transcript", onTranscript);
     connection.on("stream.translation", onTranslation);

@@ -23,8 +23,9 @@
     }
 
     // The token/register endpoints are same-origin proxies on THIS web app (not the API base).
-    const TOKEN_URL = "/rep/token";
+    const TOKEN_URL    = "/rep/token";
     const REGISTER_URL = "/rep/register";
+    const HANGUP_URL   = "/rep/hangup";
     const STORAGE_KEY = "rep.acs.userId";
     const HEARTBEAT_MS = 15000;
     const DISPLAY_NAME = "Capt Propane";
@@ -190,6 +191,10 @@
         currentIncoming = null;
         applyState("idle");
         setStatus("Call declined — waiting for a call");
+        // Tell the backend to HangUp forEveryone so the PSTN customer leg drops
+        // and the media-stream WebSocket closes (triggering callEnded broadcast).
+        try { await fetch(HANGUP_URL, { method: "POST", cache: "no-store" }); }
+        catch (err) { console.warn("rep-phone: backend hangup on decline failed (non-fatal).", err); }
     });
 
     muteBtn && muteBtn.addEventListener("click", async () => {
@@ -203,8 +208,32 @@
 
     hangupBtn && hangupBtn.addEventListener("click", async () => {
         if (!currentCall) return;
+        // Hang up the rep's local ACS SDK leg first so audio stops immediately.
         try { await currentCall.hangUp(); }
         catch (err) { console.warn("rep-phone: hang up failed.", err); }
+        // Signal the backend to HangUp forEveryone so the PSTN customer leg also drops,
+        // the media-stream WebSocket closes, and the teardown (callEnded broadcast) fires.
+        try { await fetch(HANGUP_URL, { method: "POST", cache: "no-store" }); }
+        catch (err) { console.warn("rep-phone: backend hangup signal failed (non-fatal).", err); }
+    });
+
+    // ── Cross-module teardown ─────────────────────────────────────────────────────────────────
+    // live-transcript.js dispatches "rep.callEnded" when it receives stream.callEnded from
+    // SignalR. This ensures the ACS call leg is hung up (mic/audio stops) regardless of which
+    // side triggered the end — customer hangup, rep hangup, or rep decline + backend teardown.
+    document.addEventListener("rep.callEnded", async () => {
+        if (currentIncoming) {
+            try { await currentIncoming.reject(); } catch { /* ignore */ }
+            currentIncoming = null;
+        }
+        if (currentCall) {
+            try { await currentCall.hangUp(); }
+            catch (err) { console.warn("rep-phone: ACS hangUp on rep.callEnded failed.", err); }
+            // currentCall will be set to null by the stateChanged → Disconnected handler.
+        }
+        // Reset softphone bar to idle waiting state regardless of call leg status.
+        applyState("idle");
+        setStatus("Ready — waiting for a call");
     });
 
     // ── Bootstrap ────────────────────────────────────────────────────────────────────────────

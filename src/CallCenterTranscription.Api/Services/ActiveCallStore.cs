@@ -24,14 +24,24 @@ public sealed class ActiveCallStore
     private const int IncomingClaimInProgress = 1;
     private const int MediaClaimNone = 0;
     private const int MediaClaimInProgress = 1;
+    private const int RepAcceptedFalse = 0;
+    private const int RepAcceptedTrue  = 1;
 
     private volatile string? _callId;
     private int _repAddState = RepAddNone;
     private int _incomingClaimState = IncomingClaimNone;
     private int _mediaClaimState = MediaClaimNone;
+    private int _repAccepted = RepAcceptedFalse;
 
     /// <summary>Returns the current active call ID, or null if no call is in progress.</summary>
     public string? CallId => _callId;
+
+    /// <summary>True once the rep has clicked Accept and ACS confirmed the join (AddParticipantSucceeded).</summary>
+    /// <remarks>Lacus reads this flag to know whether to gate sentiment scoring. Do not write from outside this class.</remarks>
+    public bool RepAccepted => Volatile.Read(ref _repAccepted) == RepAcceptedTrue;
+
+    /// <summary>Marks the rep as having accepted the call (called from AddParticipantSucceeded callback).</summary>
+    public void MarkAccepted() => Interlocked.Exchange(ref _repAccepted, RepAcceptedTrue);
 
     /// <summary>True once the rep participant has been added to the current call.</summary>
     public bool RepAdded => Volatile.Read(ref _repAddState) == RepAddDone;
@@ -49,6 +59,7 @@ public sealed class ActiveCallStore
         _callId = null;
         Interlocked.Exchange(ref _repAddState, RepAddNone);
         Interlocked.Exchange(ref _incomingClaimState, IncomingClaimNone);
+        Interlocked.Exchange(ref _repAccepted, RepAcceptedFalse);
     }
 
     /// <summary>Claims ownership of answering the next incoming call.</summary>
@@ -61,6 +72,7 @@ public sealed class ActiveCallStore
         _callId = callId;
         Interlocked.Exchange(ref _repAddState, RepAddNone);
         Interlocked.Exchange(ref _incomingClaimState, IncomingClaimNone);
+        Interlocked.Exchange(ref _repAccepted, RepAcceptedFalse);
     }
 
     /// <summary>Releases a failed incoming-call answer claim so a later event may retry.</summary>
