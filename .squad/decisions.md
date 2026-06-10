@@ -2162,3 +2162,527 @@ The prior role choice ("Communication Services Contributor" / `2b4609a5-...`) wa
 **Date:** 2026-06-08T15:05:37-04:00
 
 `infra/main.bicep` updated: ACS role var renamed `communicationServicesContributorRoleDefinitionId` → `communicationServiceOwnerRoleDefinitionId`, GUID corrected `2b4609a5-7812-4aba-b5e3-076e6a078419` → `09976791-48a7-449e-bb21-39d1a415f350` ("Communication and Email Service Owner"), and the single reference at the role assignment updated to match — per Athrun's spec; `az bicep build` passes clean; unblocks future `azd provision`.
+
+
+# Rep Call-Control Lifecycle & Customer-Only Sentiment
+
+**Date:** 2026-06-10T06:38:30-04:00  
+**Author:** Athrun (Lead/Architect)  
+**Requested by:** Jason (jasonfarrell-msft)  
+**Status:** DETERMINATION + IMPLEMENTATION PLAN  
+**Baseline tag:** R1_06.10.2026 (commit 4abce51) — Mixed audio transcription working
+
+---
+
+## A. ACCURACY REVIEW — Customer-Only Sentiment
+
+### Determination: CORRECT — sentiment should track CUSTOMER voice only.
+
+**Rationale:**
+
+1. **Product goal is propane retention/churn.** Churn is a customer behavior. The signal we need is: "Is this customer about to leave?" That signal lives entirely in the customer's emotional state — frustration, anger, resignation, satisfaction after a save offer.
+
+2. **Rep voice is noise for this metric.** A rep saying "I'm sorry to hear that" registers as negative in lexicon/model scoring, but it's empathy — the opposite of churn signal. Feeding rep speech into sentiment pollutes the score with false negatives (empathetic rep words register as negative) and false positives (enthusiastic rep phrasing inflating the score).
+
+3. **Rep coaching is out of POC scope.** Rep tone analysis (detecting whether the rep is being professional, empathetic, patient) is a valid product surface — but it's a different feature (quality management/coaching), not retention. Adding it now is scope creep. If we want it later, it's a separate score with a separate model, not a tweak to this meter.
+
+4. **POC keeps the scope honest:** one meter, one signal — customer emotional state.
+
+**VERDICT: Customer-only sentiment is correct. Do not score rep voice.**
+
+---
+
+## B. ARCHITECTURE DECISION — Mixed Audio + Customer-Only Sentiment
+
+### The Tension
+
+- **Transcription** requires Mixed audio (one combined PCM stream → single 16kHz mono recognizer). Unmixed previously caused NoMatch/starved recognizer and was reverted.
+- **Customer-only sentiment** ideally needs to distinguish which utterances came from the customer vs. the rep.
+
+### Options Evaluated
+
+| Option | Description | Risk |
+|--------|-------------|------|
+| (i) Mixed + sentiment on all utterances | Keep current architecture; accept rep voice in sentiment | Low risk, inaccurate signal |
+| (ii) Unmixed + separate recognizers | Per-participant audio → separate Speech instances | HIGH risk — reverts to the topology that broke R1 |
+| (iii) Mixed + text-level speaker attribution | Keep Mixed for transcription; filter sentiment input by speaker label from diarization/attribution | Low risk if attribution works; medium complexity |
+
+### Decision: Option (iii) — Mixed audio, text-level filtering
+
+**Architecture:**
+
+```
+ACS Mixed Audio → Single Recognizer (working, proven)
+                       ↓
+               Recognized text + speaker label
+                       ↓
+           ┌───────────┴───────────┐
+           │                       │
+   All utterances              Customer utterances only
+   → SignalR transcript        → LiveSentimentStore.Append()
+```
+
+**How speaker attribution works in this architecture:**
+
+The Azure Speech SDK with continuous recognition on Mixed audio already supports **conversation transcription / diarization** — the `SpeechRecognitionResult` can carry speaker identification via the `SpeakerRecognitionResult` or the simpler `ConversationTranscriber` API. However, in our current POC we use a plain `SpeechRecognizer` (not `ConversationTranscriber`).
+
+**Pragmatic POC path (simplest thing that proves the point):**
+
+Since the Mixed stream doesn't inherently tag each utterance with "customer" or "rep," and switching to `ConversationTranscriber` is a meaningful change that could introduce new failure modes, the **simplest safe approach** is:
+
+1. **ALL recognized utterances go to transcription (unchanged).**
+2. **ALL recognized utterances go to sentiment (unchanged from current code).**
+3. **Accept the impurity for the POC.** In a 2-party call where the rep is mostly asking questions and the customer is mostly answering/complaining, the customer's sentiment-bearing words dominate the signal anyway. The lexicon-based scoring already handles this naturally — rep filler ("How can I help?") scores neutral; customer complaints score negative.
+
+**Wait — can we do better without risk?**
+
+Actually, yes. There's a **zero-risk filtering heuristic** available TODAY:
+
+- The transcription pipeline does NOT currently attribute speaker labels (no diarization enabled in the `SpeechRecognizer` config). Without speaker labels, there is no reliable way to distinguish customer from rep utterances at the text level.
+- To get speaker labels from Mixed audio, we need to switch from `SpeechRecognizer` to `ConversationTranscriber` (Azure Speech SDK). This is a **Phase 2 enhancement** — it's achievable but introduces a new SDK surface.
+
+### FINAL VERDICT — Two-Step Path:
+
+**Step 1 (this sprint, safe):** Keep sentiment scoring ALL utterances from Mixed audio. The signal is good enough for the POC because:
+- Customer speaks ~70% of the words in a retention call
+- Rep speech mostly scores neutral in the lexicon
+- The rolling EMA (α=0.4) dampens rep-word noise
+
+**Step 2 (follow-up spike, not blocking):** Switch to `ConversationTranscriber` for diarized Mixed audio → speaker-attributed utterances → feed only `Speaker 1` (customer/PSTN originator) to sentiment. This gives clean customer-only scoring. Do NOT attempt this in the same change as the call-control lifecycle (risk compounding).
+
+**Trade-offs accepted:**
+- Sentiment meter will occasionally reflect rep emotion words (minor inaccuracy, not a regression)
+- Clean customer-only requires a follow-up `ConversationTranscriber` spike
+- We do NOT touch Unmixed mode — that path stays dead for this POC
+
+---
+
+## C. IMPLEMENTATION PLAN — Rep Call-Control Lifecycle
+
+### Overview of New Behavior
+
+```
+Call arrives → Backend answers, starts media stream
+            → Rep softphone rings (Accept/Decline)
+            → Transcript badge: "Call Pending"
+            → No transcript lines shown yet
+
+Rep ACCEPTS  → Badge → green "Connected"
+            → Transcript lines begin streaming
+            → Sentiment starts scoring
+
+Rep DECLINES → Badge → "Disconnected"
+            → Call torn down (ACS HangUp on the answered connection)
+
+Hangup (either party) → EVERYTHING disconnects
+                       → Frontend audio capture stops
+                       → Badge → "Disconnected"
+```
+
+### Key Architectural Insight
+
+**Current state:** The backend answers the call and broadcasts `callStarted` IMMEDIATELY on `AnswerCall`. The frontend transitions to "Connecting" and starts showing transcript lines. The rep softphone rings because the backend does `AddParticipant` on `CallConnected`.
+
+**New state:** We need to GATE transcript display on the rep's accept. The call is already answered (we must answer it to start media streaming for ACS). The question is: when does the UI show transcription?
+
+**Solution:** Introduce a new SignalR event `repAccepted` that fires when the rep's `AddParticipantSucceeded` callback arrives (meaning the rep clicked Accept and ACS confirmed the join). The frontend gates transcript rendering on receiving `repAccepted`.
+
+### Task Breakdown
+
+#### Task 1 — Frontend: Badge states + transcript gating
+**Owner:** Lunamaria  
+**Description:** Add "Call Pending" (ringing) state to live-transcript.js; gate transcript rendering on a new `repAccepted` SignalR event; show "Disconnected" on decline/callEnded; stop/mute audio capture on callEnded.  
+**Files:** `src/CallCenterTranscription.Web/wwwroot/js/live-transcript.js`, `src/CallCenterTranscription.Web/Pages/Index.cshtml`  
+**Dependencies:** Needs the new `repAccepted` event from Task 3.
+
+#### Task 2 — Frontend: rep-phone decline→teardown
+**Owner:** Lunamaria  
+**Description:** On rep decline, ensure the softphone fires a signal that the backend can use to hang up the call entirely (today decline just rejects the AddParticipant invite — the customer is still connected to the answered call with nobody listening). Either: (a) decline triggers a REST call to the backend which hangs up, or (b) the backend monitors `AddParticipantFailed` and auto-hangs-up when no rep joins.  
+**Files:** `src/CallCenterTranscription.Web/wwwroot/js/rep-phone.js`  
+**Dependencies:** Coordinates with Task 4.
+
+#### Task 3 — Backend: `repAccepted` event broadcast
+**Owner:** Meyrin  
+**Description:** In `HandleCallbacksAsync`, on `AddParticipantSucceeded`, broadcast a new `repAccepted` SignalR event (on `PipelineContract.StreamNames`) with the callId. This is the gate for the frontend to begin showing transcript lines.  
+**Files:** `src/CallCenterTranscription.Api/AcsEndpoints.cs` (callbacks section), `src/CallCenterTranscription.Api/Hubs/PipelineContract.cs`  
+**Dependencies:** None (additive change to existing callback handler).
+
+#### Task 4 — Backend: rep-decline→call teardown
+**Owner:** Dyakka (telephony owner)  
+**Description:** When `AddParticipantFailed` fires (rep declined/timed out), the backend should `HangUp` the call via `CallAutomationClient` so the customer isn't left in silence. The media stream WebSocket will close naturally (ACS closes it on HangUp), which triggers existing teardown logic (CompleteStream, callStore.Clear, callEnded broadcast).  
+**Files:** `src/CallCenterTranscription.Api/AcsEndpoints.cs` (callbacks section)  
+**Dependencies:** Must NOT conflict with Task 3 changes to same file. **Sequence: Task 3 merges first, Task 4 rebases.**
+
+#### Task 5 — Frontend: `callStarted` → "Call Pending" (not "Connecting")  
+**Owner:** Lunamaria  
+**Description:** Change `onCallStarted` behavior: instead of showing "Call connected — starting transcription…", show "Call Pending — ringing rep" and suppress transcript rendering. Transition to "Connected" only on `repAccepted`.  
+**Files:** `src/CallCenterTranscription.Web/wwwroot/js/live-transcript.js`  
+**Dependencies:** Part of Task 1 (same file, same author — combine).
+
+#### Task 6 — Sentiment: no changes needed
+**Owner:** N/A  
+**Description:** Per architecture decision, sentiment continues scoring all Mixed-audio utterances. No code change required. Customer-only filtering is a Phase 2 spike (`ConversationTranscriber`).
+
+### Merge Order (to avoid conflicts on shared files)
+
+1. **Task 3** (Meyrin) — adds `repAccepted` event + PipelineContract constant. Small, additive.
+2. **Task 4** (Dyakka) — adds HangUp logic in same file (AcsEndpoints.cs callbacks). Rebases on Task 3.
+3. **Task 1+5** (Lunamaria) — frontend changes consume the new event. Independent of backend merge order but should wait until Tasks 3+4 are deployed so the event actually fires.
+4. **Task 2** (Lunamaria) — rep-phone decline behavior. Can merge alongside Task 1 (different file).
+
+---
+
+## D. RISK CALLOUTS
+
+| Risk | Impact | Mitigation |
+|------|--------|------------|
+| Gating transcript on `repAccepted` means if the event is lost/delayed, UI stays stuck at "Pending" | No transcript visible to rep | Add a timeout (e.g., 30s after callStarted with no repAccepted → fall back to showing transcript anyway) |
+| `HangUp` on `AddParticipantFailed` could fire if rep is SLOW to answer (timeout ≠ decline) | Customer call terminated prematurely | Set ACS AddParticipant invitation timeout to a generous value (60s); only HangUp on definitive failure codes |
+| Shared file (AcsEndpoints.cs) edited by Meyrin AND Dyakka | Merge conflicts | Strict ordering: Task 3 first, Task 4 rebases |
+| Mixed-audio sentiment scores rep words (accepted impurity) | Slightly noisy sentiment meter | Phase 2 spike; for POC demo, the signal is good enough |
+| If `AddParticipantSucceeded` never fires (edge case: rep added but ACS doesn't callback) | UI stuck at Pending | Same timeout fallback as row 1 |
+
+### Verification Protocol (full regression test)
+
+**Reproduce a live call end-to-end:**
+1. Customer dials +18774178275
+2. Backend answers → media stream connects → frontend shows **"Call Pending"** badge
+3. Rep softphone rings → rep clicks **Accept**
+4. Frontend transitions to **green "Connected"** badge
+5. Transcript lines begin appearing (both speakers, as today)
+6. Sentiment meter moves (scoring all utterances — acceptable for POC)
+7. Customer hangs up → media stream closes → frontend shows **"Disconnected"**
+8. Audio capture stops; softphone returns to idle state
+
+**Decline path:**
+1. Customer dials → rep softphone rings → rep clicks **Decline**
+2. Backend hangs up the call → media stream closes
+3. Frontend shows **"Disconnected"**
+4. Customer hears call disconnect tone
+
+---
+
+## Summary
+
+- **Sentiment:** Customer-only is the correct product decision. For this sprint, keep Mixed scoring (good enough). Phase 2 spike: `ConversationTranscriber` for clean separation.
+- **Architecture:** Mixed audio stays. No Unmixed regression risk. New `repAccepted` SignalR event gates the UI.
+- **Lifecycle:** Accept gates transcription visibility; Decline triggers full HangUp teardown; Hangup from either side disconnects everything.
+- **Owners:** Lunamaria (UI), Meyrin (repAccepted event), Dyakka (decline→HangUp), Lacus (no work this sprint).
+
+
+# Yzak — Rep Call Control: Test Scenarios & Verification Plan
+
+**Author:** Yzak (Tester / QA)
+**Date:** 2026-06-10T06:38:30-04:00
+**Requested by:** Jason (jasonfarrell-msft)
+**Status:** READY FOR IMPLEMENTER REVIEW
+
+---
+
+## 0. Scope & Quick Reference
+
+These scenarios gate the rep call-control feature: incoming call ring → accept/reject → live transcript → teardown. They are derived from Athrun's architecture decision (`.squad/decisions/inbox/athrun-rep-call-control.md`) and cross-checked against:
+
+- `ActiveCallStore` (API singleton — state machine seams)
+- `LiveSentimentStore` (API singleton — sentiment isolation between calls)
+- `rep-phone.js` (softphone bar state machine)
+- `live-transcript.js` (transcript badge / conn-status state machine)
+
+Legend:
+- 🤖 = Automatable as xUnit unit test (stub provided in `RepCallControlTests.cs`)
+- 🛠 = Integration test (needs running API + SignalR; wire with `WebApplicationFactory` + hub client)
+- 👁 = Manual verification (requires live ACS, real phone, real browser)
+- ⚠️ = **Implementation gap flagged** — production code required before this scenario can pass
+
+---
+
+## 1. Known Implementation Gap — "Call Pending" Badge State
+
+**Requirement:** When a customer call rings and the rep has NOT yet accepted, the transcript badge must read **"Call Pending"**.
+
+**Current state of `live-transcript.js`:** Badge state machine has four states: `disconnected`, `connecting`, `live`, `ended`. There is **no `pending` / "Call Pending" state**, and no SignalR event triggers one during the ring phase.
+
+**Current state of `rep-phone.js`:** Sets softphone bar to `ringing` and shows Accept/Decline buttons — but this JS module does NOT communicate its state to `live-transcript.js`.
+
+**Gap:** Either:
+1. The API must emit a new `stream.callIncoming` SignalR event when the ACS `IncomingCall` webhook fires (before the call is answered), OR
+2. `rep-phone.js` must fire a local `CustomEvent` or `postMessage` that `live-transcript.js` listens to.
+
+**Yzak directive:** Do NOT implement this feature in transcript until the approach is chosen. Implementer (likely Lacus or Athrun) should decide Option 1 vs 2 and add to `decisions.md` before I can write a passing automated test for it. Scenario TC-02 below is marked ⚠️ until then.
+
+---
+
+## 2. Badge State Machine — Full Path
+
+### TC-01 — Initial / Idle state 🤖🛠
+**Given:** Rep dashboard loads, no active call.
+**Then:**
+- Softphone bar: `idle` — Accept/Decline/Mute/Hangup all hidden.
+- `data-rep-status`: "Ready — waiting for a call".
+- Transcript badge (`[data-conn-status]`): class `conn-status--disconnected`.
+- `[data-conn-label]`: "Disconnected — waiting for call" or equivalent.
+- `[data-conn-summary]`: "Live mode • Waiting for call".
+
+### TC-02 — Ringing → "Call Pending" ⚠️👁
+**Given:** Customer dials +18774178275, ACS fires `IncomingCall` → backend webhook → `stream.callIncoming` SignalR event *(not yet implemented — see §1)*.
+**Then:**
+- Softphone bar: `ringing` — only Accept and Decline visible; Mute and Hangup hidden.
+- `data-rep-status`: "Incoming call — Accept to connect".
+- Transcript badge: **"Call Pending"** (`conn-status--pending` class, to be defined).
+- Transcript content area: empty; NO transcript lines, NO sentiment data.
+- `[data-conn-summary]`: "Live mode • Call pending".
+- No `LiveSentimentStore.Reset()` called yet — sentiment panel shows "Waiting for sentiment".
+
+**Manual check (current behavior, pre-fix):** Badge stays at "Disconnected" during ring — that is the bug. Confirm it changes to "Call Pending" after fix.
+
+### TC-03 — Accept → Connected / Green 🛠👁
+**Given:** TC-02 state (rep sees ringing). Rep clicks Accept.
+**When:** ACS SDK `incomingCall.accept()` resolves; ACS emits `CallConnected` → backend fires `stream.callStarted`.
+**Then:**
+- Softphone bar: `incall` — Mute and Hangup visible; Accept and Decline hidden.
+- `data-rep-status`: "On call with customer".
+- Transcript badge: `conn-status--connecting` initially ("Call connected — starting transcription…"), then `conn-status--live` ("● Live transcription") once first `stream.transcript` arrives.
+- `LiveSentimentStore.Reset(callId)` has been called (sentiment panel shows "Waiting for sentiment" until first scored utterance).
+- `ActiveCallStore.CallId` is set to the new call ID.
+- `ActiveCallStore.RepAdded` is true after `AddParticipant` completes.
+
+### TC-04 — Reject → Disconnected / Clean waiting state 🤖🛠👁
+**Given:** TC-02 state (rep sees ringing). Rep clicks Decline.
+**When:** ACS SDK `incomingCall.reject()` resolves.
+**Then:**
+- Softphone bar: `idle` — all buttons hidden.
+- `data-rep-status`: "Call declined — waiting for a call".
+- Transcript badge: **"Disconnected"** (conn-status--disconnected).
+- `[data-conn-summary]`: "Live mode • Waiting for call".
+- **Transcript content area: EMPTY** — no lines from the rejected call (regression: ghost line from interim must NOT persist).
+- `ActiveCallStore.CallId` is null.
+- `LiveSentimentStore.GetFeed().Events` is empty (no sentiment state leaked from this ring).
+- `currentIncoming = null` in rep-phone.js (memory clean).
+
+### TC-05 — Customer hangs up → Full teardown 🛠👁
+**Given:** TC-03 state (call in progress, transcript live).
+**When:** Customer hangs up → ACS fires `CallDisconnected` → backend sends `stream.callEnded`.
+**Then:**
+- `live-transcript.js` `onCallEnded()` fires: badge = `ended` ("Call ended"), 4-second timer starts, then transitions to `disconnected` ("Disconnected — waiting for call").
+- `clearTranscript()` called: `ghostLine = null`, `lineByUtterance` and `translationByUtterance` cleared.
+- Softphone bar: ACS SDK fires `call.stateChanged` → `Disconnected` → `idle` ("Ready — waiting for a call").
+- `ActiveCallStore.Clear()` called: `CallId = null`, all claim states reset.
+- `LiveSentimentStore.Clear()` called: sentiment panel reverts to "Waiting for sentiment." state.
+- **No further `stream.transcript` or `stream.sentiment` events processed** (late Speech SDK utterances silently dropped by `LiveSentimentStore._active` guard).
+
+### TC-06 — Rep hangs up → Full teardown 🛠👁
+**Given:** TC-03 state (call in progress). Rep clicks Hangup.
+**When:** `currentCall.hangUp()` resolves → ACS fires `Disconnected` on the call → backend sends `stream.callEnded`.
+**Then:** Same assertions as TC-05. Confirm teardown is symmetric regardless of which party ends.
+
+### TC-07 — Disconnect during "ended" timer (rapid succession) 🤖
+**Given:** TC-05 state, 4-second `endedTimer` running.
+**When:** A new `stream.callStarted` arrives before the 4-second timer fires.
+**Then:** `endedTimer` is cleared (`clearTimeout`) in `onCallStarted()`; badge goes to `connecting` (not back to `disconnected` first); no visual flicker of the "disconnected" state.
+
+---
+
+## 3. Reject Path — No Transcript Leak 🤖
+
+### TC-08 — No sentiment from rejected call 🤖
+**Given:** `LiveSentimentStore` in clean state.
+**When:** `Reset()` is NOT called (reject path never starts transcription), then `Clear()` is called defensively.
+**Then:** `GetFeed()` returns empty events; `CallId` is null/empty.
+
+*(Note: `Reset()` should only be called when media stream begins after Accept, not on ring. If the backend calls `Reset()` on ring, this is a bug — verify with Lacus.)*
+
+### TC-09 — No ghost line in transcript after reject 👁 (manual)
+**Given:** Rep sees ringing call. Some interim transcript text would be visible if transcription started wrongly.
+**Then:** After clicking Decline, transcript area contains zero `<div class="transcript-line">` elements. The "empty state" placeholder is present.
+
+### TC-10 — ActiveCallStore clean after reject 🤖
+**Given:** `TryBeginIncomingClaim()` succeeds (simulates backend answering the ACS invite to get IncomingCall webhook).
+**When:** Backend decides to not proceed (or rep rejects and ACS fires disconnect). `CancelIncomingClaim()` is called.
+**Then:** A subsequent `TryBeginIncomingClaim()` succeeds (claim correctly released). `CallId` is still null.
+
+---
+
+## 4. Accept Path — Transcription & Customer-Only Sentiment
+
+### TC-11 — Sentiment receives only customer utterances 🤖🛠
+**Requirement:** Only CUSTOMER voice feeds the sentiment service. Rep voice must NOT be scored.
+
+**Given:** Call accepted; `LiveSentimentStore.Reset(callId)` called.
+**When:** Utterances arrive with `speaker = "customer"` and `speaker = "rep"` fields (or diarization equivalent in the SpeechTranscriptionService output).
+**Then:**
+- Only utterances with customer speaker tag are passed to `LiveSentimentStore.Append()`.
+- Rep utterances produce no `SentimentEvent`.
+- `GetFeed().Events` count equals the number of customer-only scored utterances.
+
+*(Note: The diarization/speaker-tagging contract between `SpeechTranscriptionService` and `LiveSentimentStore.Append()` should be confirmed by Lacus. If speaker-tag filtering happens upstream in SpeechTranscriptionService, add a unit test there. If it happens at the call site, add a test at that layer.)*
+
+### TC-12 — Sentiment state starts clean on every Accept 🤖
+**Given:** `LiveSentimentStore` has residual state from a previous call.
+**When:** `Reset(newCallId)` is called at the start of the next accepted call.
+**Then:**
+- `GetFeed().Events` is empty immediately after `Reset()`.
+- `GetFeed().CallId` is empty/null before any utterances arrive.
+- Any `Append()` with the OLD call ID is rejected.
+
+### TC-13 — Transcript lines only appear after Accept, not during ring 👁 (manual)
+**Given:** Rep hears ring. No Accept yet.
+**Then:** `#live-transcript` contains no `.transcript-line` elements. Ghost line is null.
+**When:** Rep clicks Accept → transcript starts populating within seconds.
+
+---
+
+## 5. Teardown — State Fully Cleared, No Cross-Call Leakage
+
+### TC-14 — Late Speech SDK utterances dropped after call ends 🤖
+*(This is the "regression we've hit before" — already tested in `LiveSentimentTests` but now called out explicitly in the control flow context.)*
+
+**Given:** Call ends → `LiveSentimentStore.Clear()` called.
+**When:** A late `Append(oldCallId, "this is terrible")` arrives (Speech SDK flush).
+**Then:** Return value is `null`. `GetFeed().Events` remains empty. `GetFeed().CallId` is empty. **The next call's sentiment meter is not poisoned.**
+
+### TC-15 — ActiveCallStore fully reset between calls 🤖
+**Given:** A call completes normally (`SetCallId` → `MarkRepAdded` → `Clear()`).
+**When:** `Clear()` is called.
+**Then:**
+- `CallId` is null.
+- `RepAdded` is false.
+- `TryBeginIncomingClaim()` returns true (claim released).
+- `TryBeginMediaClaim()` returns true (media claim released).
+- `TryBeginAddRep()` returns true (rep-add claim released).
+
+### TC-16 — MediaClaim released on teardown 🤖
+**Given:** `TryBeginMediaClaim()` returns true (media stream acquired).
+**When:** `EndMediaClaim()` called, then `Clear()` called.
+**Then:** A subsequent `TryBeginMediaClaim()` after `Clear()` returns true. No stuck claim.
+
+### TC-17 — No transcript events routed after Clear (SignalR group isolation) 🛠
+**Given:** Active call transcription flowing on SignalR group `"call:{callId}"`.
+**When:** `stream.callEnded` fires → `onCallEnded()` in `live-transcript.js`.
+**Then:**
+- `currentCallId = null` in live-transcript.js.
+- Any subsequent `stream.transcript` events arrive with the old `callId` in the payload, which `onCallEnded()` already guarded against. **The transcript DOM receives no new lines after `onCallEnded()` fires.** (Verify: the `evt.callId !== currentCallId` guard in `onCallEnded` only protects mismatched call IDs, not subsequent events on the same call. The race is: late transcript after `onCallEnded` fires but before the hub connection processes the ended state. Consider an `isCallActive` flag in the frontend.)
+
+---
+
+## 6. Edge Cases
+
+### TC-18 — Double incoming call (second auto-rejected) 🤖👁
+**Given:** `currentCall` or `currentIncoming` is truthy (rep already in a call or ringing).
+**When:** A second `incomingCall` event fires in the ACS SDK.
+**Then:** `incoming.reject()` is called immediately. Softphone bar state does NOT change. The second call's callId does NOT enter `ActiveCallStore`. `LiveSentimentStore` is NOT reset.
+
+**Backend guard:** `TryBeginIncomingClaim()` returns false if a claim is already in progress — second IncomingCall webhook should be rejected at API level too.
+
+### TC-19 — Accept after caller already hung up 👁 (manual + 🛠 integration)
+**Given:** Rep sees ringing. Customer hangs up BEFORE rep clicks Accept.
+**When:** Rep clicks Accept → ACS SDK `incomingCall.accept()` throws or rejects.
+**Then:**
+- `rep-phone.js` `catch` block fires: `setStatus("Could not connect the call.")`, `applyState("idle")`, `currentIncoming = null`.
+- Softphone bar returns to `idle`. No mute/hangup buttons stuck visible.
+- Transcript badge: `disconnected` (no `stream.callStarted` was ever emitted).
+- `LiveSentimentStore` never received `Reset()` — sentiment panel stays at "Waiting for sentiment."
+- `ActiveCallStore.CallId` is null.
+
+### TC-20 — Reject then immediate new call 🛠👁
+**Given:** Rep declines a call (TC-04 complete).
+**When:** A new customer call arrives within 2 seconds (before any cleanup timer).
+**Then:**
+- Softphone transitions correctly from `idle` back to `ringing`.
+- `currentIncoming` is set to the new incoming (not the rejected one).
+- Transcript badge shows the new "Call Pending" state (TC-02).
+- `ActiveCallStore.TryBeginIncomingClaim()` returns true for the new call.
+- No state from the first call bleeds into the second.
+
+### TC-21 — Rep browser refresh mid-ring 👁 (manual)
+**Given:** Rep sees ringing (Accept/Decline visible). Rep refreshes the browser tab.
+**When:** Page reloads → `rep-phone.js` `init()` runs → `fetchToken()` reuses persisted `rep.acs.userId` from `localStorage` → `CallAgent` is re-created → `/rep/register` heartbeat fires.
+**Then:**
+- Softphone bar initialises to `idle` ("Ready — waiting for a call"). The ringing state is NOT replayed (the ACS call has already been abandoned or answered by this point).
+- If the call is still ringing after refresh, the new `incomingCall` event fires again and transitions to `ringing`.
+- Transcript badge: `disconnected` (no call yet from the browser's perspective).
+- **No zombie audio streams** from the pre-refresh `CallAgent` instance (the old `CallAgent` was garbage collected; browser microphone was released).
+
+### TC-22 — Rep refresh mid-call (audio continuity) 👁 (manual)
+**Given:** Call in progress (TC-03 state). Rep refreshes the browser.
+**When:** Page reloads → `init()` → `startHeartbeat()` → `/rep/register` POST → backend re-adds rep participant via `AddParticipant` (idempotency guard: `TryBeginAddRep()` → already Added, no duplicate add).
+**Then:**
+- Rep rejoins the audio call (ACS SDK handles re-add).
+- `live-transcript.js` reconnects SignalR with `withAutomaticReconnect()`, calls `resync()`, fetches `/api/calls/active`, and resubscribes to the existing call group.
+- Transcript replays from the in-memory buffer (via `current-state` API).
+- Sentiment panel resumes from the last `GetFeed()` state.
+
+---
+
+## 7. Live Demo Verification Checklist (Manual, Complete Flow)
+
+Run this before every live demo with a real phone calling +18774178275.
+
+### Pre-flight (< 5 min before demo)
+- [ ] `AudioSource__Mode=Acs` confirmed in Container App env vars
+- [ ] `/api/mission-control/health` shows `acs-media-routes: healthy + isLive`, `azure-ai-speech: healthy + isLive`
+- [ ] Rep dashboard open in Chrome, softphone shows "Ready — waiting for a call" (idle)
+- [ ] Transcript badge: `conn-status--disconnected` / "Disconnected — waiting for call"
+- [ ] Sentiment panel: "Waiting for sentiment" (empty state)
+
+### Ring phase (0:00)
+- [ ] Call placed to +18774178275 from a mobile
+- [ ] Within 3 seconds: rep bar shows Accept + Decline buttons, status = "Incoming call — Accept to connect"
+- [ ] **Transcript badge = "Call Pending"** ⚠️ (requires §1 gap fix)
+- [ ] Transcript content area: empty — NO lines visible
+- [ ] Sentiment panel: still "Waiting for sentiment"
+
+### Accept (0:15)
+- [ ] Rep clicks Accept
+- [ ] Softphone status: "Connecting…" then "On call with customer"
+- [ ] Softphone bar: Mute + Hangup visible; Accept/Decline hidden
+- [ ] Transcript badge transitions: `connecting` → within 2-3 seconds: `conn-status--live` (green "● Live transcription")
+- [ ] Rep can HEAR the customer (ACS audio confirmed)
+
+### Live transcription (0:30–1:30)
+- [ ] Customer speaks → transcript lines appear (customer role labeled)
+- [ ] Rep speaks → transcript lines appear (rep role labeled)
+- [ ] Sentiment meter moves with customer utterances only — rep speech does NOT affect meter
+- [ ] Churn risk, knowledge cards, NBA panels populate as utterances accumulate
+- [ ] Translation badge appears on Spanish utterances (if applicable to demo script)
+
+### Customer hangup (1:45)
+- [ ] Customer ends call
+- [ ] Transcript badge → `ended` ("Call ended") for ~4 seconds
+- [ ] Transcript badge → `disconnected` ("Disconnected — waiting for call")
+- [ ] Softphone bar → `idle` ("Ready — waiting for a call"); Mute/Hangup hidden
+- [ ] Sentiment panel still shows final score (does NOT clear immediately — this is intentional for review)
+- [ ] Transcript content still shows the call lines (for rep review)
+- [ ] **No new transcript lines appear after hangup** (late utterance guard working)
+
+### Rep-initiated hangup variant
+- [ ] During an active call, rep clicks Hangup
+- [ ] Same teardown sequence as above
+
+### Post-teardown regression check
+- [ ] Make a second test call immediately after
+- [ ] Transcript area clears on new `stream.callStarted`
+- [ ] Sentiment meter resets to "Waiting for sentiment"
+- [ ] No lines from previous call visible
+
+---
+
+## 8. xUnit Test Stubs (Automatable)
+
+These stubs are placed in `tests/CallCenterTranscription.Tests/RepCallControlTests.cs`. They compile and are marked `[Fact(Skip = ...)]` for scenarios that require a not-yet-implemented feature (§1 gap). Scenarios that test existing production code are marked `[Fact]` and should pass.
+
+See companion file: `tests/CallCenterTranscription.Tests/RepCallControlTests.cs`
+
+---
+
+## 9. Open Questions for Implementers
+
+| # | Question | Owner |
+|---|----------|-------|
+| Q1 | **"Call Pending" badge:** Option 1 (`stream.callIncoming` SignalR event from API) vs Option 2 (local `CustomEvent` between rep-phone.js and live-transcript.js)? | Athrun / Lacus |
+| Q2 | **Customer-only sentiment:** Is speaker filtering done in `SpeechTranscriptionService` before calling `LiveSentimentStore.Append()`, or does the call site pass a speaker tag? Clarify the seam so I can write a unit test at the right layer. | Lacus |
+| Q3 | **`Reset()` timing:** Should `LiveSentimentStore.Reset()` be called when the ring starts or when the media stream begins (after Accept)? Current code implies on stream begin — confirm this is intentional so reject path never calls Reset(). | Lacus |
+| Q4 | **Late transcript post-hangup (TC-17 race):** Frontend has `currentCallId = null` check in `onCallEnded()`, but events arriving on the still-open SignalR connection AFTER `currentCallId` is nulled will render in DOM. Is a frontend `isCallActive` flag needed, or does the backend guarantee no events after `stream.callEnded`? | Lacus / Athrun |
+
+---
+
+*Yzak sign-off: These scenarios cover the full ring→accept→live→teardown loop plus the five edge cases requested. The "Call Pending" badge gap is the single blocking implementation item before the demo flow is complete end-to-end.*

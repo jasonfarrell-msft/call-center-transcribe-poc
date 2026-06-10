@@ -157,3 +157,20 @@ Next: Coordinate with Lacus on Event Grid + audio consumer design.
 - `.squad/decisions/inbox/` cleared
 
 **All .squad/ files committed to git** (staged via surgical `git add` per policy).
+
+## 2026-06-10 — Rep Call-Control: `repAccepted` Event (Task 3)
+
+**Athrun + Yzak decision:** Rep call-control feature incoming. **Meyrin owns Task 3** (Dyakka owns Task 4 on same file — rebases after Meyrin).
+
+**Task 3 — Backend: `repAccepted` event broadcast**
+- **Owner:** Meyrin
+- **Description:** In `HandleCallbacksAsync`, on `AddParticipantSucceeded`, broadcast a new `repAccepted` SignalR event (on `PipelineContract.StreamNames` group) with the callId. This is the gate for the frontend to begin showing transcript lines.
+- **Files:** `src/CallCenterTranscription.Api/AcsEndpoints.cs` (callbacks section), `src/CallCenterTranscription.Api/Hubs/PipelineContract.cs`
+- **Dependencies:** None (additive change to existing callback handler).
+- **Build validation:** `dotnet build` → 0 errors
+
+**Merge order:** Task 3 (Meyrin) **first** (small, additive) → Task 4 (Dyakka rebases on same file).
+
+**Frontend dependency:** Lunamaria (Task 1+5) waits for this event to exist before gating transcript rendering on receipt.
+
+**Key insight:** This is the mechanism that differentiates "Call Pending" (ringing, rep hasn't accepted yet) from "Connected" (rep accepted, transcript visible).

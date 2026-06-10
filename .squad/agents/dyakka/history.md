@@ -164,3 +164,20 @@ Jason asked: "Can we use US numbers? Deploy to East US or East US 2?"
 All code committed. All decisions documented in `.squad/decisions.md`. Awaiting operator action (ACS resource delete + reprovision).
 
 Dyakka is ready for next round coordination with Lacus + Meyrin on audio→Speech consumer service and Event Grid wiring.
+
+## 2026-06-10 — Rep Call-Control: Decline→HangUp Teardown (Task 4)
+
+**Athrun + Yzak decision:** Rep call-control feature incoming. **Dyakka owns Task 4** (Meyrin owns Task 3 on same file — Dyakka rebases after Meyrin).
+
+**Task 4 — Backend: rep-decline→call teardown**
+- **Owner:** Dyakka (telephony owner)
+- **Description:** When `AddParticipantFailed` fires (rep declined/timed out), the backend should `HangUp` the call via `CallAutomationClient` so the customer isn't left in silence. The media stream WebSocket will close naturally (ACS closes it on HangUp), which triggers existing teardown logic (CompleteStream, callStore.Clear, callEnded broadcast).
+- **Files:** `src/CallCenterTranscription.Api/AcsEndpoints.cs` (callbacks section)
+- **Dependencies:** Must NOT conflict with Task 3 changes to same file. **Sequence: Task 3 merges first, Task 4 rebases.**
+- **Build validation:** `dotnet build` → 0 errors
+
+**Risk mitigation:** Set ACS AddParticipant invitation timeout to a generous value (60s) so slow-to-answer reps aren't treated as declines (defin only real failures on definitive failure codes, not timeouts).
+
+**Key insight:** Closing the customer's call on rep decline prevents ghost calls where the customer is connected but nobody is listening.
+
+**Related:** Task 2 (Lunamaria) ensures the softphone fires a signal that triggers this backend teardown (or the backend auto-detects `AddParticipantFailed`).

@@ -68,3 +68,19 @@
 - **2026-06-07T00:18:14Z — Frontend mission-control planning pass:** Helped shape the rep-facing surface for transcript diarization, ad hoc translation, sentiment, and mission-control health.
 - **2026-06-07T01:06:00Z — First-pass rep console implementation:** Replaced scaffold homepage with a semantic call-center console in `Pages/Index.cshtml` + `Index.cshtml.cs`, wired `PipelineApiClient` to session/transcript/translation/sentiment/mission-control endpoints, used query-driven per-utterance translation reveal, and added web-facing tests in `tests/CallCenterTranscription.Tests/WebConsoleTests.cs`.
 - **2026-06-07T06:29:29.980-04:00 — Frontend deploy pipeline:** Added `.github/workflows/deploy-frontend.yml` to publish `src/CallCenterTranscription.Web` on .NET 9 and deploy only the App Service web frontend. The final workflow uses GitHub OIDC federation with `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, and `AZURE_SUBSCRIPTION_ID` secrets plus non-secret GitHub variables for the resource group and Web App name.
+
+## 2026-06-10 — Rep Call-Control Lifecycle (Upcoming)
+
+**Athrun + Yzak decision:** Rep call-control feature incoming. Lunamaria owns **Tasks 1+5+2**:
+- Task 1+5: Badge states (`disconnected` → `connecting` → `live` → `ended` → `disconnected`) + transcript gating on new `repAccepted` SignalR event + `callStarted` → "Call Pending" (not "Connecting")
+- Task 2: Rep-phone decline→teardown coordination
+
+**New SignalR event:** `repAccepted` (fired when `AddParticipantSucceeded` callback arrives) gates transcript rendering. Frontend gates on receiving this event; displays "Call Pending" badge during ring (approach TBD: Q1).
+
+**Files to touch:** `src/CallCenterTranscription.Web/wwwroot/js/live-transcript.js`, `src/CallCenterTranscription.Web/wwwroot/js/rep-phone.js`, `src/CallCenterTranscription.Web/Pages/Index.cshtml`
+
+**Dependencies:** Tasks 3 (Meyrin) + 4 (Dyakka) must merge first (AcsEndpoints.cs additions).
+
+**Key decision:** Sentiment scores ALL Mixed utterances (customer words dominate; rep filler scores neutral); customer-only diarization is Phase 2 spike with `ConversationTranscriber`.
+
+**Merge order constraint:** Tasks 1+2 wait for Tasks 3+4 to ensure `repAccepted` event exists in deployed code.
