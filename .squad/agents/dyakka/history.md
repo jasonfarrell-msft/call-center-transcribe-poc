@@ -181,3 +181,60 @@ Dyakka is ready for next round coordination with Lacus + Meyrin on audio→Speec
 **Key insight:** Closing the customer's call on rep decline prevents ghost calls where the customer is connected but nobody is listening.
 
 **Related:** Task 2 (Lunamaria) ensures the softphone fires a signal that triggers this backend teardown (or the backend auto-detects `AddParticipantFailed`).
+
+---
+
+## Learnings — 2026-06-10T06:38:30-04:00 — Rep Call-Control Full Lifecycle
+
+### What was built
+
+Implemented the full Accept/Reject/Hangup lifecycle for rep call-control (Tasks 1–5 of Jason's request):
+
+**Contract additions (PipelineContract.cs):**
+- `CallPending = "stream.callPending"` — fires at answer time; rep has NOT accepted
+- `CallAccepted = "stream.callAccepted"` — fires on AddParticipantSucceeded; rep clicked Accept
+- `CallStarted` kept as a constant but no longer emitted (backward-compat stub)
+
+**ActiveCallStore additions:**
+- `_repAccepted` int field (Interlocked pattern, consistent with existing code)
+- `RepAccepted` bool property — read by Lacus to gate sentiment
+- `MarkAccepted()` — called ONLY from AddParticipantSucceeded handler (Dyakka writes; Lacus reads)
+- Reset added to both `Clear()` and `CompleteIncomingClaim()` — ensures clean state per call
+
+**AcsEndpoints.cs changes:**
+- Answer-time broadcast changed from `CallStarted` to `CallPending`
+- `AddParticipantSucceeded`: added `MarkAccepted()` + `CallAccepted` broadcast
+- `AddParticipantFailed`: added `HangUpAsync(forEveryone:true)` after `ResetAddRep()` — this is the reject=full-teardown path. The media-stream WebSocket closes on HangUp, which fires the existing `finally` teardown (CompleteStream → Clear → liveSentiment.Clear → CallEnded broadcast).
+
+**RepEndpoints.cs + Web proxy:**
+- New `POST /api/rep/hangup` endpoint calls `HangUpAsync(forEveryone:true)` for rep-initiated teardown
+- New `POST /rep/hangup` proxy in Web/Program.cs injects X-Rep-Key header (same pattern as /register)
+
+**rep-phone.js hangup:**
+- `hangupBtn` handler now calls `currentCall.hangUp()` (stops local audio) AND `POST /rep/hangup` (kills the full call on the backend). Previously only the rep's leg was severed; customer stayed connected to a ghost call.
+
+### Key technical insights
+
+1. **Why AddParticipantFailed → HangUp is the right call:** ACS doesn't auto-hang up the answered call when the rep declines. The PSTN customer stays on hold indefinitely. HangUp(forEveryone:true) is the only clean exit.
+
+2. **Finally-block teardown fires for ALL paths:** Whether the customer hangs up, the rep hangs up (via new endpoint), or the rep declines (via HangUpAsync), the media-stream WebSocket closes. The `finally` block in `HandleMediaStreamAsync` is the single source of truth for teardown — no duplication needed.
+
+3. **rep.hangUp() alone is insufficient:** The ACS Calling SDK `call.hangUp()` only terminates the participant's leg (VoIP side). The backend Call Automation connection remains open. For a full teardown, the backend must also call `HangUpAsync(forEveryone:true)`.
+
+4. **RepAccepted as a thin seam for Lacus:** Keeping the flag in ActiveCallStore (not a new service) preserves the existing singleton pattern. Lacus can gate sentiment `Append()` calls on `callStore.RepAccepted` without any additional DI plumbing.
+
+5. **CallPending replaces CallStarted in practice:** The constant is kept for backward compat but the broadcast was replaced. Lunamaria's UI should migrate from `callStarted` to `callPending`/`callAccepted`/`callEnded`.
+
+### Build result
+
+`dotnet build CallCenterTranscription.sln -c Release` → **succeeded, 0 errors, 0 warnings**
+
+### Files touched
+
+- `src/CallCenterTranscription.Shared/Events/PipelineContract.cs`
+- `src/CallCenterTranscription.Api/Services/ActiveCallStore.cs`
+- `src/CallCenterTranscription.Api/AcsEndpoints.cs`
+- `src/CallCenterTranscription.Api/RepEndpoints.cs`
+- `src/CallCenterTranscription.Web/Program.cs`
+- `src/CallCenterTranscription.Web/wwwroot/js/rep-phone.js`
+- `.squad/decisions/inbox/dyakka-call-lifecycle.md` (new)

@@ -92,3 +92,40 @@
 - `.squad/decisions/inbox/` cleared
 
 **All .squad/ files committed to git** (staged via surgical `git add` per policy).
+
+## Learnings
+
+### 2026-06-10 — Sentiment Stream Analysis (Mixed vs Customer-Only)
+
+- **Industry standard confirmed:** In production CCaaS (Genesys, NICE, Amazon Connect Contact Lens, Verint) rep and customer sentiment are *always* scored separately. Customer score → CX/churn. Agent score → coaching/QA. No platform collapses them into one metric.
+- **Lexicons are most vulnerable to speaker pollution.** "Sorry," "frustrated," "terrible" all score negative regardless of speaker role context. A rep apology ("I'm so sorry to hear that") will drive the meter down in a pure lexicon — this is the exact moment the customer is being well-served.
+- **The EMA (α=0.4) provides some buffer** against single rep utterances dominating, but it does not fix the structural problem. A rep who speaks with emotional language across multiple turns will persistently bias the rolling score.
+- **ConversationTranscriber is the correct upgrade path**, not Unmixed audio (which failed in R1 and is out of scope). ConversationTranscriber operates on Mixed audio with diarization enabled — no topology risk, just a recognizer class swap.
+- **For a retention/churn POC specifically:** the sentiment meter's *only* purpose is the customer's emotional trajectory. Any rep voice in the input degrades the signal's interpretability and trustworthiness for downstream NBA/churn agents. Do not let it ship permanently without the customer-only filter.
+- **Practical POC reality:** Customer speaks ~70% of the words in a 2-party retention call. Rep scripted phrases mostly score neutral. For a live demo, the mixed signal is "directionally correct." Label it explicitly as a known compromise, not a design choice.
+
+## Learnings
+
+### 2026-06-10 — ConversationTranscriber swap: API surface, heuristic, and accept-gate
+
+- **ConversationTranscriber is a drop-in recognizer swap on Mixed audio.** Same `SpeechConfig`, same `AutoDetectSourceLanguageConfig`, same `AudioStreamFormat.GetWaveFormatPCM(16000,16,1)` push stream. Only the class name, start/stop method names (`StartTranscribingAsync`/`StopTranscribingAsync`), and event names (`Transcribing`/`Transcribed`) change. Namespace: `Microsoft.CognitiveServices.Speech.Transcription`. `ConversationTranscriptionResult` inherits `SpeechRecognitionResult` so `AutoDetectSourceLanguageResult.FromResult(result)` continues to work with no signature change.
+
+- **First-speaker-is-customer heuristic works for ACS Option A topology.** Because the customer is on the stream before the rep is added via `AddParticipant`, the first non-"Unknown" SpeakerId in a `Transcribed` event is always the customer. This is a closure variable (`customerSpeakerId`) per call session — latched on first observation, never changed. The heuristic is deterministic, explainable, and requires zero extra infrastructure. Document it explicitly; it is a POC shortcut (production should use ACS participant role mapping).
+
+- **"Unknown" SpeakerIds must never be scored.** ConversationTranscriber emits `"Unknown"` for audio frames where diarization is uncertain (overlap, silence, background noise). Scoring those utterances would pollute the customer signal unpredictably. Always gate on `IsSpeakerKnown(speakerId)` before sentiment.
+
+- **Accept-gate placement: inside event handler, not in ResolveGroup.** `RepAccepted` is a volatile bool that changes mid-call. Checking it at the top of each `Transcribing`/`Transcribed` handler is the correct place — the transcriber must warm up and latch the customer SpeakerId even before accept, so gating the entire recognizer start is wrong. Only the SignalR *emission* is gated.
+
+- **Transcript events cover both speakers; sentiment is customer-only at the call site.** The correct design is to emit `stream.transcript` for all attributions (so the UI shows the full conversation with speaker labels), and call `_liveSentiment.Append(...)` only in the `isCustomer == true` branch. Do not change `LiveSentimentStore` — the customer filter belongs in the orchestration layer.
+
+- **`TranscriptEvent` already has `SpeakerId`, `SpeakerDisplayLabel`, `SpeakerRole`, `SpeakerLabelSource` fields.** No shared schema change was needed. `SpeakerLabelSource = "conversation-transcriber-diarization"` replaces the previous `"acs-unmixed-customer"` placeholder.
+
+## 2026-06-10 — Rep Call-Control: ConversationTranscriber + Customer-Only Sentiment (Commit 17a18c0)
+
+**Shipped in parallel with Dyakka/Lunamaria/Athrun/Yzak.**
+
+- **ConversationTranscriber swap complete:** Swapped SpeechRecognizer → ConversationTranscriber on Mixed stream. R1 topology (16kHz mono push) preserved. No regressions (build 0 errors).
+- **Customer-only sentiment gated by RepAccepted:** First non-Unknown speaker latched as customer. All sentiment scoring filtered to customer utterances only via `IsCustomerSpeaker()` gate in event handlers.
+- **Accept-gate placed in event handler:** `RepAccepted` bool check at top of `Transcribing`/`Transcribed` handlers. Transcriber warms up and latches customer SpeakerId pre-accept; only emission is gated.
+- **Decision documented:** `lacus-conversationtranscriber-impl.md` + `lacus-sentiment-stream-analysis.md` (merged to decisions.md).
+- **Test result:** 51 pass, 3 skip, 0 fail. No regression.
