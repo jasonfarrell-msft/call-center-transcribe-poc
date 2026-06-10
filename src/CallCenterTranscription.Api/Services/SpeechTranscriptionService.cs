@@ -186,19 +186,37 @@ public sealed class SpeechTranscriptionService : BackgroundService
     /// <summary>
     /// Wires all ConversationTranscriber events for one call session.
     ///
-    /// Customer-attribution heuristic (decision: lacus-conversationtranscriber-impl):
-    ///   In the ACS Mixed topology the customer (PSTN) dials in and is present on the stream
-    ///   BEFORE the rep is added via AddParticipant. ConversationTranscriber assigns SpeakerIds
-    ///   such as "Guest-1", "Guest-2", "Unknown". The first clearly-attributed (non-"Unknown",
-    ///   non-empty) SpeakerId that appears in a Transcribed event is latched as the customer for
-    ///   the duration of the call. Any later speaker is treated as the rep. Utterances with no
-    ///   clear attribution ("Unknown" / empty) are transcribed but NEVER scored — ambiguous audio
-    ///   must not pollute the customer sentiment signal.
+    /// Speaker-attribution — two-slot phase-aware heuristic (decision: lacus-speaker-label-fix):
+    ///
+    ///   ConversationTranscriber assigns opaque SpeakerIds ("Guest-1", "Guest-2", "Unknown") by
+    ///   diarization cluster, NOT chronological order. The old single-slot "first speaker =
+    ///   customer" heuristic was correct in theory (customer is on the stream before the rep
+    ///   joins) but WRONG in practice: when the customer is silent on hold and the rep says
+    ///   the first complete utterance after accepting, the rep's greeting fires the first
+    ///   Transcribed event and was incorrectly latched as Customer.
+    ///
+    ///   Fix: two closure slots (customerSpeakerId / repSpeakerId) with RepAccepted as the
+    ///   authoritative phase boundary:
+    ///
+    ///   Phase 1 — PRE-ACCEPT (rep physically absent from the audio stream):
+    ///     Any non-Unknown SpeakerId in a Transcribed event is DEFINITIVELY the customer.
+    ///     Latch as customerSpeakerId. This path is still correct and unchanged.
+    ///
+    ///   Phase 2 — POST-ACCEPT (both speakers present):
+    ///     Case A — customerSpeakerId already latched in Phase 1:
+    ///       First new distinct SpeakerId = rep. Latch as repSpeakerId.
+    ///     Case B — NEITHER latched yet (customer was silent until rep said hello):
+    ///       First speaker seen post-accept = REP (rep greeting is the typical first utterance).
+    ///       Latch as repSpeakerId. Second distinct speaker = CUSTOMER; latch as customerSpeakerId.
+    ///
+    ///   isCustomer is determined by matching the latched customerSpeakerId exactly.
+    ///   Rep audio is transcribed but never scored for sentiment.
+    ///   "Unknown" / empty SpeakerIds are never latched and never scored.
     ///
     /// Accept-gate:
     ///   Neither transcript nor sentiment events are emitted until RepAccepted is true. The
-    ///   transcriber may warm up and latch the customer speaker ID before accept, but all
-    ///   SignalR sends are suppressed — the rep console shows "Call Pending" until that point.
+    ///   transcriber warms up and may latch speaker IDs before accept, but all SignalR sends
+    ///   are suppressed — the rep console shows "Call Pending" until that point.
     /// </summary>
     private void WireTranscriberHandlers(
         ConversationTranscriber transcriber,
@@ -212,9 +230,8 @@ public sealed class SpeechTranscriptionService : BackgroundService
     {
         var firstPartialLogged = false;
 
-        // Latched on the first clearly-attributed Transcribed result for this call.
-        // null = no speaker seen yet; set once, never changed for the call lifetime.
-        string? customerSpeakerId = null;
+        // Per-call speaker attribution state machine. See SpeakerAttributionState for full decision record.
+        var attribution = new SpeakerAttributionState();
 
         transcriber.Transcribing += (_, e) =>
         {
@@ -244,7 +261,7 @@ public sealed class SpeechTranscriptionService : BackgroundService
             var seq = nextSequence();
             var detectedLanguage = ResolveDetectedLanguage(e.Result, fallbackLanguage);
             var speakerId = e.Result.SpeakerId ?? string.Empty;
-            var isCustomer = IsCustomerSpeaker(speakerId, customerSpeakerId);
+            var isCustomer = attribution.IsCustomer(speakerId);
             var evt = BuildTranscriptEvent(callId, seq, e.Result.ResultId, e.Result.Text,
                                            isFinal: false, detectedLanguage, speakerId, isCustomer);
             _ = _hub.Clients.Group(group)
@@ -269,21 +286,20 @@ public sealed class SpeechTranscriptionService : BackgroundService
             }
 
             var speakerId = e.Result.SpeakerId ?? string.Empty;
-            var speakerKnown = IsSpeakerKnown(speakerId);
 
-            // Latch the first clearly-attributed speaker as the customer for this call.
-            // The customer is on the stream before the rep joins (ACS AddParticipant topology),
-            // so the first real SpeakerId is always the customer.
-            if (customerSpeakerId is null && speakerKnown)
+            // Advance the phase-aware attribution state machine. Logs the transition when a
+            // slot is newly latched; returns null when nothing changed (already resolved /
+            // same-speaker repeat / Unknown speaker — no log spam).
+            var transition = attribution.Observe(speakerId, _callStore.RepAccepted);
+            if (transition is not null)
             {
-                customerSpeakerId = speakerId;
                 _logger.LogInformation(
-                    "SpeechTranscriptionService: customer speaker latched as SpeakerId={SpeakerId} for call {CallId}.",
-                    customerSpeakerId,
+                    "SpeechTranscriptionService: speaker attribution — {Transition} for call {CallId}.",
+                    transition,
                     _callStore.CallId ?? "(unknown)");
             }
 
-            var isCustomer = IsCustomerSpeaker(speakerId, customerSpeakerId);
+            var isCustomer = attribution.IsCustomer(speakerId);
 
             // Suppress emission until the rep has accepted the call.
             if (!_callStore.RepAccepted)
@@ -362,17 +378,6 @@ public sealed class SpeechTranscriptionService : BackgroundService
         transcriber.SessionStopped += (_, _) =>
             _logger.LogInformation("SpeechTranscriptionService: ConversationTranscriber session stopped.");
     }
-
-    /// <summary>Returns true if the SpeakerId is a clear attribution (not empty, not "Unknown").</summary>
-    private static bool IsSpeakerKnown(string speakerId) =>
-        !string.IsNullOrEmpty(speakerId) &&
-        !string.Equals(speakerId, "Unknown", StringComparison.OrdinalIgnoreCase);
-
-    /// <summary>Returns true only when speakerId is known AND matches the latched customer ID.</summary>
-    private static bool IsCustomerSpeaker(string speakerId, string? customerSpeakerId) =>
-        customerSpeakerId is not null &&
-        IsSpeakerKnown(speakerId) &&
-        string.Equals(speakerId, customerSpeakerId, StringComparison.Ordinal);
 
     private async Task PublishTranslationIfNeededAsync(
         string callId,

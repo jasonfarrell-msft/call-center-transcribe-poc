@@ -21,4 +21,11 @@
     <ProjectReference Include="..\CallCenterTranscription.Telephony\CallCenterTranscription.Telephony.csproj" />
   </ItemGroup>
 
+  <!-- Expose internal types to the test project for speaker-attribution state-machine unit tests. -->
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+      <_Parameter1>CallCenterTranscription.Tests</_Parameter1>
+    </AssemblyAttribute>
+  </ItemGroup>
+
 </Project>
