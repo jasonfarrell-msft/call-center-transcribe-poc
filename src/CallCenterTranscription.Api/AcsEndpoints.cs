@@ -194,8 +194,8 @@ internal static class AcsEndpoints
                     {
                         // SDK 1.5.1 API: ctor takes (audioChannelType, streamingTransport);
                         // TransportUri and MediaStreamingContent are set as properties.
-                        // Use Mixed audio for stability. The prior Unmixed + participant filtering
-                        // path could starve recognizer input on some live call topologies.
+                        // Use Mixed audio so both customer (PSTN) and rep (CommunicationUser)
+                        // are combined into one stream for the single Speech recognizer pipeline.
                         var answerOptions = new AnswerCallOptions(incomingCallContext, callbackUri)
                         {
                             MediaStreamingOptions = new MediaStreamingOptions(
@@ -204,6 +204,7 @@ internal static class AcsEndpoints
                             {
                                 TransportUri           = mediaStreamUri,
                                 MediaStreamingContent  = MediaStreamingContent.Audio,
+                                AudioFormat            = AudioFormat.Pcm16KMono,
                                 StartMediaStreaming    = true  // start streaming when call connects
                             }
                         };
