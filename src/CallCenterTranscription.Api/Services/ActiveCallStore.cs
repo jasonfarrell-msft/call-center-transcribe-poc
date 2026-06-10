@@ -22,10 +22,13 @@ public sealed class ActiveCallStore
     private const int RepAddDone = 2;
     private const int IncomingClaimNone = 0;
     private const int IncomingClaimInProgress = 1;
+    private const int MediaClaimNone = 0;
+    private const int MediaClaimInProgress = 1;
 
     private volatile string? _callId;
     private int _repAddState = RepAddNone;
     private int _incomingClaimState = IncomingClaimNone;
+    private int _mediaClaimState = MediaClaimNone;
 
     /// <summary>Returns the current active call ID, or null if no call is in progress.</summary>
     public string? CallId => _callId;
@@ -63,6 +66,14 @@ public sealed class ActiveCallStore
     /// <summary>Releases a failed incoming-call answer claim so a later event may retry.</summary>
     public void CancelIncomingClaim() =>
         Interlocked.CompareExchange(ref _incomingClaimState, IncomingClaimNone, IncomingClaimInProgress);
+
+    /// <summary>Claims ownership of the active ACS media-stream WebSocket session.</summary>
+    public bool TryBeginMediaClaim() =>
+        Interlocked.CompareExchange(ref _mediaClaimState, MediaClaimInProgress, MediaClaimNone) == MediaClaimNone;
+
+    /// <summary>Releases the active ACS media-stream WebSocket session claim.</summary>
+    public void EndMediaClaim() =>
+        Interlocked.CompareExchange(ref _mediaClaimState, MediaClaimNone, MediaClaimInProgress);
 
     /// <summary>
     /// Atomically claims the right to add the rep to the current call. Returns true to EXACTLY

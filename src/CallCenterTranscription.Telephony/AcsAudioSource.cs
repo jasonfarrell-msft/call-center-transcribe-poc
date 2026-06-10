@@ -35,19 +35,19 @@ public sealed class AcsAudioSource : IAudioSource
         Channel.CreateUnbounded<ChannelReader<AudioFrame>>(new UnboundedChannelOptions
         {
             SingleReader = true,
-            SingleWriter = true
+            SingleWriter = false
         });
 
     private readonly ILogger<AcsAudioSource> _logger;
 
-    // The current call's frame channel writer target. Written/read only on the single
-    // media-stream WebSocket handler context (single replica ⇒ one call at a time). volatile
-    // for safe publication across the accept/receive continuations.
-    private volatile Channel<AudioFrame>? _current;
-
-    private long _frameCount;
-    private long _silentFrameCount;
-    private long _repFrameCount;
+    public sealed class Session
+    {
+        internal Session(Channel<AudioFrame> channel) => Channel = channel;
+        internal Channel<AudioFrame> Channel { get; }
+        internal long FrameCount;
+        internal long SilentFrameCount;
+        internal long RepTaggedFrameCount;
+    }
 
     public AcsAudioSource(ILogger<AcsAudioSource> logger)
     {
@@ -69,15 +69,13 @@ public sealed class AcsAudioSource : IAudioSource
     /// call connects, BEFORE any frames arrive. Allocates a fresh frame channel and enqueues its
     /// reader for the consumer.
     /// </summary>
-    public void BeginSession()
+    public Session BeginSession()
     {
         var channel = CreateFrameChannel();
-        Interlocked.Exchange(ref _frameCount, 0);
-        Interlocked.Exchange(ref _silentFrameCount, 0);
-        Interlocked.Exchange(ref _repFrameCount, 0);
-        _current = channel;
+        var session = new Session(channel);
         _sessions.Writer.TryWrite(channel.Reader);
         _logger.LogInformation("AcsAudioSource: new audio session started.");
+        return session;
     }
 
     /// <inheritdoc />
@@ -107,6 +105,7 @@ public sealed class AcsAudioSource : IAudioSource
     /// Malformed frames are skipped with a warning — never thrown to the caller.
     /// </summary>
     public ValueTask HandleWebSocketMessageAsync(
+        Session session,
         byte[] rawMessage,
         CancellationToken cancellationToken = default)
     {
@@ -146,7 +145,7 @@ public sealed class AcsAudioSource : IAudioSource
                 if (TryGetParticipantRawId(audioData, out var participantRawId) &&
                     participantRawId.StartsWith("8:", StringComparison.Ordinal))
                 {
-                    Interlocked.Increment(ref _repFrameCount);
+                    Interlocked.Increment(ref session.RepTaggedFrameCount);
                 }
 
                 if (!audioData.TryGetProperty("data", out var dataProp))
@@ -186,11 +185,11 @@ public sealed class AcsAudioSource : IAudioSource
 
                 // TryWrite with DropOldest never blocks and always returns true. Null-safe if a
                 // frame somehow arrives before BeginSession (frame is dropped).
-                _current?.Writer.TryWrite(frame);
+                session.Channel.Writer.TryWrite(frame);
 
-                var count = Interlocked.Increment(ref _frameCount);
+                var count = Interlocked.Increment(ref session.FrameCount);
                 if (silent)
-                    Interlocked.Increment(ref _silentFrameCount);
+                    Interlocked.Increment(ref session.SilentFrameCount);
 
                 // Diagnostic logging: first frame, then every ~5 s (250 frames @ 50 fps).
                 if (count == 1)
@@ -201,7 +200,7 @@ public sealed class AcsAudioSource : IAudioSource
                 }
                 else if (count % 250 == 0)
                 {
-                    var silentSoFar = Interlocked.Read(ref _silentFrameCount);
+                    var silentSoFar = Interlocked.Read(ref session.SilentFrameCount);
                     _logger.LogInformation(
                         "AcsAudioSource: {Count} AudioData frames received ({Silent} silent).",
                         count, silentSoFar);
@@ -229,13 +228,13 @@ public sealed class AcsAudioSource : IAudioSource
     /// loop. Call this when the call's WebSocket closes. The transcription pipeline stays alive and
     /// idles for the next call (no permanent shutdown).
     /// </summary>
-    public void CompleteStream()
+    public void CompleteStream(Session session)
     {
-        _current?.Writer.TryComplete();
+        session.Channel.Writer.TryComplete();
 
-        var total  = Interlocked.Read(ref _frameCount);
-        var silent = Interlocked.Read(ref _silentFrameCount);
-        var rep    = Interlocked.Read(ref _repFrameCount);
+        var total  = Interlocked.Read(ref session.FrameCount);
+        var silent = Interlocked.Read(ref session.SilentFrameCount);
+        var rep    = Interlocked.Read(ref session.RepTaggedFrameCount);
         _logger.LogInformation(
             "AcsAudioSource: audio session completed — {Total} AudioData frames received " +
             "({Silent} silent, {NonSilent} with audio); {RepTagged} frames tagged as CommunicationUser.",

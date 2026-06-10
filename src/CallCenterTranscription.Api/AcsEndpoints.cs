@@ -353,22 +353,32 @@ internal static class AcsEndpoints
             return;
         }
 
-        using var ws = await ctx.WebSockets.AcceptWebSocketAsync();
-        logger.LogInformation("ACS media-stream WebSocket connection established.");
+        if (!callStore.TryBeginMediaClaim())
+        {
+            logger.LogWarning("ACS media-stream WebSocket rejected: another media stream is already active.");
+            ctx.Response.StatusCode = StatusCodes.Status409Conflict;
+            await ctx.Response.WriteAsync("Media stream is already active.");
+            return;
+        }
 
-        // Start a fresh per-call audio session so the transcription consumer builds a new
-        // recognizer for this call (and stays alive for the next one after it ends).
-        acsSource.BeginSession();
-
-        // Start a clean rolling-sentiment session for this call so the meter resets to
-        // "Waiting for sentiment" and then tracks the new conversation.
-        liveSentiment.Reset(callStore.CallId);
-
+        WebSocket? ws = null;
+        AcsAudioSource.Session? audioSession = null;
         var buffer = new byte[8192]; // ACS sends 640-byte frames; 8 KB covers a few frames per read.
         using var ms = new MemoryStream();
 
         try
         {
+            ws = await ctx.WebSockets.AcceptWebSocketAsync();
+            logger.LogInformation("ACS media-stream WebSocket connection established.");
+
+            // Start a fresh per-call audio session so the transcription consumer builds a new
+            // recognizer for this call (and stays alive for the next one after it ends).
+            audioSession = acsSource.BeginSession();
+
+            // Start a clean rolling-sentiment session for this call so the meter resets to
+            // "Waiting for sentiment" and then tracks the new conversation.
+            liveSentiment.Reset(callStore.CallId);
+
             while (ws.State == WebSocketState.Open)
             {
                 // Accumulate a complete (possibly fragmented) WebSocket message.
@@ -401,7 +411,7 @@ internal static class AcsEndpoints
                 {
                     // AcsAudioSource parses the JSON, decodes the PCM payload, and writes
                     // an AudioFrame to its internal Channel. Malformed frames are skipped.
-                    await acsSource.HandleWebSocketMessageAsync(ms.ToArray(), ctx.RequestAborted);
+                    await acsSource.HandleWebSocketMessageAsync(audioSession, ms.ToArray(), ctx.RequestAborted);
                 }
             }
         }
@@ -422,7 +432,10 @@ internal static class AcsEndpoints
             var endedCallId = callStore.CallId;
 
             // Signal end-of-stream to all ReadAsync consumers regardless of how the loop ended.
-            acsSource.CompleteStream();
+            if (audioSession is not null)
+            {
+                acsSource.CompleteStream(audioSession);
+            }
             callStore.Clear();  // call is over; new calls start fresh
             liveSentiment.Clear();  // drop rolling sentiment so the panel returns to waiting
 
@@ -441,6 +454,7 @@ internal static class AcsEndpoints
             }
 
             logger.LogInformation("ACS media-stream handler ended; audio Channel completed.");
+            callStore.EndMediaClaim();
         }
     }
 }
