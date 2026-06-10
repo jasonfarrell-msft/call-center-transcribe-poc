@@ -63,6 +63,12 @@ Build clean, ready for customer-hangup teardown follow-up.
 
 ---
 
+## Learnings
+
+- README Mermaid accuracy matters for ACS lifecycles: `AnswerCall` / `AddParticipant` are API → ACS actions, while mid-call callbacks are ACS → API webhooks.
+
+---
+
 ## Contact / Handoff
 
 All code committed to origin/main (commit 173afea). All decisions in decisions.md. Team is coordinating on:

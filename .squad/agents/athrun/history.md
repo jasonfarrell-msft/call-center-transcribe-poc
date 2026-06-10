@@ -144,3 +144,12 @@
 
 **Lockout applied (N/A — APPROVE).**
 
+
+## Learnings
+
+### 2026-06-10 — Architect README framing
+- Top-level README should be treated as an **Explanation** document for architects/reviewers, not a setup guide or API reference.
+- The architecture view should center on the Azure runtime split: Web on App Service, API on Container Apps, ACS/Event Grid ingress, Speech/Translator/Foundry downstream, and SignalR fan-out from the API.
+- Call out that SignalR is **application-hosted**, not Azure SignalR Service, so reviewers do not infer a managed realtime service that does not exist.
+- Put POC boundaries near the top or immediately after the system overview so the document does not overstate production readiness.
+- A root architecture README for reviewers should stay at the system-topology level: explain Azure ingress, runtime placement, and critical-path caveats without drifting into dev setup or endpoint-by-endpoint reference.

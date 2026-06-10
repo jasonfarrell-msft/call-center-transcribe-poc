@@ -62,3 +62,7 @@
 - Deploy recipe de-risks `azd provision` by using surgical `az` commands post-image-deploy
 - Event Grid subscription creation must follow API webhook deployment (handshake requirement)
 - Speech RBAC verified live; ACS RBAC GUIDs confirmed directory-available
+
+## Learnings
+
+- README review fix: architecture diagrams must show the rep/browser call leg terminating at ACS, while API/Web edges stay labeled as control-plane flows; telemetry caveats should describe required hardening targets, not imply current enforcement.
