@@ -1,3 +1,4 @@
+using CallCenterTranscription.Ai.Knowledge;
 using CallCenterTranscription.Shared.Events;
 
 namespace CallCenterTranscription.Ai;
@@ -5,29 +6,15 @@ namespace CallCenterTranscription.Ai;
 public static class KiraContentPack
 {
     private static readonly IReadOnlyList<KiraContentPackEntry> Entries =
-    [
-        new(
-            "card-retention-price-match",
-            "Retention policy: competitor price concerns",
-            "Offer a service credit and quote budget billing before discussing cancellation.",
-            "https://contoso.example/policies/retention/price-match",
-            "Offer immediate service credit and enroll customer in budget billing.",
-            ["competitor", "price", "northstar", "lower", "flyer", "volante"]),
-        new(
-            "card-service-recovery-delivery",
-            "Service recovery: missed delivery",
-            "Acknowledge the miss, apologize, and confirm expedited delivery before retention offers.",
-            "https://contoso.example/policies/service-recovery/missed-delivery",
-            "Confirm expedited delivery timing and apply a one-time service recovery credit.",
-            ["missed", "delivery", "late", "out of propane", "delivery tonight", "entrega"]),
-        new(
-            "card-billing-stabilization",
-            "Billing stabilization: unexpected bill increase",
-            "Use budget billing and clear itemization when a customer reports sharp month-over-month increases.",
-            "https://contoso.example/policies/billing/budget-billing",
-            "Walk through bill itemization and offer budget billing to stabilize monthly spend.",
-            ["bill", "billing", "jumped", "increase", "forty", "budget billing"])
-    ];
+        SyntheticCorpusLoader.Corpus.Entries
+            .Select(e => new KiraContentPackEntry(
+                e.Id,
+                e.Title,
+                e.Snippet,
+                e.SourceUrl,
+                e.RecommendedAction,
+                e.Tags.Keywords))
+            .ToArray();
 
     public static IReadOnlyList<KiraContentPackEntry> Retrieve(string? transcriptText, int maxCards = 2)
     {

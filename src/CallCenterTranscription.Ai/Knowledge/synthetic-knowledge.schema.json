@@ -1,0 +1,122 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://contoso.example/schemas/synthetic-knowledge.v1.schema.json",
+  "title": "SyntheticKnowledgeCorpus",
+  "description": "Versioned retrieval corpus for Kira AI knowledge cards. Each entry is an atomic document suitable for indexing in Azure AI Search (vector + lexical hybrid mode).",
+  "type": "object",
+  "required": ["schemaVersion", "generatedAtUtc", "entries"],
+  "properties": {
+    "schemaVersion": {
+      "type": "string",
+      "description": "Schema version identifier, e.g. '1.0'."
+    },
+    "generatedAtUtc": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO-8601 UTC timestamp of corpus generation."
+    },
+    "entries": {
+      "type": "array",
+      "description": "Ordered list of retrievable knowledge entries.",
+      "minItems": 1,
+      "items": { "$ref": "#/definitions/KnowledgeEntry" }
+    }
+  },
+  "additionalProperties": false,
+  "definitions": {
+    "KnowledgeEntry": {
+      "type": "object",
+      "required": [
+        "id", "title", "content", "snippet",
+        "sourceUrl", "recommendedAction", "category",
+        "locale", "version", "lastUpdatedUtc",
+        "riskLevel", "escalationRequired", "tags"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^card-[a-z0-9-]+$",
+          "description": "Stable, globally unique card ID in kebab-case. Used for deduplication and as the Azure AI Search document key."
+        },
+        "title": {
+          "type": "string",
+          "minLength": 5,
+          "description": "Short human-readable card title shown in the rep UI."
+        },
+        "content": {
+          "type": "string",
+          "minLength": 20,
+          "description": "Full policy or procedure text used for vector embedding and AI grounding. Not displayed directly in the UI."
+        },
+        "snippet": {
+          "type": "string",
+          "minLength": 10,
+          "description": "One to two sentence summary displayed on the knowledge card in the rep UI."
+        },
+        "sourceUrl": {
+          "type": "string",
+          "description": "Canonical URL to the full policy or SOP document."
+        },
+        "recommendedAction": {
+          "type": "string",
+          "minLength": 10,
+          "description": "Concrete action the rep should take, shown in the Next Best Action panel."
+        },
+        "category": {
+          "type": "string",
+          "enum": ["retention", "service-recovery", "billing", "safety", "contract"],
+          "description": "Card category used for UI grouping and Azure AI Search filter facets."
+        },
+        "locale": {
+          "type": "string",
+          "pattern": "^[a-z]{2}-[A-Z]{2}$",
+          "description": "BCP-47 locale this entry was authored for, e.g. 'en-US'."
+        },
+        "version": {
+          "type": "string",
+          "description": "Entry version, e.g. '1.0'. Increment on any content change."
+        },
+        "lastUpdatedUtc": {
+          "type": "string",
+          "format": "date-time",
+          "description": "ISO-8601 UTC timestamp of the last content update."
+        },
+        "riskLevel": {
+          "type": "string",
+          "enum": ["low", "medium", "high", "critical"],
+          "description": "Operational risk if this card scenario is mishandled or ignored."
+        },
+        "escalationRequired": {
+          "type": "boolean",
+          "description": "When true, the rep must escalate to a supervisor or a dedicated safety team before attempting resolution."
+        },
+        "tags": {
+          "$ref": "#/definitions/KnowledgeEntryTags"
+        }
+      }
+    },
+    "KnowledgeEntryTags": {
+      "type": "object",
+      "required": ["intents", "entities", "keywords"],
+      "additionalProperties": false,
+      "properties": {
+        "intents": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Customer intent labels expected to trigger this card (e.g. 'complaint.delivery', 'intent.cancel'). Used by the AI retriever for intent-based routing."
+        },
+        "entities": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Named-entity types expected in utterances that should trigger this card (e.g. 'competitor', 'product.propane'). Used by the AI retriever for entity-based scoring."
+        },
+        "keywords": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Lexical keywords used by the lightweight SyntheticCorpusLoader for keyword-match scoring in mock mode, and as lexical boost terms in Azure AI Search hybrid queries."
+        }
+      }
+    }
+  }
+}
