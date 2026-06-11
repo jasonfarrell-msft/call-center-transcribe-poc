@@ -1,6 +1,6 @@
 // Live transcript wiring: connects the rep dashboard to the backend SignalR pipeline so a real
 // ACS phone call's transcript streams into the transcript column. Drives the connection-state
-// machine: Disconnected -> Connecting -> Live -> (Ended) -> Disconnected.
+// machine: Disconnected -> Connecting -> Transcription active -> (Ended) -> Disconnected.
 //
 // Rendering strategy (reviewer-mandated): append-only committed (final) lines, plus a SINGLE
 // live "ghost" line that mirrors the current interim partial. This sidesteps Speech SDK
@@ -57,7 +57,6 @@
     const STATE_CLASSES = {
         disconnected: "conn-status--disconnected",
         connecting: "conn-status--connecting",
-        pending: "conn-status--pending",
         live: "conn-status--live",
         ended: "conn-status--ended"
     };
@@ -536,7 +535,7 @@
     }
 
     // stream.callPending — customer is ringing; backend has answered but rep has NOT accepted.
-    // Show "Call Pending" badge, empty/placeholder transcript body, gate all rendering.
+    // Keep transcript/sentiment gated and placeholders visible until rep acceptance.
     async function onCallPending(evt) {
         const callId = evt && evt.callId;
         if (!callId) {
@@ -562,8 +561,8 @@
         }
         showPendingState();
 
-        setState("pending", "● Call Pending");
-        setText(summaryEl, "Live mode • Incoming call");
+        setState("disconnected", "Disconnected — waiting for call");
+        setText(summaryEl, "Live mode • Waiting for rep acceptance");
         setText(callIdEl, callId);
         setText(customerEl, "Inbound caller");
         setText(connectedEl, WAITING);
@@ -591,8 +590,8 @@
         hidePendingState();
         clearEmptyState();
 
-        setState("live", "● Live transcription");
-        setText(summaryEl, "Live mode • Call connected");
+        setState("live", "● Transcription active");
+        setText(summaryEl, "Live mode • Transcription active");
         setText(callIdEl, callId);
         setText(customerEl, "Inbound caller");
         setText(connectedEl, formatTime());
