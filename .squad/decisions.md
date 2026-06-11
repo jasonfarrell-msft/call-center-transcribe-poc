@@ -3608,3 +3608,217 @@ Method: `Phase2B_CustomerSpeaksFirstPostAccept_NoPreAcceptSpeech`
 
 **78 total (75 pass, 3 skip, 0 fail)** as of 2026-06-10T11:20:14-04:00.
 
+# Athrun Decision — Root README architecture framing
+
+- **Date:** 2026-06-10
+- **Owner:** Athrun
+- **Decision:** Reframe the root `README.md` as an architecture-facing overview for reviewers, using an explanation/reference mix rather than a scaffold or setup guide.
+
+## Why
+
+- The old README described the initial scaffold but not the current Azure system shape.
+- Reviewers need the live-path topology, POC boundaries, and Azure component roles faster than they need local setup detail.
+- The repo already holds deeper implementation docs under `docs/`; the root README should route people there instead of duplicating them.
+
+## Consequences
+
+- The README now centers on the Azure runtime split, logical flow, Mermaid architecture diagram, and a service table with caveats.
+- It explicitly states that SignalR is hosted inside the API app, not Azure SignalR Service.
+- It keeps production claims conservative: Event Grid delivery hardening, authorization detail, and full Foundry model deployment remain outside the README's claims.
+
+# 2026-06-10T12:52:39.896-04:00 — Athrun README outline for Azure architecture overview
+- **By:** Athrun
+- **Status:** Proposed
+
+## Decision
+The new top-level `README.md` should be written as an **Explanation** document for architects/reviewers. It should prioritize the Azure system overview, logical call/media/event flow, Azure component inventory, and POC boundaries over developer setup or API reference detail.
+
+## Rationale
+- The current root README is scaffold-era text and does not explain the actual hosted topology.
+- Reviewers need one fast architectural entry point before diving into `docs/` detail.
+- The repo now has a concrete Azure split worth documenting: App Service web, Container Apps API, ACS/Event Grid ingress, Azure AI Speech/Translator/Foundry downstream, and managed identity-based service access.
+
+## Required framing
+- Present this as a **POC topology**, not a production reference architecture.
+- Explicitly state that SignalR is hosted inside the API app; there is no Azure SignalR Service resource.
+- Include security notes only at the boundary level: managed identity, Key Vault, webhook exceptions, HTTPS/WSS, intended Entra auth model.
+- Link deeper operational details to `docs/acs-final-demo-topology.md`, `docs/live-pipeline-contract.md`, and `docs/live-data-security-guardrails.md`.
+
+## Content shape
+1. Project and audience summary
+2. Scope / non-goals
+3. Azure system overview narrative
+4. Mermaid logical architecture and flow diagram
+5. Azure components table
+6. End-to-end request/media/event flow
+7. Security and deployment boundaries
+8. POC assumptions / ambiguities
+9. Pointers to deeper docs
+
+## Specific inclusion notes
+- Include Azure AI Translator because it is provisioned and used in the live pipeline for non-English turns.
+- Include Azure AI Foundry / AI Services as the reasoning tier, but mark deployment/model choice as partially deferred where appropriate.
+- Include observability/deployment surfaces (Application Insights, Log Analytics, GitHub Actions) as supporting architecture, not core call-path runtime.
+
+# Review: NBA/Churn UI Removal (Lunamaria, commit f3cccf0)
+
+**Reviewer:** Athrun  
+**Date:** 2026-06-10T12:38:00-04:00  
+**Commit:** f3cccf0  
+**Verdict:** ✅ APPROVE — ready to push
+
+---
+
+## Summary
+
+Lunamaria removed the "Churn Risk" and "Next Best Action" cards from the agent-assist metadata column (live-mode UI only). All five review criteria pass.
+
+---
+
+## Criteria Results
+
+| # | Criterion | Result |
+|---|-----------|--------|
+| 1 | Correctness — both cards fully removed (markup, JS handlers, SignalR, CSS) | ✅ PASS |
+| 2 | Scope discipline — kept sentiment, transcript, knowledge; no backend touch | ✅ PASS |
+| 3 | No broken references in Web project | ✅ PASS |
+| 4 | Build (0 errors) + Tests (76 pass, 3 skip, 0 fail) | ✅ PASS |
+| 5 | Security — no new surface | ✅ PASS |
+
+---
+
+## Detail
+
+**Correctness:** Both `<section>` blocks removed from `Index.cshtml` in the live-mode branch only. All churn/NBA DOM selector variables, `onChurnRisk()`, `onNextBestAction()`, and `stream.churnRisk`/`stream.nextBestAction` SignalR `.on()` registrations removed. Dead CSS rules `.assist-kicker`, `.assist-copy`, `.assist-meta` cleaned. The `.assist-panel` comment header updated from "churn / knowledge / NBA" to "knowledge cards".
+
+**Scope:** `SpeechTranscriptionService.cs`, the AI pipeline, and all API routes are untouched. Backend continues to emit `stream.churnRisk` and `stream.nextBestAction` — the UI just no longer subscribes. Correct UI-only scoping.
+
+**No broken references:** `grep` over `src/CallCenterTranscription.Web/` (`.cs`, `.cshtml`, `.js`, `.css`) found **zero** remaining references to `onChurnRisk`, `onNextBestAction`, `data-live-churn-*`, `data-live-nba-*`, `assist-kicker`, `assist-copy`, `assist-meta`. Remaining references in `tests/` (`ApiWiringSmokeTests`, `PipelineReplayPublisherTests`) are backend-API-level tests for routes that remain live — not dead UI refs.
+
+**Build/Tests:** `dotnet build` → 0 errors, 0 warnings. `dotnet test` → **76 passed, 3 skipped, 0 failed**. `WebConsoleTests` panel assertions updated correctly.
+
+---
+
+## Advisory (non-blocking)
+
+- `site.css:555` has a stale comment: `/* Side column: scrollable so future stacked panels (knowledge cards, churn, etc.) work */`. Cosmetic; update at leisure, not a blocker.
+
+---
+
+## Decision
+
+**APPROVE.** Coordinator may push commit f3cccf0.
+
+### 2026-06-11T15:36:11.935-04:00: Synthetic agent-assist knowledge dataset format
+**By:** Kira
+**What:** Added the initial propane agent-assist answer corpus as flat JSONL at `src/CallCenterTranscription.Ai/Knowledge/synthetic-agent-assist-knowledge.v1.jsonl`, with one standalone knowledge item per line and a companion schema at `src/CallCenterTranscription.Ai/Knowledge/synthetic-agent-assist-knowledge.schema.json`.
+**Why:** JSONL keeps future search or RAG ingestion service-agnostic, while the flat record shape preserves the metadata reps and retrievers need during live calls without forcing the team into any one indexing stack.
+
+# 2026-06-11T15:41:04.207-04:00 — Diarization role mapping aligned to inbound call order
+**By:** Lacus  
+**Requested by:** local user  
+**Status:** IMPLEMENTED
+
+## Decision
+For the live inbound call path, speaker-role attribution now follows the known call topology:
+- inbound caller/customer initiates the call and is mapped to `Customer`
+- representative joins second and is mapped to `Rep`
+
+When no speaker has been latched yet (including post-accept), the first known speaker is latched as customer; the second distinct known speaker is latched as rep.
+
+## Why
+The prior post-accept fallback assumed first speaker = rep in an unresolved state, which mislabeled customer speech as rep in this environment and could make the timeline appear all-rep.
+
+## Implementation
+- Updated `SpeakerAttributionState` transition logic:
+  - first known speaker → customer
+  - second distinct speaker → rep
+  - unknown/blank speaker IDs are ignored (`IsNullOrWhiteSpace` + `"Unknown"` check)
+- Updated service documentation in `SpeechTranscriptionService` to reflect the rule.
+- Updated unit tests in `SpeakerAttributionStateTests` to prove first/second speaker mapping and preserve slot stability.
+
+## Validation
+- `dotnet test CallCenterTranscription.sln --nologo` passed after changes.
+- `dotnet test tests/CallCenterTranscription.Tests/CallCenterTranscription.Tests.csproj --nologo` passed after final hardening.
+
+## Reviewer gate
+- Secondary review agent verdict: **APPROVED** (no blockers).
+
+# Decision: Remove Churn Risk and Next Best Action Cards from Agent-Assist Dashboard
+
+**Author:** Lunamaria (Frontend Dev)  
+**Date:** 2026-06-10  
+**Status:** Implemented (commit f3cccf0)  
+**Requested by:** Jason
+
+---
+
+## Decision
+
+Remove the "Churn Risk" and "Next Best Action" UI cards from the metadata column of the agent-assist dashboard (`Index.cshtml`). These two cards are no longer needed in the UI.
+
+## Scope
+
+**Frontend only.** The backend pipeline (Lacus's churn/NBA reasoning, Meyrin's audio pipeline) and the SignalR event contract (`stream.churnRisk`, `stream.nextBestAction`) were deliberately left untouched. The frontend now simply ignores these events. This is the low-risk, surgical approach.
+
+## What Was Changed
+
+| File | Change |
+|------|--------|
+| `Pages/Index.cshtml` | Removed `<section data-live-churn-panel>` and `<section data-live-nba-panel>` from live-mode branch |
+| `wwwroot/js/live-transcript.js` | Removed 11 DOM selector consts, `onChurnRisk()`, `onNextBestAction()`, and 2 SignalR `.on()` registrations |
+| `wwwroot/css/site.css` | Removed `.assist-kicker`, `.assist-copy`, `.assist-meta` rules (dead after card removal) |
+| `tests/WebConsoleTests.cs` | Removed two `Assert.Contains` for `data-live-churn-panel` and `data-live-nba-panel` |
+
+## What Was Kept
+
+- Sentiment gauge — fully intact
+- Knowledge cards — fully intact
+- All transcript/translation/call-lifecycle logic — untouched
+- Backend churn/NBA generation — **left intact, now unconsumed by UI**
+
+## Follow-Up Flag (Backend)
+
+> **For Lacus / Meyrin:** If Churn Risk and Next Best Action are permanently removed from the product, the backend pipeline can stop generating these events entirely. The frontend will not break whether or not they are emitted (events are simply unhandled). Consider a follow-up task to remove backend generation if confirmed permanent.
+
+## Test Results
+
+- `dotnet build` ✅
+- `dotnet test`: 76 pass, 0 fail, 3 skip ✅
+
+# Meyrin — README review fixes
+
+- Updated the README mermaid diagram so the rep browser softphone call leg terminates at Azure Communication Services, not the API.
+- Kept API/Web as the control-plane path by labeling the web-to-API edge as token/register/control.
+- Reworded the Application Insights note to describe live-data logging guardrails as a required hardening target rather than an already-enforced current state.
+
+# Decision: Diarization Role Bug Fix — Reviewer Verdict
+
+**Date:** 2026-06-11T15:41:04.207-04:00  
+**Author:** Yzak (Tester / QA)  
+**Status:** APPROVED  
+**Artifact:** Lacus's uncommitted fix to `SpeakerAttributionState`
+
+## Summary
+
+Lacus rewrote the `SpeakerAttributionState` state machine to enforce a caller-order rule:
+
+- **First observed known speaker → Customer**
+- **Second distinct known speaker → Rep**
+
+This replaces the prior Phase-2B fallback (first post-accept = Rep, second = Customer) which caused the user-reported "everything is Rep" bug in inbound calls.
+
+## Verification
+
+- `dotnet test --filter SpeakerAttributionState` → **20 pass, 0 fail**
+- Integration in `SpeechTranscriptionService.Transcribed`: `Observe()` advances state on every event; `IsCustomer()` drives both transcript `SpeakerRole` and customer-only sentiment routing.
+- Old documentation test (`Phase2B_CustomerSpeaksFirstPostAccept_NoPreAcceptSpeech`) is correctly superseded by the new `Phase2B_FirstSpeakerPostAccept_IsLatchedAsCustomer` test that asserts the fixed behavior.
+
+## Residual Limitation
+
+If the rep speaks first post-accept AND the customer was completely silent pre-accept, the rep gets labeled Customer. User confirmed this does not match their flow (customer always initiates/speaks first). Not a demo blocker.
+
+## Team Impact
+
+- All agents consuming `SpeakerRole` in transcript events can rely on `"customer"` / `"rep"` / `"unknown"` being correct for the inbound caller-first topology.
+- Sentiment scoring is now safe — rep empathy phrases will not move the customer sentiment meter.
