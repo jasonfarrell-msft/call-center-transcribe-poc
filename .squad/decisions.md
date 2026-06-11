@@ -1,5 +1,9 @@
 ---
 ## Active Decisions
+- **2026-06-11 | Jason (Directive)** — Treat the inbound caller as the customer who joins first; the rep is the second participant added to the call.
+- **2026-06-11 | Athrun** — Next slice is wiring the synthetic agent-assist JSONL corpus into the existing `stream.knowledgeCards` path with deterministic trigger-phrase/keyword matching on customer utterances.
+- **2026-06-11 | Lacus** — Retrieval should score a short rolling window of recent customer turns and emit ranked, citation-backed guidance with matched signals and score metadata.
+- **2026-06-11 | Meyrin** — Agent assist should publish one utterance-correlated update per customer turn, after translation/normalization when needed, via the existing knowledge-card plus next-best-action stream.
 - **2026-06-05 | Squad** — Keep both diarization and translation: Azure AI Speech handles real-time STT/diarization, and Azure Translator handles non-English text so the POC supports both live attribution and rep comprehension.
 - **2026-06-05 | Squad** — Translation is split by consumer: backend always translates for AI; the rep UI uses `detectedLanguage` plus a click-to-translate affordance. `transcript.detectedLanguage` is now part of the shared schema.
 - **2026-06-05 | Lacus** — Translation trigger follows `transcript.detectedLanguage`; the backend may translate immediately or defer UI reveal, while still normalizing non-English text for churn/NBA/RAG.
@@ -11,6 +15,13 @@
 - **2026-06-05 | Squad** — ACS call topology is Option A: customer dials the ACS number, backend answers, starts media streaming, then adds the rep via `AddParticipant`; mixed audio is the POC starting point, with a Phase-2 spike to validate rep audio after join.
 - **2026-06-05 | Dyakka** — ACS dual-call/runbook work owns inbound answering, media streaming, rep join mechanics, and the repeatable demo script; Dyakka was hired mid-session to solve the two-party ACS path.
 - **2026-06-08T15:24:21-04:00 | Jason (Directive)** — US toll-free number **+18774178275** has been purchased on the recreated ACS resource (acs-cctrans-kdarok). This enables real inbound PSTN calls for the live ACS demo. Next: Event Grid IncomingCall subscription → webhook, the audio→Speech consumer, then flip AudioSource__Mode=Acs.
+- **2026-06-11 | Jason (Directive)** — Transcription cannot start until the Rep accepts the call.
+- **2026-06-11 | Dyakka** — Rep-accept latency is mostly ACS/browser delivery timing; the safe optimization is an immediate post-answer add-rep attempt while keeping the transcription gate intact.
+- **2026-06-11 | Meyrin** — The answer-path fast lane emits `stream.callPending` right after `AnswerCallAsync` and tries `AddParticipant` immediately when a rep is registered, with stale-callback guards.
+- **2026-06-11 | Yzak** — Reviewed the rep-accept latency fix and approved it; tests cover ordering, no-rep fallback, and stale callback safety.
+- **2026-06-11 | Kira** — Demo scripts live in `samples/agent-assist-demo-scripts.v1.json` with three deterministic call flows.
+- **2026-06-11 | Lacus** — Customer sentiment should latch only the first two distinct known speakers and ignore ambiguous later diarization IDs.
+
 # 2026-06-08T15:24:21-04:00 — ACS Go-Live Architecture Sign-Off
 **By:** Athrun (Lead/Architect)  
 **Requested by:** Jason  
@@ -3822,3 +3833,295 @@ If the rep speaks first post-accept AND the customer was completely silent pre-a
 
 - All agents consuming `SpeakerRole` in transcript events can rely on `"customer"` / `"rep"` / `"unknown"` being correct for the inbound caller-first topology.
 - Sentiment scoring is now safe — rep empathy phrases will not move the customer sentiment meter.
+
+### 2026-06-11T15:36:11.935-04:00: RAG-ingestible synthetic knowledge metadata
+**By:** Lacus
+**What:** Standardized the synthetic agent-assist JSONL shape around service-agnostic ingestion fields: `document_id`, `chunk_index`, `chunk_count`, `retrieval_text`, `source_title`, `source_section`, `source_uri`, and `citation_label`.
+**Why:** Future Azure AI Foundry / search choices will differ in how they map chunk text, citations, and filters. Carrying those fields directly in each JSONL line keeps the corpus portable across lexical, vector, and hybrid retrieval without a custom enrichment step.
+
+# Athrun Decision — Next Knowledge Slice
+
+**By:** Athrun (Lead / Architect)  
+**Requested by:** Jason  
+**Date:** 2026-06-11T16:34:04.094-04:00  
+**Status:** Recommended next slice
+
+## Decision
+
+The next logical build slice is to **wire the new synthetic agent-assist JSONL corpus into the existing live knowledge-card path**, without changing topology, UI contracts, or adding Azure AI Search/RAG yet.
+
+Concretely: keep `stream.knowledgeCards` and the current side-rail UI as-is, and replace/bridge the current `KiraContentPack` source so the runtime retrieves from `synthetic-agent-assist-knowledge.v1.jsonl` during customer utterances.
+
+## Why this comes next
+
+- The UI rendering path already exists and is working.
+- The API/SignalR emission path for `KnowledgeCardEvent` already exists and is working.
+- The new JSONL corpus is present, validated, and team-approved, but **it is not yet in the runtime path**.
+- That makes the thinnest honest POC slice: prove the newly created data can show up during a real/scripted rep-customer conversation before introducing heavier retrieval infrastructure.
+
+## Scope
+
+### Do now
+- Load the JSONL corpus into the existing retrieval path.
+- Match live/scripted customer transcript text against JSONL `trigger_phrases` and `keywords` with simple deterministic lexical scoring.
+- Map matched JSONL records into the existing `KnowledgeCardEvent` payload shape so the current UI renders them.
+
+### Defer
+- Azure AI Search / vector retrieval / hybrid retrieval
+- New UI surfaces
+- Citation-rich redesign beyond the current card shape
+- Broad multi-turn orchestration or agent planning logic
+
+## Minimal acceptance criteria
+
+1. During a live or scripted call, when the **customer** says a known trigger phrase (for example missed delivery, out of gas/no heat, budget billing, or auto-delivery confusion), the side rail shows a knowledge card sourced from the new JSONL corpus.
+2. The rendered card content is traceable to the JSONL-backed record, not the legacy `synthetic-knowledge.v1.json` corpus.
+3. A small deterministic test set proves **specific utterance → specific knowledge item ID** mapping for at least 3 positive cases.
+4. At least 1 negative case proves a non-matching utterance does **not** silently surface an unrelated fallback card.
+5. Existing SignalR/UI contract stays unchanged: `KnowledgeCardEvent` still reaches `stream.knowledgeCards` and renders in the current web console.
+
+## Trade-off
+
+This slice is intentionally not “smart.” It is a lexical bridge, not full retrieval. That is acceptable because the POC question right now is: **can the new knowledge data appear in the conversation loop at the right moment?**
+
+## Reviewer gate
+
+- Secondary review: Devils Advocate agent challenged the slice and agreed it is the right next step **provided acceptance is deterministic and includes a negative case to prevent false-positive fallback cards**.
+
+### 2026-06-11T16:34:04.094-04:00: Next retrieval step for live agent assist
+
+**What:** The next logical AI step is an in-process **transcript-window matcher** between final transcript events and downstream reasoning/UI events. It should score the new JSONL knowledge corpus against a rolling window of recent **customer** turns so grounded guidance can appear while the rep is still in the conversation, without introducing Azure Search yet.
+
+**Why:** Current retrieval is per-utterance and shallow, which is too brittle for live assist. The new corpus already carries richer grounding fields (`trigger_phrases`, `keywords`, `customer_intents`, `customer_profile_signals`, `rep_guidance`, `next_best_action`, `citation_label`, `source_*`), so the fastest service-agnostic path is to use those fields directly before adding any external search stack.
+
+**Decision:** Recommend a first retrieval stage with these rules:
+
+1. **Use a rolling transcript window**
+   - Window over recent final **customer** utterances, not just the latest line.
+   - Prefer a bounded window such as last 3-5 customer turns or ~30-45 seconds of customer speech.
+   - Reset/decay older evidence so stale topics stop dominating after the conversation pivots.
+
+2. **Score knowledge items with explicit, explainable signals**
+   - Weighted exact/near-exact trigger-phrase matches
+   - Keyword overlap against normalized transcript text
+   - Intent/profile-signal matches when available from surrounding pipeline context
+   - Recency bonus for matches found in the latest turn
+   - Priority/escalation boost for safety-critical content
+   - Margin rule so the top hit must beat the runner-up clearly before surfacing
+
+3. **Suppress noisy or unsafe surfacing**
+   - Do not surface low-score results.
+   - Do not keep re-emitting the same card unless score meaningfully improves or the grounded evidence changes.
+   - Require citations/evidence for anything shown to the rep.
+   - Keep evidence payloads minimal (matched phrases / short excerpt), not full transcript replay.
+
+4. **Emit a richer UI-ready retrieval event**
+   - Keep `stream.knowledgeCards` backward-compatible if needed, but the next contract should carry ranked retrieval metadata.
+   - Each result should include:
+     - stable `id` / `document_id`
+     - `score` and optional confidence band
+     - `matchedSignals` (trigger phrase, keyword, profile, recency)
+     - `evidenceText` or short matched excerpt
+     - `citationLabel`, `sourceTitle`, `sourceSection`, `sourceUri`
+     - `answer`, `repGuidance`, `nextBestAction`
+     - `priority`, `escalationRequired`, `escalationTarget`
+   - Event envelope should also identify the transcript window that produced it (`windowStartSequence`, `windowEndSequence`, `relatedTranscriptSequence`, `utteranceIds`).
+
+**Why this matters to team:** This gives the UI something trustworthy to render during the live call, preserves service-agnostic portability, and creates a clean grounding contract for later Foundry reasoning without forcing an Azure Search dependency early.
+
+**Guardrails raised during review:** Do not let richer retrieval masquerade as certainty. Require explicit evidence + citations, decay stale windows, and avoid shipping raw customer transcript beyond the minimum excerpt needed to justify the surfaced guidance.
+
+# 2026-06-11 — Meyrin: Next backend/API handoff for in-call knowledge
+
+**Status:** Proposed  
+**Requested by:** Jason
+
+## Decision
+
+Do **not** build a new retrieval backend first. The live pipeline already emits `KnowledgeCardEvent` and `NextBestActionEvent` in real time, replays them on subscribe, and correlates them to transcript turns with `utteranceId` / `relatedTranscriptEventId`.
+
+The next logical backend/API handoff is to formalize these as **one logical agent-assist turn per customer utterance** at the API boundary:
+
+- trigger assist generation from the **customer turn only**
+- run it **after translation/normalization when needed**
+- correlate the assist payload to the transcript turn via `utteranceId` and `relatedTranscriptEventId`
+- treat the knowledge cards + next best action as a single UI update, even if they remain separate internal events
+
+## Why
+
+- **Streaming-friendly:** keeps incremental delivery; no batch/requery step
+- **POC-thin:** uses the seams already in place for scripted feed, replay, SignalR, and ACS-live audio later
+- **Mock-first / ACS-later:** scripted conversation can emit the same correlated assist turn shape now; real ACS just swaps the audio/transcript producer
+- **Closes the actual gap:** backend is already producing the data, but the handoff to the live rep experience is not yet expressed as a single assist update the frontend can reliably render during the conversation
+
+## Scope guidance
+
+- Keep `KnowledgeCardEvent` and `NextBestActionEvent` as internal stream artifacts for now if that is cheaper
+- For the POC, the frontend contract can simply be: **bundle by utterance** and render the latest assist for that customer turn
+- Avoid adding a second retrieval service, polling path, or post-call aggregation step
+
+## Risks / watchouts
+
+1. If assist stays as two unrelated frontend subscriptions, the rep may see a card without the action, or vice versa
+2. If assist runs on rep utterances too, recommendations will drift away from customer intent
+3. If non-English customer turns are not normalized before assist, retrieval quality will be inconsistent
+
+### 2026-06-11T16:42:31.815-04:00: User directive
+**By:** current local user (via Copilot)
+**What:** Always remember the customer will join the call first because they are initiating it, and the rep joins second.
+**Why:** User request — captured for team memory
+
+# 2026-06-11T16:42:31.815-04:00 — Rep Accept Latency (Caller Connected → Rep Prompt)
+**By:** Dyakka (ACS / Telephony)  
+**Status:** Recommendation (no code change in this pass)
+
+## What we confirmed
+
+1. **No unnecessary wait before `CallPending`:**  
+   In `src/CallCenterTranscription.Api/AcsEndpoints.cs` (`HandleIncomingCallAsync`), `stream.callPending` is sent immediately after `AnswerCallAsync` returns and callId is captured.
+
+2. **Accept prompt timing is not driven by `CallPending`:**  
+   The rep Accept/Decline controls in `src/CallCenterTranscription.Web/wwwroot/js/rep-phone.js` appear only on ACS Calling SDK `incomingCall` event (`onIncomingCall`), not on SignalR `stream.callPending`.
+
+3. **Current critical path to Accept prompt:**  
+   `IncomingCall webhook` → `AnswerCallAsync` → ACS callback `CallConnected` (`HandleCallbacksAsync`) → `RepEndpoints.TryAddRepToCallAsync` → `AddParticipantAsync` → browser `incomingCall` event.
+
+4. **Existing hard gate is preserved:**  
+   Transcription emission remains gated on rep acceptance (`ActiveCallStore.RepAccepted`) in `SpeechTranscriptionService` and UI gating in `live-transcript.js`. Do not relax this.
+
+## Likely contributors to the observed ~8s delay
+
+- ACS platform timing between answer/connect/callback/invite delivery (normal but variable).
+- If `RepRegistry.CurrentUserId` is absent at `CallConnected`, add-participant is deferred until `/api/rep/register` runs again (heartbeat currently every 15s).
+
+## Safe optimization recommendations
+
+### Meyrin (API)
+1. **Instrument timestamps** in `AcsEndpoints.cs` + `RepEndpoints.cs`:
+   - IncomingCall received
+   - `AnswerCallAsync` start/end
+   - `stream.callPending` send
+   - `CallConnected` received
+   - `TryAddRepToCallAsync` enter/skip reason
+   - `AddParticipantAsync` start/end
+   - `AddParticipantSucceeded` received
+2. **Optional latency optimization:** after successful `AnswerCallAsync`, opportunistically call `TryAddRepToCallAsync` once (if rep already registered), while retaining `CallConnected` path as fallback/idempotent path.
+
+### Lunamaria (Web)
+1. **Add rep-side timing marks** in `rep-phone.js`:
+   - SDK init complete
+   - `/rep/register` success/failure
+   - `incomingCall` event timestamp
+2. Keep Accept buttons tied to real `incomingCall` object (no fake pre-accept action).
+
+### Joint
+1. **Reduce register heartbeat** from 15s to 5s (or immediate re-register on every `stream.callPending`) to shrink stale-registry recovery delay.
+2. Build a single correlation timeline per call using `callId` and UTC timestamps from API + browser logs.
+
+## Outcome
+
+We can likely cut worst-case “connected → rep prompt” delay by removing deferred add-rep windows and tightening registration freshness, while strictly preserving: **transcription starts only after Rep accepts**.
+
+
+# Kira demo scripts decision
+
+- Store demo-call definitions as a machine-friendly JSON artifact at `samples/agent-assist-demo-scripts.v1.json` so UI/pipeline work can bind transcript turns directly to expected knowledge-card IDs.
+- Keep the set to one broad retention save plus two narrower support flows (low-tank auto-delivery conversion and renewal-hardship save) so the demo can choose between 2-3 deterministic conversations without inventing new corpus records.
+- Attach primary knowledge expectations to customer turns and keep expected surfacing to one or two cards per turn so live rep guidance stays legible during playback.
+
+
+# Lacus Decision — Sentiment Update
+
+- **Date:** 2026-06-11T16:42:31.815-04:00
+- **Owner:** Lacus
+- **Scope:** Live diarization → customer sentiment routing
+
+## Decision
+
+Keep the accepted caller-order mapping for the first two distinct known speakers only:
+1. first known speaker = `Customer`
+2. second distinct known speaker = `Rep`
+
+After both slots are latched, treat any additional diarization speaker IDs as **ambiguous** and do not route them to customer sentiment.
+
+## Why
+
+Turn-taking fallback can misclassify rep alias IDs as customer and pollute the sentiment signal. For churn/next-step trust, a conservative no-update is safer than a confident wrong update.
+
+## Impact
+
+- Preserves customer-first call-order rule.
+- Preserves customer-only sentiment integrity.
+- Prevents late-call sentiment contamination from rep alias IDs.
+- Adds tests for ambiguous post-latch speaker IDs and sentiment non-movement.
+
+## Follow-up
+
+For production-quality late-call recovery, integrate deterministic participant identity from ACS (unmixed participant identity/correlation), then map aliases with evidence rather than heuristics.
+
+
+# 2026-06-11T16:42:31.815-04:00 — Rep Accept Prompt Latency Fast-Path
+**By:** Meyrin  
+**Requested by:** current local user  
+**Status:** IMPLEMENTED
+
+## Problem
+In live ACS runs, there can be several seconds between inbound caller connection and the rep seeing the Accept prompt. Existing flow waited for `CallConnected` callback before attempting `AddParticipant`, which adds callback-delivery latency before the rep softphone can ring.
+
+## Decision
+Use an answer-path fast lane:
+1. After `AnswerCallAsync` succeeds, immediately emit `stream.callPending`.
+2. Immediately attempt `AddParticipant` if a rep is already registered.
+3. Keep `CallConnected` path as fallback reconverge when early add is not possible or fails.
+
+This preserves the core gate: transcription/AI remains inactive for rep UI until `AddParticipantSucceeded` emits `stream.callAccepted`.
+
+## Safety Guard Added
+`AddParticipantSucceeded` and `AddParticipantFailed` now mutate call-accept/add state only when callback call ID matches the active call ID, preventing stale callbacks from flipping acceptance state on a newer call.
+
+## Validation
+- Added tests in `AcsEndpointsLatencyTests`:
+  - verifies `stream.callPending` is emitted before any rep-add attempt.
+  - verifies pending emit still occurs when no rep is registered.
+  - verifies active-call ID matching behavior.
+- Full suite passed after changes: `dotnet test CallCenterTranscription.sln`.
+
+
+# 2026-06-11T16:42:31.815-04:00 — Rep Accept Latency Fix Review
+**By:** Yzak (Tester / QA)
+**Verdict:** ✅ APPROVE
+
+## What Was Reviewed
+
+Meyrin's `EmitCallPendingAndTryAddRepAsync` fast-path in `AcsEndpoints.cs` plus `IsCurrentActiveCall` stale-callback guard, and corresponding tests in `AcsEndpointsLatencyTests.cs`. Also reviewed Dyakka's telephony analysis.
+
+## Checklist
+
+| Criterion | Result |
+|-----------|--------|
+| `stream.callPending` emitted immediately post-`AnswerCallAsync` | ✅ Line 266–274 — fires before any add-rep logic |
+| Early add-rep cannot start transcription prematurely | ✅ `RepAccepted` only set in `AddParticipantSucceeded` handler (line 372); `SpeechTranscriptionService` checks `_callStore.RepAccepted` twice (lines 250, 305) |
+| `CallConnected` fallback still works | ✅ Lines 329–354 — still attempts `TryAddRepToCallAsync` when rep registered |
+| Stale callbacks cannot flip state on a new call | ✅ `IsCurrentActiveCall` gate on both `AddParticipantSucceeded` (line 361) and `AddParticipantFailed` (line 391) |
+| Early add failure doesn't crash or corrupt state | ✅ Caught + logged at line 284–290; `callPending` already sent |
+| Tests cover ordering, no-rep, and fault tolerance | ✅ 7 tests pass covering: emit-before-add ordering, pending-without-rep, fault resilience, and all `IsCurrentActiveCall` boundary cases |
+
+## Observations
+
+1. **Transcription gate is solid.** The early `AddParticipant` only shortens the rep's ring-time window — it does NOT bypass `MarkAccepted()` which remains the sole transcription gate.
+2. **`RepAdded` guard (line 276)** prevents double-invitations if both the fast-path and `CallConnected` converge.
+3. **Stale-callback protection** uses strict ordinal string equality on call connection IDs — correct for ACS-generated UUIDs.
+4. **Dyakka's analysis** correctly identifies the remaining non-code delay (ACS platform latency + browser SDK `incomingCall` delivery) as irreducible from the API side.
+
+## User's Question: "Can we speed this up?"
+
+The ~8s observed delay has two parts:
+- **Reducible (this fix):** Eliminated the wait for `CallConnected` callback before sending `AddParticipant`. Pending notification is now immediate post-answer.
+- **Irreducible (ACS platform):** Time from `AddParticipant` API call → ACS delivers `incomingCall` to browser SDK is ACS-internal. Cannot be shortened from our code.
+
+**Additional opportunity (not blocking):** Dyakka recommends reducing `/rep/register` heartbeat from 15s → 5s to shrink the stale-registry window. Good idea for a follow-up, not a blocker.
+
+## Final
+
+No blocking issues. Tests pass. Core safety invariant (transcription after accept only) preserved. Approved.
+
