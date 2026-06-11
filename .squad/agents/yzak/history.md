@@ -62,3 +62,12 @@
 - **Scenario is demo-unlikely** (requires customer to speak before rep greeting AND complete silence before accept), but the pinned test ensures it cannot regress silently.
 - **Final test count: 78 total (75 pass, 3 skip, 0 fail).** Up from 59 pre-Lacus; Lacus's 14 SpeakerAttributionStateTests + this 1 documentation test = 15 new since the teardown session.
 
+## Learnings — 2026-06-11T15:41:04.207-04:00 (Diarization Role Bug Fix Review)
+
+- **Verdict: APPROVE.** Lacus's uncommitted fix correctly enforces the caller-order rule: first observed known speaker = Customer, second distinct speaker = Rep. This directly resolves the user-reported "everything is Rep" bug.
+- **Root cause confirmed.** The prior Phase-2B fallback (`first post-accept speaker = Rep`) was inverted for this inbound topology where the customer initiates the call. When customer spoke first post-accept (the common case), they were latched as Rep, making the entire transcript show Rep labels.
+- **Fix design.** Collapsed Phase 2A / Phase 2B into a single rule: first known speaker = Customer always (whether pre-accept or post-accept). This is sound because: (a) pre-accept, only the customer is on the Mixed audio stream; (b) post-accept, the user confirmed "the customer will call in first, rep joins second."
+- **Test coverage.** 20 tests pass including: Phase 1 pre-accept paths, Phase 2B both-speakers-post-accept, Unknown filtering, immutability after latch, and return-value logging contracts. The old documentation test (`Phase2B_CustomerSpeaksFirstPostAccept_NoPreAcceptSpeech`) is correctly superseded — the new `Phase2B_FirstSpeakerPostAccept_IsLatchedAsCustomer` asserts the fixed (correct) behavior directly.
+- **Integration verified.** `SpeechTranscriptionService.Transcribed` handler calls `attribution.Observe()` on every event, then `attribution.IsCustomer()` feeds into `BuildTranscriptEvent()` which sets `SpeakerRole = "customer" | "rep" | "unknown"`. Sentiment routing (`_liveSentiment.Append()`) is gated on `isCustomer == true`. No dead code paths.
+- **Residual known limitation (unchanged).** If the rep speaks first post-accept AND the customer was completely silent pre-accept, the rep gets labeled Customer. User confirmed this is not their flow. Demo-survivable.
+

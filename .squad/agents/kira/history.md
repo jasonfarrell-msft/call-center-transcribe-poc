@@ -20,3 +20,7 @@
 - If we must cut one in phase 1, cut diarization only if channel separation already gives attribution; otherwise keep it because customer-only signal attribution matters.
 - **Team update (2026-06-05):** The propane-retention demo now rides the C#/.NET + Razor + SignalR stack, with real ACS Option A and `transcript.detectedLanguage` keeping language handling and churn signals coherent.
 - **2026-06-07T00:18:14Z — Frontend mission-control planning pass:** Helped align the transcript diarization, ad hoc translation, sentiment, and mission-control health story with the retention demo.
+
+- **2026-06-11T15:36:11.935-04:00 — Synthetic answer dataset:** Added a service-agnostic JSONL format corpus at `src/CallCenterTranscription.Ai/Knowledge/synthetic-agent-assist-knowledge.v1.jsonl` so future search/RAG ingestion can index one standalone propane knowledge item per line.
+- **2026-06-11T15:36:11.935-04:00 — Record shape:** The dataset stays flat and retrieval-friendly with answer content plus rep-only fields like `rep_guidance`, `next_best_action`, `customer_intents`, and `trigger_phrases`; the companion schema lives at `src/CallCenterTranscription.Ai/Knowledge/synthetic-agent-assist-knowledge.schema.json`.
+- **2026-06-11T15:36:11.935-04:00 — User preference:** Keep synthetic CX data focused on realistic live-call answers for propane reps, not implementation wiring.

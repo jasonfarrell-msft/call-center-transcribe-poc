@@ -21,10 +21,9 @@ namespace CallCenterTranscription.Api.Services;
 ///     First new distinct speaker = rep. → latch RepSpeakerId.
 ///     (Normal path when customer spoke before accept or spoke before the rep greeted.)
 ///
-///   Phase 2B | POST-ACCEPT, NEITHER slot latched yet (customer silent until rep greeted):
-///     First speaker post-accept = REP (rep greeting is the first utterance in this scenario).
-///     → latch RepSpeakerId provisionally.
-///     Second distinct speaker = CUSTOMER. → latch CustomerSpeakerId (Phase 2B resolution).
+///   Phase 2B | POST-ACCEPT, NEITHER slot latched yet:
+///     Caller-order rule for this inbound flow: customer initiates the call, rep joins second.
+///     Therefore first observed speaker = CUSTOMER, second distinct speaker = REP.
 ///
 ///   "Unknown" / empty SpeakerIds are never latched (IsSpeakerKnown = false).
 ///   Once a slot is latched it is NEVER changed for the call lifetime.
@@ -58,36 +57,22 @@ internal sealed class SpeakerAttributionState
 
         var id = speakerId!;
 
-        if (CustomerSpeakerId is null && RepSpeakerId is null)
+        if (CustomerSpeakerId is null)
         {
-            if (!repAccepted)
-            {
-                // Phase 1: rep not yet in call — speaker is definitively the customer.
-                CustomerSpeakerId = id;
-                return $"customer latched PRE-ACCEPT (definitive) SpeakerId={id}";
-            }
-            else
-            {
-                // Phase 2B: first speaker post-accept → assume REP (greeting scenario).
-                RepSpeakerId = id;
-                return $"rep latched POST-ACCEPT (Phase-2B first) SpeakerId={id}";
-            }
+            // First observed known speaker is customer for this inbound call topology:
+            // customer calls in first, rep joins second.
+            CustomerSpeakerId = id;
+            return repAccepted
+                ? $"customer latched POST-ACCEPT (call-order first) SpeakerId={id}"
+                : $"customer latched PRE-ACCEPT (definitive) SpeakerId={id}";
         }
 
         if (CustomerSpeakerId is not null && RepSpeakerId is null
             && !string.Equals(id, CustomerSpeakerId, StringComparison.Ordinal))
         {
-            // Phase 2A: customer already known, new speaker is the rep.
+            // Second distinct known speaker is rep.
             RepSpeakerId = id;
-            return $"rep latched (Phase-2A after customer) SpeakerId={id}";
-        }
-
-        if (RepSpeakerId is not null && CustomerSpeakerId is null
-            && !string.Equals(id, RepSpeakerId, StringComparison.Ordinal))
-        {
-            // Phase 2B resolution: rep was latched first; second distinct speaker = customer.
-            CustomerSpeakerId = id;
-            return $"customer latched POST-ACCEPT (Phase-2B resolution) SpeakerId={id}";
+            return $"rep latched (second distinct speaker) SpeakerId={id}";
         }
 
         return null; // already fully resolved, or same-speaker repeat
@@ -104,6 +89,6 @@ internal sealed class SpeakerAttributionState
 
     /// <summary>Returns true if the SpeakerId is a clear attribution (not null/empty/"Unknown").</summary>
     public static bool IsSpeakerKnown(string? speakerId) =>
-        !string.IsNullOrEmpty(speakerId) &&
+        !string.IsNullOrWhiteSpace(speakerId) &&
         !string.Equals(speakerId, "Unknown", StringComparison.OrdinalIgnoreCase);
 }

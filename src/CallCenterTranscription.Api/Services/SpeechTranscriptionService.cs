@@ -205,9 +205,9 @@ public sealed class SpeechTranscriptionService : BackgroundService
     ///   Phase 2 — POST-ACCEPT (both speakers present):
     ///     Case A — customerSpeakerId already latched in Phase 1:
     ///       First new distinct SpeakerId = rep. Latch as repSpeakerId.
-    ///     Case B — NEITHER latched yet (customer was silent until rep said hello):
-    ///       First speaker seen post-accept = REP (rep greeting is the typical first utterance).
-    ///       Latch as repSpeakerId. Second distinct speaker = CUSTOMER; latch as customerSpeakerId.
+    ///     Case B — NEITHER latched yet:
+    ///       Inbound call-order rule applies (customer initiates, rep joins second):
+    ///       first speaker seen = CUSTOMER, second distinct speaker = REP.
     ///
     ///   isCustomer is determined by matching the latched customerSpeakerId exactly.
     ///   Rep audio is transcribed but never scored for sentiment.

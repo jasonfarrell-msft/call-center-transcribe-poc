@@ -48,3 +48,14 @@
 
 - Customer-only sentiment: replace with deterministic ACS participant identity (Unmixed audio or participant role API)
 - Speaker attribution: same → requires per-frame participant ID correlation (out of scope POC)
+
+## Learnings
+
+- **Date:** 2026-06-11T15:41:04.207-04:00
+- **Architecture decision:** For this inbound ACS flow, enforce caller-order attribution: first observed known speaker is `Customer`; second distinct speaker is `Rep`.
+- **Pattern:** Keep speaker-role attribution in a dedicated per-call state machine (`SpeakerAttributionState`) and assert role transitions with unit tests before wiring UI labels.
+- **User preference:** Avoid confidence-only heuristics that can relabel customer speech as rep; favor deterministic, explainable mapping for surfaced roles/sentiment.
+- **Key file paths:**  
+  - `src/CallCenterTranscription.Api/Services/SpeakerAttributionState.cs`  
+  - `src/CallCenterTranscription.Api/Services/SpeechTranscriptionService.cs`  
+  - `tests/CallCenterTranscription.Tests/SpeakerAttributionStateTests.cs`
