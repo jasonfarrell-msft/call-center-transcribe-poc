@@ -1,0 +1,101 @@
+{
+  "schemaVersion": "1.0",
+  "generatedAtUtc": "2026-06-11T00:00:00Z",
+  "entries": [
+    {
+      "id": "card-retention-price-match",
+      "title": "Retention: missed delivery and competitor pricing",
+      "content": "When a customer reports a missed or delayed delivery AND references a competitor offer or lower price, the service-recovery and retention paths must run together. First acknowledge the service failure with a direct apology (do not minimize). Immediately confirm the next available expedited delivery window and apply a one-time service-recovery credit of up to $25 without manager approval. If the customer mentions a competitor's price or flyer, pull up the current budget-billing rate and compare it favorably against the competitor's per-gallon price. Offer to lock in the budget-billing rate for 12 months. Do not discuss cancellation proactively — focus on forward resolution. Document the service miss in the CRM with reason code 'DELIVERY_MISS' and attach the retention offer made.",
+      "snippet": "Acknowledge the missed delivery, apply a service recovery credit, and address the competitor offer with budget billing before any cancellation discussion.",
+      "sourceUrl": "https://contoso.example/policies/retention/missed-delivery-competitor-save",
+      "recommendedAction": "Apologize for the missed delivery, confirm expedited next window, apply a $25 service recovery credit, and offer a 12-month budget-billing lock to counter the competitor price.",
+      "category": "retention",
+      "locale": "en-US",
+      "version": "1.0",
+      "lastUpdatedUtc": "2026-06-01T00:00:00Z",
+      "riskLevel": "high",
+      "escalationRequired": false,
+      "tags": {
+        "intents": ["complaint.delivery", "intent.cancel", "inquiry.competitor"],
+        "entities": ["competitor", "service.delivery", "product.propane"],
+        "keywords": ["missed", "delivery", "late", "competitor", "price", "northstar", "lower", "flyer", "volante", "out of propane", "entrega"]
+      }
+    },
+    {
+      "id": "card-emergency-out-of-gas",
+      "title": "Emergency protocol: out of propane / empty tank",
+      "content": "A customer who reports being completely out of propane, especially in cold weather or with dependents in the home, is a priority-1 service situation. Immediately classify the account for emergency dispatch. If the account is in good standing (balance under $150 overdue), authorize emergency delivery within 4 hours at no additional fee. If the account has an overdue balance above $150, offer a $75 minimum payment to release the delivery hold and dispatch same-day. Always verify whether the customer has a propane appliance for heat — if yes, treat as safety-adjacent and note 'HEAT_RISK' in the CRM. After dispatch confirmation, provide the estimated arrival window and the driver's callback number. Do not place the customer on hold for more than 2 minutes during this call type.",
+      "snippet": "Out-of-propane calls require immediate emergency dispatch classification; prioritize heat-dependent households and confirm the delivery window before ending the call.",
+      "sourceUrl": "https://contoso.example/policies/service-recovery/emergency-out-of-gas",
+      "recommendedAction": "Classify as priority-1 emergency delivery, confirm dispatch within 4 hours, and provide an estimated arrival window before ending the call.",
+      "category": "service-recovery",
+      "locale": "en-US",
+      "version": "1.0",
+      "lastUpdatedUtc": "2026-06-01T00:00:00Z",
+      "riskLevel": "critical",
+      "escalationRequired": false,
+      "tags": {
+        "intents": ["complaint.out-of-gas", "request.emergency-delivery", "complaint.no-heat"],
+        "entities": ["service.delivery", "product.propane", "condition.heat"],
+        "keywords": ["out of gas", "out of propane", "empty", "no heat", "cold", "heat", "urgent", "emergency", "run out", "no propane", "tank empty"]
+      }
+    },
+    {
+      "id": "card-contract-renewal-rate-hike",
+      "title": "Contract renewal and rate increase objections",
+      "content": "Customers who receive a contract renewal notice with a price increase often call before signing. The standard objection is that the new rate is higher than the previous year's fixed rate or higher than a competitor's current advertised price. Do not apologize for market-rate adjustments — instead explain the value drivers (guaranteed supply, 24/7 emergency service, no delivery fees, auto-fill monitoring). Offer the 'Price Protection Plus' plan which caps per-gallon increases at 10% year-over-year in exchange for a 2-year commitment. If the customer is unwilling to sign a 2-year contract, offer a 1-year renewal at the current market rate with a $50 loyalty discount applied at the next delivery. Always document the renewal outcome in the CRM under the contract renewal workflow before ending the call.",
+      "snippet": "Address contract renewal concerns by explaining value drivers and offering Price Protection Plus; avoid apologizing for rate changes — focus on supply reliability and capped increases.",
+      "sourceUrl": "https://contoso.example/policies/contract/renewal-rate-objection",
+      "recommendedAction": "Present the Price Protection Plus plan (2-year commitment, 10% annual cap); if declined, offer a 1-year renewal with a $50 loyalty discount and document the outcome.",
+      "category": "contract",
+      "locale": "en-US",
+      "version": "1.0",
+      "lastUpdatedUtc": "2026-06-01T00:00:00Z",
+      "riskLevel": "medium",
+      "escalationRequired": false,
+      "tags": {
+        "intents": ["intent.cancel", "inquiry.contract", "complaint.price-increase"],
+        "entities": ["contract.renewal", "pricing.rate", "competitor"],
+        "keywords": ["renewal", "contract", "rate", "price increase", "locked in", "cancel", "higher rate", "protection plan", "new rate", "per gallon", "year"]
+      }
+    },
+    {
+      "id": "card-safety-leak-odor",
+      "title": "Safety escalation: gas leak or odor reported",
+      "content": "Any call where the customer reports a gas smell, odor of rotten eggs, hissing near lines or appliances, or suspected leak must be treated as a life-safety emergency. Do not attempt to troubleshoot the leak over the phone. Immediately instruct the customer to: (1) not operate any electrical switches or open flames, (2) leave the building immediately and move upwind, (3) call 911 from outside the building. Simultaneously, flag the account for emergency technician dispatch — this overrides all delivery queue priorities. Notify your supervisor before the call ends. Document with reason code 'SAFETY_LEAK_ODOR'. Do not quote repair costs or delivery fees during the safety response. Follow-up scheduling for the service inspection occurs only after emergency services have cleared the premises.",
+      "snippet": "Gas leak or odor calls are life-safety emergencies: instruct the customer to evacuate immediately, call 911, and dispatch an emergency technician — do not troubleshoot over the phone.",
+      "sourceUrl": "https://contoso.example/policies/safety/leak-odor-emergency",
+      "recommendedAction": "Instruct the customer to evacuate and call 911 immediately; flag the account for emergency technician dispatch and notify your supervisor before ending the call.",
+      "category": "safety",
+      "locale": "en-US",
+      "version": "1.0",
+      "lastUpdatedUtc": "2026-06-01T00:00:00Z",
+      "riskLevel": "critical",
+      "escalationRequired": true,
+      "tags": {
+        "intents": ["report.safety-hazard", "complaint.gas-smell", "report.leak"],
+        "entities": ["hazard.gas-leak", "hazard.odor", "service.safety"],
+        "keywords": ["smell", "leak", "gas smell", "odor", "rotten eggs", "hissing", "dangerous", "safety", "propane smell", "evacuate"]
+      }
+    },
+    {
+      "id": "card-billing-hardship-payment-plan",
+      "title": "Billing hardship: payment plan and budget billing",
+      "content": "When a customer expresses inability to pay a current bill due to financial hardship, the rep has authority to offer a structured payment plan without manager approval for balances up to $500. Standard plan: 50% of the balance due at the time of the call and the remainder split equally across 2 subsequent monthly billing cycles. For balances above $500, a supervisor must co-approve. Additionally, offer enrollment in budget billing to average out future costs over 12 months, which prevents large seasonal spikes. Waive any late fees one time per 12-month period for accounts in good standing for the prior year. Document hardship accommodation in the CRM under 'BILLING_HARDSHIP' and note the agreed payment schedule. Do not threaten service suspension during the first hardship call — give the customer the payment plan window (typically 5 business days for the first payment).",
+      "snippet": "For customers unable to pay, offer a two-step payment plan up to $500 without manager approval and enroll them in budget billing to stabilize future monthly costs.",
+      "sourceUrl": "https://contoso.example/policies/billing/hardship-payment-plan",
+      "recommendedAction": "Offer a split payment plan (50% now, remainder over 2 months), enroll the customer in budget billing, and waive the late fee if this is the first hardship request in 12 months.",
+      "category": "billing",
+      "locale": "en-US",
+      "version": "1.0",
+      "lastUpdatedUtc": "2026-06-01T00:00:00Z",
+      "riskLevel": "medium",
+      "escalationRequired": false,
+      "tags": {
+        "intents": ["complaint.billing", "request.payment-plan", "complaint.cannot-pay"],
+        "entities": ["billing.invoice", "billing.payment", "product.budget-billing"],
+        "keywords": ["bill", "billing", "jumped", "increase", "forty", "budget billing", "can't pay", "payment plan", "hardship", "late fee", "overdue", "afford"]
+      }
+    }
+  ]
+}
