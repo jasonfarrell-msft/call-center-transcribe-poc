@@ -106,6 +106,12 @@ internal sealed class SpeakerAttributionState
         _roleBySpeakerId.TryGetValue(speakerId!, out var role) &&
         role == Role.Customer;
 
+    public bool IsRep(string? speakerId) =>
+        RepSpeakerId is not null &&
+        IsSpeakerKnown(speakerId) &&
+        _roleBySpeakerId.TryGetValue(speakerId!, out var role) &&
+        role == Role.Rep;
+
     /// <summary>Returns true if the SpeakerId is a clear attribution (not null/empty/"Unknown").</summary>
     public static bool IsSpeakerKnown(string? speakerId) =>
         !string.IsNullOrWhiteSpace(speakerId) &&

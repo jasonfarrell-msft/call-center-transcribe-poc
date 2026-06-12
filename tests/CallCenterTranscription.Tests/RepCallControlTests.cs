@@ -225,17 +225,18 @@ public sealed class RepCallControlTests
         // 3. Assert badge goes to "connecting", not "disconnected".
     }
 
-    // ── TC-02: "Call Pending" badge state ───────────────────────────────────────────────
-    // Blocked: stream.callIncoming SignalR event not yet implemented (see §1 of test plan).
+    // ── TC-02: pending call offer shows before transcript starts ─────────────────────────
+    // Lower transcript badge now reflects speech-service connectivity only; the Accept offer
+    // must appear in the header call bar as soon as stream.callPending arrives.
 
-    [Fact(Skip = "Frontend JS behaviour — stream.callPending event IS now emitted by API; validate conn-status--pending badge and zero transcript lines in Playwright once test harness is set up")]
-    public void Frontend_Badge_ShowsCallPending_OnIncomingCall()
+    [Fact(Skip = "Frontend JS behaviour — validate rep-callbar exposes Accept on stream.callPending while the lower speech badge stays connected, once Playwright coverage exists")]
+    public void Frontend_AcceptOffer_ShowsOnPendingCall_WithoutSwitchingSpeechBadge()
     {
-        // When stream.callIncoming fires:
-        // - [data-conn-status] must have class conn-status--pending.
-        // - [data-conn-label] must include "Call Pending".
+        // When stream.callPending fires:
+        // - [data-rep-accept] must be visible immediately (disabled until ACS incomingCall arrives).
+        // - [data-conn-label] must continue to reflect speech-service connectivity, not call pending.
         // - Transcript content area must contain zero .transcript-line elements.
-        // Implement once Athrun/Lacus decides Option 1 vs Option 2 (§1).
+        // Implement once Playwright coverage is available for the live browser path.
     }
 
     // ── TC-11: Customer-only sentiment ──────────────────────────────────────────────────

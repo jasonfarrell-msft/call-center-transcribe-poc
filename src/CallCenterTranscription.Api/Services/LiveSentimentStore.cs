@@ -18,22 +18,16 @@ namespace CallCenterTranscription.Api.Services;
 /// </summary>
 public sealed class LiveSentimentStore
 {
-    // Smoothing factor for the exponential moving average. Higher == more reactive to the
-    // latest utterance; lower == steadier. 0.4 lets the meter move with the conversation while
-    // resisting single-word whiplash.
-    private const double SmoothingAlpha = 0.4d;
-
     // Cap the per-call event history so a long call cannot grow memory unbounded; the panel
     // only needs the most recent points for trend.
     private const int MaxEvents = 50;
 
     private readonly object _gate = new();
     private readonly List<SentimentEvent> _events = new();
+    private readonly ConversationSentimentTracker _tracker = new();
 
     private bool _active;
     private string? _callId;
-    private double? _rollingScore;
-    private double? _previousRollingScore;
     private long _sequence;
 
     /// <summary>Starts a fresh sentiment session for a newly connected call.</summary>
@@ -43,10 +37,9 @@ public sealed class LiveSentimentStore
         {
             _active = true;
             _callId = callId;
-            _rollingScore = null;
-            _previousRollingScore = null;
             _sequence = 0;
             _events.Clear();
+            _tracker.Reset();
         }
     }
 
@@ -57,10 +50,9 @@ public sealed class LiveSentimentStore
         {
             _active = false;
             _callId = null;
-            _rollingScore = null;
-            _previousRollingScore = null;
             _sequence = 0;
             _events.Clear();
+            _tracker.Reset();
         }
     }
 
@@ -69,14 +61,8 @@ public sealed class LiveSentimentStore
     /// Utterances with no sentiment-bearing words (score 0) are ignored so neutral chatter and
     /// silence do not drag the meter toward the midpoint.
     /// </summary>
-    public SentimentEvent? Append(string callId, string? text)
+    public SentimentEvent? Append(string callId, string? text, string speakerRole = "customer")
     {
-        var utteranceScore = SentimentLexicon.Score(text);
-        if (utteranceScore == 0d)
-        {
-            return null;
-        }
-
         lock (_gate)
         {
             // Only accept utterances while a call is actively being tracked. After Clear()
@@ -99,22 +85,20 @@ public sealed class LiveSentimentStore
                 return null;
             }
 
-            _previousRollingScore = _rollingScore;
-            _rollingScore = _rollingScore is null
-                ? utteranceScore
-                : (SmoothingAlpha * utteranceScore) + ((1d - SmoothingAlpha) * _rollingScore.Value);
-
-            var score = Math.Clamp(_rollingScore.Value, -1d, 1d);
-            var trend = ResolveTrend(_previousRollingScore, _rollingScore);
+            var assessment = _tracker.ObserveTurn(speakerRole, text);
+            if (assessment is null)
+            {
+                return null;
+            }
 
             _events.Add(new SentimentEvent
             {
                 CallId = callId,
                 EventId = $"evt-sentiment-live-{++_sequence}",
                 TimestampUtc = DateTimeOffset.UtcNow,
-                Label = ResolveLabel(score),
-                Trend = trend,
-                Score = score,
+                Label = assessment.EventLabel,
+                Trend = assessment.Trend,
+                Score = assessment.Score,
                 Source = "live-lexicon",
             });
 
@@ -136,12 +120,11 @@ public sealed class LiveSentimentStore
     {
         lock (_gate)
         {
-            if (_rollingScore is null || _events.Count == 0)
+            if (_events.Count == 0)
             {
                 return new SentimentFeedResponse();
             }
 
-            var score = Math.Clamp(_rollingScore.Value, -1d, 1d);
             var latest = _events[^1];
 
             return new SentimentFeedResponse
@@ -150,8 +133,8 @@ public sealed class LiveSentimentStore
                 Summary = new CallSentimentSummary
                 {
                     CallId = _callId ?? string.Empty,
-                    OverallLabel = ResolveLabel(score),
-                    Trend = latest.Trend,
+                    OverallLabel = _tracker.OverallLabel,
+                    Trend = _tracker.Trend,
                     SummaryText = string.Empty,
                     UpdatedAtUtc = latest.TimestampUtc,
                     Source = "live-lexicon",
@@ -159,28 +142,5 @@ public sealed class LiveSentimentStore
                 Events = _events.ToArray(),
             };
         }
-    }
-
-    private static string ResolveLabel(double score) => score switch
-    {
-        <= -0.2d => "negative",
-        < 0.2d => "neutral",
-        _ => "positive",
-    };
-
-    private static string ResolveTrend(double? previous, double? current)
-    {
-        if (previous is null || current is null)
-        {
-            return "steady";
-        }
-
-        var delta = current.Value - previous.Value;
-        return delta switch
-        {
-            > 0.05d => "improving",
-            < -0.05d => "declining",
-            _ => "steady",
-        };
     }
 }

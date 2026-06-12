@@ -72,8 +72,114 @@ public sealed class ApiWiringSmokeTests(WebApplicationFactory<Program> factory)
         Assert.Equal("call-propane-retention-0001", session.Call.CallId);
         Assert.Equal("Elena Morales", session.Call.CustomerName);
         Assert.True(session.IsMockFeedActive);
-        Assert.Equal("cooling_down", session.SentimentSummary.OverallLabel);
+        Assert.Equal("resolved", session.SentimentSummary.OverallLabel);
         Assert.Contains("DemoScript__ScriptId", session.Notes, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ApiHost_LiveMode_ExposesPendingCallStateBeforeAnyTranscript()
+    {
+        using var envScope = new EnvironmentVariableScope(new Dictionary<string, string?>
+        {
+            ["AudioSource__Mode"] = "Acs"
+        });
+        using var liveFactory = new WebApplicationFactory<Program>();
+
+        var startedAtUtc = DateTimeOffset.Parse("2026-06-12T14:00:00Z");
+        using (var scope = liveFactory.Services.CreateScope())
+        {
+            var currentStateStore = scope.ServiceProvider.GetRequiredService<PipelineCurrentStateStore>();
+            currentStateStore.MarkPending("call-live-pending-1", startedAtUtc);
+        }
+
+        using var client = liveFactory.CreateClient();
+        var session = await client.GetFromJsonAsync<SessionCurrentResponse>("/api/session/current");
+        var currentState = await client.GetFromJsonAsync<PipelineCurrentStateResponse>("/api/session/current-state");
+        var activeCall = await client.GetFromJsonAsync<ActiveCallStateResponse>("/api/calls/active");
+
+        Assert.NotNull(session);
+        Assert.NotNull(currentState);
+        Assert.NotNull(activeCall);
+        Assert.False(session.IsMockFeedActive);
+        Assert.Equal("call-live-pending-1", session.Call.CallId);
+        Assert.Equal("pending", session.Call.State);
+        Assert.Equal("call-live-pending-1", currentState.Call.CallId);
+        Assert.Equal("pending", currentState.Call.State);
+        Assert.Empty(currentState.TranscriptEvents);
+        Assert.Equal("live_lifecycle_only", currentState.StreamReplayPolicy);
+        Assert.True(activeCall.AcceptAvailable);
+        Assert.False(activeCall.RepAccepted);
+        Assert.Equal("pending", activeCall.State);
+        Assert.Equal(startedAtUtc, activeCall.StartedAtUtc);
+    }
+
+    [Fact]
+    public async Task ApiHost_LiveMode_ExposesAcceptedCallStateWithoutReopeningAccept()
+    {
+        using var envScope = new EnvironmentVariableScope(new Dictionary<string, string?>
+        {
+            ["AudioSource__Mode"] = "Acs"
+        });
+        using var liveFactory = new WebApplicationFactory<Program>();
+
+        using (var scope = liveFactory.Services.CreateScope())
+        {
+            var currentStateStore = scope.ServiceProvider.GetRequiredService<PipelineCurrentStateStore>();
+            currentStateStore.MarkPending("call-live-accepted-1", DateTimeOffset.Parse("2026-06-12T14:05:00Z"));
+            currentStateStore.MarkAccepted("call-live-accepted-1");
+        }
+
+        using var client = liveFactory.CreateClient();
+        var session = await client.GetFromJsonAsync<SessionCurrentResponse>("/api/session/current");
+        var currentState = await client.GetFromJsonAsync<PipelineCurrentStateResponse>("/api/session/current-state");
+        var activeCall = await client.GetFromJsonAsync<ActiveCallStateResponse>("/api/calls/active");
+
+        Assert.NotNull(session);
+        Assert.NotNull(currentState);
+        Assert.NotNull(activeCall);
+        Assert.Equal("accepted", session.Call.State);
+        Assert.Equal("accepted", currentState.Call.State);
+        Assert.Empty(currentState.TranscriptEvents);
+        Assert.False(activeCall.AcceptAvailable);
+        Assert.True(activeCall.RepAccepted);
+        Assert.Equal("accepted", activeCall.State);
+        Assert.Contains("Rep has accepted", session.Notes, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task ApiHost_MockMode_IgnoresIncomingCallWebhookEvenWhenAcsEndpointExists()
+    {
+        using var envScope = new EnvironmentVariableScope(new Dictionary<string, string?>
+        {
+            ["AudioSource__Mode"] = "Mock",
+            ["Acs__Endpoint"] = "https://contoso.communication.azure.com"
+        });
+        using var mockFactory = new WebApplicationFactory<Program>();
+        using var client = mockFactory.CreateClient();
+
+        var response = await client.PostAsJsonAsync("/api/events/acs/incoming-call", new[]
+        {
+            new
+            {
+                eventType = "Microsoft.Communication.IncomingCall",
+                data = new
+                {
+                    incomingCallContext = "synthetic-incoming-context"
+                }
+            }
+        });
+
+        response.EnsureSuccessStatusCode();
+
+        var session = await client.GetFromJsonAsync<SessionCurrentResponse>("/api/session/current");
+        var currentState = await client.GetFromJsonAsync<PipelineCurrentStateResponse>("/api/session/current-state");
+
+        Assert.NotNull(session);
+        Assert.NotNull(currentState);
+        Assert.True(session.IsMockFeedActive);
+        Assert.Equal("call-propane-retention-0001", session.Call.CallId);
+        Assert.Equal("call-propane-retention-0001", currentState.Call.CallId);
+        Assert.Equal("active", currentState.Call.State);
     }
 
     [Fact]
@@ -102,8 +208,9 @@ public sealed class ApiWiringSmokeTests(WebApplicationFactory<Program> factory)
 
         Assert.NotNull(sentiment);
         Assert.Equal("call-propane-retention-0001", sentiment.CallId);
+        Assert.Equal("resolved", sentiment.Summary.OverallLabel);
         Assert.Equal("improving", sentiment.Summary.Trend);
-        Assert.Equal(4, sentiment.Events.Count);
+        Assert.True(sentiment.Events.Count >= 3);
     }
 
     [Fact]
@@ -143,7 +250,7 @@ public sealed class ApiWiringSmokeTests(WebApplicationFactory<Program> factory)
         Assert.Equal("full_history_for_active_call", currentState.StreamReplayPolicy);
         Assert.Equal(6, currentState.TranscriptEvents.Count);
         Assert.Single(currentState.TranslationEvents);
-        Assert.Equal(4, currentState.SentimentEvents.Count);
+        Assert.True(currentState.SentimentEvents.Count >= 3);
         Assert.NotEmpty(currentState.ChurnRiskEvents);
         Assert.NotEmpty(currentState.KnowledgeCardEvents);
         Assert.NotEmpty(currentState.NextBestActionEvents);

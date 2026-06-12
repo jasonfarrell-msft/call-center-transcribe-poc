@@ -46,24 +46,42 @@
         if (el) el.hidden = !visible;
     }
 
+    function setButtonEnabled(button, enabled) {
+        if (!button) {
+            return;
+        }
+
+        button.disabled = !enabled;
+        button.setAttribute("aria-disabled", enabled ? "false" : "true");
+    }
+
     // Bar states: "idle" (registered, waiting), "ringing" (incoming), "incall", "unavailable".
-    function applyState(state) {
+    function applyState(state, options = {}) {
+        const acceptEnabled = options.acceptEnabled ?? true;
         switch (state) {
             case "ringing":
                 show(acceptBtn, true); show(declineBtn, true);
                 show(muteBtn, false); show(hangupBtn, false);
+                setButtonEnabled(acceptBtn, acceptEnabled);
+                setButtonEnabled(declineBtn, true);
                 break;
             case "incall":
                 show(acceptBtn, false); show(declineBtn, false);
                 show(muteBtn, true); show(hangupBtn, true);
+                setButtonEnabled(acceptBtn, true);
+                setButtonEnabled(declineBtn, true);
                 break;
             case "unavailable":
                 show(acceptBtn, false); show(declineBtn, false);
                 show(muteBtn, false); show(hangupBtn, false);
+                setButtonEnabled(acceptBtn, true);
+                setButtonEnabled(declineBtn, true);
                 break;
             default: // idle
                 show(acceptBtn, false); show(declineBtn, false);
                 show(muteBtn, false); show(hangupBtn, false);
+                setButtonEnabled(acceptBtn, true);
+                setButtonEnabled(declineBtn, true);
                 break;
         }
     }
@@ -122,17 +140,28 @@
     let callAgent = null;
     let currentIncoming = null;
     let currentCall = null;
+    let pendingCallId = null;
+
+    function showPendingOffer(callId, acceptReady) {
+        pendingCallId = callId || pendingCallId || root.getAttribute("data-live-call-id") || "";
+        applyState("ringing", { acceptEnabled: acceptReady });
+        setStatus(acceptReady
+            ? "Incoming call — Accept to connect"
+            : "Incoming call detected — Accept will be ready in a moment");
+    }
 
     function wireCall(call) {
         currentCall = call;
         call.on("stateChanged", () => {
             const s = call.state;
             if (s === "Connected") {
+                pendingCallId = null;
                 applyState("incall");
                 setStatus("On call with customer");
                 syncMute();
             } else if (s === "Disconnected") {
                 currentCall = null;
+                pendingCallId = null;
                 applyState("idle");
                 setStatus("Ready — waiting for a call");
             } else {
@@ -158,12 +187,12 @@
             return;
         }
         currentIncoming = incoming;
-        applyState("ringing");
-        setStatus("Incoming call — Accept to connect");
+        showPendingOffer(pendingCallId, true);
 
         incoming.on && incoming.on("callEnded", () => {
             if (currentIncoming === incoming) {
                 currentIncoming = null;
+                pendingCallId = null;
                 if (!currentCall) { applyState("idle"); setStatus("Ready — waiting for a call"); }
             }
         });
@@ -175,20 +204,24 @@
             setStatus("Connecting…");
             const call = await currentIncoming.accept();
             currentIncoming = null;
+            pendingCallId = null;
             wireCall(call);
         } catch (err) {
             console.error("rep-phone: accept failed.", err);
             setStatus("Could not connect the call.");
             applyState("idle");
             currentIncoming = null;
+            pendingCallId = null;
         }
     });
 
     declineBtn && declineBtn.addEventListener("click", async () => {
-        if (!currentIncoming) return;
-        try { await currentIncoming.reject(); }
-        catch (err) { console.warn("rep-phone: reject failed.", err); }
+        if (currentIncoming) {
+            try { await currentIncoming.reject(); }
+            catch (err) { console.warn("rep-phone: reject failed.", err); }
+        }
         currentIncoming = null;
+        pendingCallId = null;
         applyState("idle");
         setStatus("Call declined — waiting for a call");
         // Tell the backend to HangUp forEveryone so the PSTN customer leg drops
@@ -226,6 +259,7 @@
             try { await currentIncoming.reject(); } catch { /* ignore */ }
             currentIncoming = null;
         }
+        pendingCallId = null;
         if (currentCall) {
             try { await currentCall.hangUp(); }
             catch (err) { console.warn("rep-phone: ACS hangUp on rep.callEnded failed.", err); }
@@ -234,6 +268,30 @@
         // Reset softphone bar to idle waiting state regardless of call leg status.
         applyState("idle");
         setStatus("Ready — waiting for a call");
+    });
+
+    document.addEventListener("rep.callPending", (event) => {
+        if (currentCall) {
+            return;
+        }
+
+        const callId = event instanceof CustomEvent ? event.detail?.callId : null;
+        showPendingOffer(callId, !!currentIncoming);
+    });
+
+    document.addEventListener("rep.callAccepted", (event) => {
+        const callId = event instanceof CustomEvent ? event.detail?.callId : null;
+        if (callId && pendingCallId && callId !== pendingCallId) {
+            return;
+        }
+
+        if (currentCall || currentIncoming) {
+            return;
+        }
+
+        pendingCallId = null;
+        applyState("idle");
+        setStatus("Call already connected — waiting for the next call");
     });
 
     // ── Bootstrap ────────────────────────────────────────────────────────────────────────────
@@ -271,8 +329,12 @@
 
             // "Registered" == the incomingCall handler is wired and ready.
             callAgent.on("incomingCall", onIncomingCall);
-            applyState("idle");
-            setStatus("Ready — waiting for a call");
+            if (root.getAttribute("data-live-call-state") === "pending") {
+                showPendingOffer(root.getAttribute("data-live-call-id"), false);
+            } else {
+                applyState("idle");
+                setStatus("Ready — waiting for a call");
+            }
             startHeartbeat();
         } catch (err) {
             console.error("rep-phone: failed to initialise CallAgent.", err);

@@ -1,5 +1,6 @@
 using CallCenterTranscription.Ai;
 using CallCenterTranscription.Ai.Knowledge;
+using CallCenterTranscription.Api.Services;
 using CallCenterTranscription.Shared.Events;
 using Microsoft.Extensions.Configuration;
 
@@ -79,12 +80,12 @@ public sealed class ScriptedPropaneRetentionScenarioFeed : IScriptedScenarioFeed
         var churnRiskEvents = new List<ChurnRiskEvent>();
         var knowledgeCardEvents = new List<KnowledgeCardEvent>();
         var nextBestActionEvents = new List<NextBestActionEvent>();
-
-        var positiveCustomerTurnSeen = false;
+        var sentimentTracker = new ConversationSentimentTracker();
 
         foreach (var turn in script.Turns.OrderBy(static turn => turn.TurnNumber))
         {
             var timestamp = DefaultStartUtc.AddSeconds((turn.TurnNumber - 1) * 8);
+            var sentimentText = turn.Utterance;
             var transcriptEvent = new TranscriptEvent
             {
                 CallId = DefaultCallId,
@@ -106,6 +107,7 @@ public sealed class ScriptedPropaneRetentionScenarioFeed : IScriptedScenarioFeed
             if (!turn.Language.StartsWith("en", StringComparison.OrdinalIgnoreCase) &&
                 TranslationOverrides.TryGetValue($"{script.ScriptId}:{turn.TurnNumber}", out var translatedText))
             {
+                sentimentText = translatedText;
                 translationEvents.Add(new TranslationEvent
                 {
                     CallId = DefaultCallId,
@@ -119,6 +121,24 @@ public sealed class ScriptedPropaneRetentionScenarioFeed : IScriptedScenarioFeed
                     TargetLanguage = "en-US",
                     OriginalText = turn.Utterance,
                     TranslatedText = translatedText,
+                    Source = $"mock-script:{script.ScriptId}"
+                });
+            }
+
+            var sentimentAssessment = sentimentTracker.ObserveTurn(turn.Speaker, sentimentText);
+            if (sentimentAssessment is not null)
+            {
+                sentimentEvents.Add(new SentimentEvent
+                {
+                    CallId = DefaultCallId,
+                    EventId = $"evt-sentiment-{turn.TurnNumber:0000}",
+                    RelatedTranscriptEventId = transcriptEvent.EventId,
+                    RelatedTranscriptSequence = transcriptEvent.Sequence,
+                    UtteranceId = transcriptEvent.UtteranceId,
+                    TimestampUtc = timestamp.AddMilliseconds(500),
+                    Label = sentimentAssessment.EventLabel,
+                    Trend = sentimentAssessment.Trend,
+                    Score = sentimentAssessment.Score,
                     Source = $"mock-script:{script.ScriptId}"
                 });
             }
@@ -137,43 +157,17 @@ public sealed class ScriptedPropaneRetentionScenarioFeed : IScriptedScenarioFeed
                 knowledgeCardEvents.Add(match.CreateKnowledgeCardEvent("demo_trigger_matcher", timestamp.AddMilliseconds(700)));
                 nextBestActionEvents.Add(match.CreateNextBestActionEvent("demo_trigger_matcher", timestamp.AddMilliseconds(800)));
             }
-
-            var sentimentScore = ComputeSentimentScore(turn.Utterance, match.HasMatches);
-            var sentimentLabel = sentimentScore switch
-            {
-                <= -0.25 => "negative",
-                >= 0.2 => "positive",
-                _ => "mixed"
-            };
-            if (sentimentScore > 0)
-            {
-                positiveCustomerTurnSeen = true;
-            }
-
-            sentimentEvents.Add(new SentimentEvent
-            {
-                CallId = DefaultCallId,
-                EventId = $"evt-sentiment-{turn.TurnNumber:0000}",
-                RelatedTranscriptEventId = transcriptEvent.EventId,
-                RelatedTranscriptSequence = transcriptEvent.Sequence,
-                UtteranceId = transcriptEvent.UtteranceId,
-                TimestampUtc = timestamp.AddMilliseconds(500),
-                Label = sentimentLabel,
-                Trend = positiveCustomerTurnSeen ? "improving" : "steady",
-                Score = sentimentScore,
-                Source = $"mock-script:{script.ScriptId}"
-            });
         }
 
         var lastSentiment = sentimentEvents.LastOrDefault();
         var summary = new CallSentimentSummary
         {
             CallId = DefaultCallId,
-            OverallLabel = positiveCustomerTurnSeen ? "cooling_down" : "needs_attention",
-            Trend = positiveCustomerTurnSeen ? "improving" : "steady",
-            SummaryText = positiveCustomerTurnSeen
-                ? "Customer concerns were addressed and the call moved toward a save outcome."
-                : "Customer concerns remain active and require rep follow-through.",
+            OverallLabel = sentimentTracker.OverallLabel,
+            Trend = sentimentTracker.Trend,
+            SummaryText = string.IsNullOrWhiteSpace(sentimentTracker.SummaryText)
+                ? "Customer concerns remain active and require rep follow-through."
+                : sentimentTracker.SummaryText,
             UpdatedAtUtc = (lastSentiment?.TimestampUtc ?? DefaultStartUtc).AddMilliseconds(250),
             Source = $"mock-script:{script.ScriptId}"
         };
@@ -320,30 +314,6 @@ public sealed class ScriptedPropaneRetentionScenarioFeed : IScriptedScenarioFeed
             }
         ]
     };
-
-    private static double ComputeSentimentScore(string utterance, bool hasAssistMatch)
-    {
-        var normalized = utterance.ToLowerInvariant();
-        if (normalized.Contains("i'll stay", StringComparison.Ordinal) ||
-            normalized.Contains("ill stay", StringComparison.Ordinal) ||
-            normalized.Contains("go ahead", StringComparison.Ordinal) ||
-            normalized.Contains("that works", StringComparison.Ordinal) ||
-            normalized.Contains("renew it", StringComparison.Ordinal))
-        {
-            return 0.42;
-        }
-
-        if (normalized.Contains("thinking about switching", StringComparison.Ordinal) ||
-            normalized.Contains("may need to leave", StringComparison.Ordinal) ||
-            normalized.Contains("cannot pay", StringComparison.Ordinal) ||
-            normalized.Contains("missed", StringComparison.Ordinal) ||
-            normalized.Contains("run out", StringComparison.Ordinal))
-        {
-            return -0.62;
-        }
-
-        return hasAssistMatch ? -0.28 : 0.05;
-    }
 
     private sealed record ScenarioMetadata(string CustomerName, string AgentName, string QueueName);
 

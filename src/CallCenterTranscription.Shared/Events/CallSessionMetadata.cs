@@ -23,7 +23,7 @@ public sealed record CallSessionMetadata
     public string QueueName { get; init; } = string.Empty;
 
     [JsonPropertyName("state")]
-    public string State { get; init; } = "active";
+    public string State { get; init; } = "idle";
 
     [JsonPropertyName("startedAtUtc")]
     public DateTimeOffset StartedAtUtc { get; init; } = DateTimeOffset.UtcNow;

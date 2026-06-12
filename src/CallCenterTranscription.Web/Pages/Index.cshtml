@@ -12,6 +12,7 @@
      data-console-refresh-root="true"
      data-console-refresh-interval-ms="4000"
      data-live-mode="@(Model.LiveMode ? "true" : "false")"
+     data-live-call-state="idle"
      data-api-base-url="@Model.ApiBaseUrl">
     <h1 class="visually-hidden">Call-Center Representative Console</h1>
 
@@ -95,7 +96,7 @@
                         </div>
                         <p class="panel-kicker conn-status conn-status--disconnected" data-conn-status role="status" aria-live="polite">
                             <span class="conn-dot" aria-hidden="true"></span>
-                            <span data-conn-label>Disconnected — waiting for call</span>
+                            <span data-conn-label>Speech services offline</span>
                         </p>
                     </div>
                     <div class="transcript-scroller"

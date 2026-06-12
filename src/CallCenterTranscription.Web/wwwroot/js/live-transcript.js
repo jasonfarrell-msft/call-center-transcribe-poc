@@ -78,6 +78,19 @@
         }
     }
 
+    function setRootState(callState, callId = null) {
+        root.setAttribute("data-live-call-state", callState);
+        if (callId) {
+            root.setAttribute("data-live-call-id", callId);
+        } else {
+            root.removeAttribute("data-live-call-id");
+        }
+    }
+
+    function dispatchRepEvent(eventName, detail = {}) {
+        document.dispatchEvent(new CustomEvent(eventName, { bubbles: false, detail }));
+    }
+
     function setHidden(el, hidden) {
         if (!el) {
             return;
@@ -209,6 +222,7 @@
     function clearLiveCallArtifacts() {
         isCallActive = false;
         currentCallId = null;
+        setRootState("idle");
         ghostLine = null;
         lineByUtterance.clear();
         translationByUtterance.clear();
@@ -430,12 +444,19 @@
     }
 
     function onTranscript(evt) {
-        if (!isCallActive) {
-            return; // rep has not accepted yet — drop all pre-accept events
-        }
-
         if (!evt || !evt.text) {
             return;
+        }
+
+        if (!isCallActive) {
+            const transcriptCallId = evt.callId || currentCallId;
+            if (!transcriptCallId || (currentCallId && transcriptCallId !== currentCallId)) {
+                return;
+            }
+
+            // Replay/live transcript is the earliest trustworthy signal that the call is already
+            // accepted when /api/calls/active can only tell us that a call exists.
+            onCallAccepted({ callId: transcriptCallId, source: "transcript" });
         }
 
         if (endedTimer) {
@@ -443,7 +464,7 @@
             endedTimer = null;
         }
 
-        setState("live", "● Live transcription");
+        setState("live", "Speech services transcribing");
         setText(summaryEl, "Live feed active • Transcribing");
         clearEmptyState();
 
@@ -668,6 +689,7 @@
 
         isCallActive = false;
         currentCallId = callId;
+        setRootState("pending", callId);
         ghostLine = null;
         lineByUtterance.clear();
         translationByUtterance.clear();
@@ -682,11 +704,12 @@
         resetSentimentState();
         resetKnowledgeState();
 
-        setState("pending", "Incoming call — awaiting acceptance");
+        setState("live", "Speech services connected");
         setText(summaryEl, "Live mode • Waiting for rep acceptance");
         setText(callIdEl, callId);
         setText(customerEl, "Inbound caller");
         setText(connectedEl, WAITING);
+        dispatchRepEvent("rep.callPending", { callId, source: "signalr" });
 
         // Subscribe to the call's SignalR group now so transcript events arrive the moment
         // the rep accepts (backend starts emitting them post-accept).
@@ -707,15 +730,17 @@
 
         currentCallId = callId;
         isCallActive = true;
+        setRootState("accepted", callId);
 
         hidePendingState();
         clearEmptyState();
 
-        setState("live", "● Transcription active");
+        setState("live", "Speech services ready");
         setText(summaryEl, "Live mode • Transcription active");
         setText(callIdEl, callId);
         setText(customerEl, "Inbound caller");
         setText(connectedEl, formatTime());
+        dispatchRepEvent("rep.callAccepted", { callId, source: "signalr" });
 
         if (pendingKnowledgeEvent && pendingKnowledgeEvent.callId === callId) {
             onKnowledgeCards(pendingKnowledgeEvent);
@@ -729,12 +754,13 @@
 
         isCallActive = false;
         currentCallId = null;
+        setRootState("ended");
         ghostLine = null;
         lineByUtterance.clear();
         translationByUtterance.clear();
         expandedTranslationUtterances.clear();
 
-        setState("ended", "Call ended");
+        setState("live", "Speech services connected");
         setText(summaryEl, "Live mode • Call ended");
 
         // Signal rep-phone.js to hang up the ACS call leg if it is still active,
@@ -747,7 +773,8 @@
             showEmptyState();
             resetSentimentState();
             resetKnowledgeState();
-            setState("disconnected", "Disconnected — waiting for call");
+            setRootState("idle");
+            setState("live", "Speech services connected");
             resetHeader();
         }, 4000);
     }
@@ -755,8 +782,9 @@
     async function resync() {
         // Catch a call that started during the SignalR handshake / before this client connected,
         // or re-join the group after an automatic reconnect (groups don't survive reconnect).
-        // If an active call exists after reconnect we assume the rep already accepted (otherwise
-        // there would be nothing to resync to), so we treat it as callAccepted.
+        // The active-call endpoint only proves that a call exists, not whether the rep already
+        // accepted it, so we resync into pending and let callAccepted/transcript replay promote
+        // the UI when the backend emits a stronger signal.
         try {
             const response = await fetch(apiBaseUrl + "/api/calls/active", { cache: "no-store" });
             if (!response.ok) {
@@ -766,7 +794,6 @@
             const data = await response.json();
             if (data && data.callId) {
                 await onCallPending({ callId: data.callId });
-                onCallAccepted({ callId: data.callId });
             }
         } catch (err) {
             console.debug("live-transcript: resync skipped.", err);
@@ -787,20 +814,20 @@
     connection.on("stream.knowledgeCards", onKnowledgeCards);
 
     connection.onreconnecting(() => {
-        setState("connecting", "Reconnecting…");
+        setState("connecting", "Speech services reconnecting…");
         setText(summaryEl, "Live mode • Reconnecting…");
     });
 
     connection.onreconnected(() => {
         clearLiveCallArtifacts();
-        setState("disconnected", "Disconnected — waiting for call");
+        setState("live", "Speech services connected");
         resetHeader();
         resync();
     });
 
     connection.onclose(() => {
         clearLiveCallArtifacts();
-        setState("disconnected", "Disconnected — connection lost");
+        setState("disconnected", "Speech services disconnected");
         setText(summaryEl, "Live mode • Connection lost");
         setText(callIdEl, WAITING);
         setText(customerEl, WAITING);
@@ -829,12 +856,12 @@
             await connection.start();
             resetSentimentState();
             resetKnowledgeState();
-            setState("disconnected", "Disconnected — waiting for call");
+            setState("live", "Speech services connected");
             resetHeader();
             await resync();
         } catch (err) {
             console.warn("live-transcript: connection failed; retrying in 5s.", err);
-            setState("disconnected", "Disconnected — retrying…");
+            setState("connecting", "Speech services reconnecting…");
             setText(summaryEl, "Live mode • Reconnecting…");
             setTimeout(start, 5000);
         }

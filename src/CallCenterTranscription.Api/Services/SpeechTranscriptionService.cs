@@ -140,9 +140,11 @@ public sealed class SpeechTranscriptionService : BackgroundService
                     pushStream = AudioInputStream.CreatePushStream(audioFormat);
                     audioConfig = AudioConfig.FromStreamInput(pushStream);
                     transcriber = new ConversationTranscriber(speechConfig, autoDetectConfig, audioConfig);
+                    var sessionCallId = _callStore.CallId;
 
                     WireTranscriberHandlers(
                         transcriber,
+                        sessionCallId,
                         () => Interlocked.Increment(ref sequence),
                         candidateLanguages[0],
                         credential,
@@ -220,6 +222,7 @@ public sealed class SpeechTranscriptionService : BackgroundService
     /// </summary>
     private void WireTranscriberHandlers(
         ConversationTranscriber transcriber,
+        string? sessionCallId,
         Func<long> nextSequence,
         string fallbackLanguage,
         DefaultAzureCredential credential,
@@ -229,6 +232,9 @@ public sealed class SpeechTranscriptionService : BackgroundService
         string translatorTargetLanguage)
     {
         var firstPartialLogged = false;
+        var sessionGroup = string.IsNullOrWhiteSpace(sessionCallId)
+            ? null
+            : PipelineContract.GroupNames.ForCall(sessionCallId);
 
         // Per-call speaker attribution state machine. See SpeakerAttributionState for full decision record.
         var attribution = new SpeakerAttributionState();
@@ -252,19 +258,18 @@ public sealed class SpeechTranscriptionService : BackgroundService
                 return;
             }
 
-            if (ResolveGroup() is not { } transcribing)
+            if (string.IsNullOrWhiteSpace(sessionCallId) || string.IsNullOrWhiteSpace(sessionGroup))
             {
                 return;
             }
 
-            var (callId, group) = transcribing;
             var seq = nextSequence();
             var detectedLanguage = ResolveDetectedLanguage(e.Result, fallbackLanguage);
             var speakerId = e.Result.SpeakerId ?? string.Empty;
             var isCustomer = attribution.IsCustomer(speakerId);
-            var evt = BuildTranscriptEvent(callId, seq, e.Result.ResultId, e.Result.Text,
+            var evt = BuildTranscriptEvent(sessionCallId, seq, e.Result.ResultId, e.Result.Text,
                                            isFinal: false, detectedLanguage, speakerId, isCustomer);
-            _ = _hub.Clients.Group(group)
+            _ = _hub.Clients.Group(sessionGroup)
                 .SendAsync(PipelineContract.StreamNames.Transcript, evt, CancellationToken.None);
         };
 
@@ -300,6 +305,7 @@ public sealed class SpeechTranscriptionService : BackgroundService
             }
 
             var isCustomer = attribution.IsCustomer(speakerId);
+            var isRep = attribution.IsRep(speakerId);
 
             // Suppress emission until the rep has accepted the call.
             if (!_callStore.RepAccepted)
@@ -307,38 +313,40 @@ public sealed class SpeechTranscriptionService : BackgroundService
                 return;
             }
 
-            if (ResolveGroup() is not { } recognized)
+            if (string.IsNullOrWhiteSpace(sessionCallId) || string.IsNullOrWhiteSpace(sessionGroup))
             {
                 return;
             }
 
-            var (callId, group) = recognized;
             var seq = nextSequence();
             var detectedLanguage = ResolveDetectedLanguage(e.Result, fallbackLanguage);
-            var transcriptEvent = BuildTranscriptEvent(callId, seq, e.Result.ResultId, e.Result.Text,
+            var transcriptEvent = BuildTranscriptEvent(sessionCallId, seq, e.Result.ResultId, e.Result.Text,
                                                         isFinal: true, detectedLanguage, speakerId, isCustomer);
 
             // Emit transcript for ALL speakers — diarization adds attribution, it does not drop
             // rep speech. The SpeakerId and SpeakerRole fields let the UI style each side.
-            _ = _hub.Clients.Group(group)
+            _ = _hub.Clients.Group(sessionGroup)
                 .SendAsync(PipelineContract.StreamNames.Transcript, transcriptEvent, CancellationToken.None);
 
-            // Score sentiment ONLY for the customer. Rep utterances (including empathy phrases
-            // like "I'm so sorry to hear that") must never move the customer sentiment meter —
-            // that is the entire point of this diarization upgrade.
-            if (isCustomer)
+            // Customer complaints still anchor the tone, but deterministic rep-side resolution
+            // cues (delivery/payment-plan/renewal commitments) are allowed to move the meter
+            // toward recovery so the demo does not stay negative after the problem is solved.
+            if (isCustomer || isRep)
             {
-                var sentimentEvent = _liveSentiment.Append(callId, e.Result.Text);
+                var sentimentEvent = _liveSentiment.Append(
+                    sessionCallId,
+                    e.Result.Text,
+                    isCustomer ? "customer" : "rep");
                 if (sentimentEvent is not null)
                 {
-                    _ = _hub.Clients.Group(group)
+                    _ = _hub.Clients.Group(sessionGroup)
                         .SendAsync(PipelineContract.StreamNames.Sentiment, sentimentEvent, CancellationToken.None);
                 }
             }
 
             _ = PublishTranslationIfNeededAsync(
-                callId,
-                group,
+                sessionCallId,
+                sessionGroup,
                 transcriptEvent,
                 credential,
                 tokenScope,
@@ -349,14 +357,14 @@ public sealed class SpeechTranscriptionService : BackgroundService
             if (isCustomer)
             {
                 _ = PublishReasoningAsync(
-                    group,
+                    sessionGroup,
                     transcriptEvent);
             }
 
             _logger.LogInformation(
                 "SpeechTranscriptionService: FINAL utterance seq={Seq} callId={CallId} speaker={SpeakerId} isCustomer={IsCustomer} language={Language} text=\"{Text}\"",
                 seq,
-                callId,
+                sessionCallId,
                 speakerId,
                 isCustomer,
                 detectedLanguage,
@@ -593,17 +601,6 @@ public sealed class SpeechTranscriptionService : BackgroundService
         }
 
         return fallbackLanguage;
-    }
-
-    private (string callId, string group)? ResolveGroup()
-    {
-        var callId = _callStore.CallId;
-        if (string.IsNullOrEmpty(callId))
-        {
-            return null;
-        }
-
-        return (callId, PipelineContract.GroupNames.ForCall(callId));
     }
 
     private static TranscriptEvent BuildTranscriptEvent(

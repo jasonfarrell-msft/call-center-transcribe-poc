@@ -1318,6 +1318,12 @@ body {
   outline-offset: 2px;
 }
 
+.rep-btn:disabled {
+  cursor: wait;
+  opacity: 0.7;
+  transform: none;
+}
+
 .rep-btn--accept {
   background: var(--cc-ok);
   color: #fff;

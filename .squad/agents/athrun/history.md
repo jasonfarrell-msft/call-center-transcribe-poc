@@ -158,3 +158,7 @@
 - Call out that SignalR is **application-hosted**, not Azure SignalR Service, so reviewers do not infer a managed realtime service that does not exist.
 - Put POC boundaries near the top or immediately after the system overview so the document does not overstate production readiness.
 - A root architecture README for reviewers should stay at the system-topology level: explain Azure ingress, runtime placement, and critical-path caveats without drifting into dev setup or endpoint-by-endpoint reference.
+
+### 2026-06-12 — After deterministic assist, the next gate is repeatable operability
+- Once scripted assist data, matching, and UI rendering are in place, the next honest milestone is not more retrieval work; it is a repeatable Mock-mode startup + smoke path that Jason can launch and observe reliably.
+- The demo gate should prove `current-state`/replay plus customer-turn-correlated assist visibility in the live UI, while Mission Control clearly signals mock/deferred readiness.

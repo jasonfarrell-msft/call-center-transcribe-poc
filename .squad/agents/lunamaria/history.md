@@ -56,3 +56,11 @@
 - **Important wiring note:** `KnowledgeCardEvent` is now consumed from `/api/events/knowledge-cards` for server-rendered scripted demos, while live mode keeps using `stream.knowledgeCards` and the same enriched card shape.
 - **State hygiene lesson:** For real-time side rails, transcript cleanup is not enough — sentiment and assist panels must also reset on pending/end/close/reconnect, and late events must be guarded by `callId` plus call-active state to avoid leaking prior-call guidance into the next conversation.
 - **Testing:** `WebConsoleTests` now verify scripted knowledge guidance loads with translated evidence, and `dotnet test --no-restore` stayed green (**113 total, 110 passed, 3 skipped**).
+
+## 2026-06-12 — Early Accept UI + speech-only lower badge
+
+- **Requested by:** Jason
+- **What shipped:** The rep softphone header now surfaces the incoming-call affordance as soon as `stream.callPending` lands, even before the local ACS `incomingCall` object is ready. The Accept button becomes visible immediately, stays temporarily disabled until the browser receives the real invite, and the rep can still decline during that early pending window.
+- **UI contract lesson:** Split **call lifecycle** from **speech-service lifecycle**. The lower transcript badge now reports only speech-service connectivity/transcribing state, while the header call bar owns pending/accept/connected affordances.
+- **Resync lesson:** `/api/calls/active` only proves that a call exists. To avoid falsely promoting pending calls to accepted on reload/reconnect, the UI now re-enters pending first and only promotes to accepted when a stronger signal arrives (`stream.callAccepted` or transcript replay). Meyrin still needs an authoritative live accepted-vs-pending contract for perfect reload semantics.
+- **Testing:** `dotnet build --no-restore` and `dotnet test tests/CallCenterTranscription.Tests/CallCenterTranscription.Tests.csproj --filter "FullyQualifiedName~WebConsoleTests|FullyQualifiedName~RepCallControlTests" --no-restore` passed.

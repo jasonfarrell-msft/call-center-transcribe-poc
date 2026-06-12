@@ -131,4 +131,34 @@ public sealed class DemoScriptedScenarioFeedTests
             translatedEvidence,
             evidence => !string.Equals(evidence.TranscriptText, evidence.NormalizedText, StringComparison.Ordinal));
     }
+
+    [Fact]
+    public void Feed_LowTankConversion_UpdatesSentimentBeforeFinalAcceptanceAndEndsResolved()
+    {
+        var feed = new ScriptedPropaneRetentionScenarioFeed(
+            new DemoAssistMatcher(),
+            "demo-low-tank-auto-delivery-conversion");
+        var sentiment = feed.GetSentimentFeed();
+
+        var earlyRecovery = Assert.Single(
+            sentiment.Events,
+            evt => evt.RelatedTranscriptSequence == 4);
+        Assert.Equal("improving", earlyRecovery.Trend);
+        Assert.True(earlyRecovery.Score > -1d, "rep recovery offer should improve the score before the customer agrees to the plan");
+
+        var preClosePositive = Assert.Single(
+            sentiment.Events,
+            evt => evt.RelatedTranscriptSequence == 6);
+        Assert.Equal("positive", preClosePositive.Label);
+        Assert.True(preClosePositive.Score > 0d);
+
+        var finalResolution = Assert.Single(
+            sentiment.Events,
+            evt => evt.RelatedTranscriptSequence == 7);
+        Assert.Equal("positive", finalResolution.Label);
+        Assert.True(finalResolution.Score > 0d);
+        Assert.Equal("resolved", sentiment.Summary.OverallLabel);
+        Assert.Contains("converted", sentiment.Summary.SummaryText, StringComparison.OrdinalIgnoreCase);
+        Assert.True(sentiment.Events[^1].Score > 0d);
+    }
 }

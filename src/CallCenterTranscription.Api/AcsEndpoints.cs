@@ -68,8 +68,16 @@ internal static class AcsEndpoints
         }).AllowAnonymous();
 
         // ── Active call query — lets a late-joining/reconnecting browser resync state ───────────
-        app.MapGet("/api/calls/active", (ActiveCallStore callStore) =>
-            Results.Ok(new { callId = callStore.CallId })).AllowAnonymous();
+        var activeCallRoute = app.MapGet("/api/calls/active", (PipelineCurrentStateStore currentStateStore) =>
+            Results.Ok(currentStateStore.GetActiveCall()));
+        if (app.Configuration.GetValue<bool>("Security:RequireAuth"))
+        {
+            activeCallRoute.RequireAuthorization("AgentAssistAccess");
+        }
+        else
+        {
+            activeCallRoute.AllowAnonymous();
+        }
 
         return app;
     }
@@ -145,6 +153,17 @@ internal static class AcsEndpoints
                 if (string.Equals(eventType, "Microsoft.Communication.IncomingCall",
                         StringComparison.Ordinal))
                 {
+                    var liveAcsMode = string.Equals(
+                        ctx.RequestServices.GetRequiredService<IConfiguration>().GetValue<string>("AudioSource:Mode"),
+                        "Acs",
+                        StringComparison.OrdinalIgnoreCase);
+                    if (!liveAcsMode)
+                    {
+                        logger.LogInformation(
+                            "IncomingCall ignored because AudioSource:Mode is not Acs; scripted/mock demo remains authoritative.");
+                        return Results.Ok();
+                    }
+
                     // CallAutomationClient is registered only when Acs:Endpoint is configured.
                     // When Mode=Mock or Acs:Endpoint is absent, log and return 200 — don't cause
                     // Event Grid to retry (the call has already rung; a retry won't recover it).
@@ -216,6 +235,9 @@ internal static class AcsEndpoints
                         // route transcript events to the correct SignalR group.
                         var answeredCallId = result.Value.CallConnection.CallConnectionId;
                         callStore.CompleteIncomingClaim(answeredCallId);
+
+                        var currentStateStore = ctx.RequestServices.GetRequiredService<PipelineCurrentStateStore>();
+                        currentStateStore.MarkPending(answeredCallId);
 
                         var hub = ctx.RequestServices.GetRequiredService<IHubContext<PipelineHub>>();
                         var registry = ctx.RequestServices.GetRequiredService<RepRegistry>();
@@ -370,6 +392,7 @@ internal static class AcsEndpoints
                     logger.LogInformation(
                         "ACS AddParticipant succeeded (rep answered) for call {CallId}.", ok.CallConnectionId);
                     acceptedStore.MarkAccepted();
+                    ctx.RequestServices.GetRequiredService<PipelineCurrentStateStore>().MarkAccepted(ok.CallConnectionId);
                     var acceptedHub = ctx.RequestServices.GetRequiredService<IHubContext<PipelineHub>>();
                     await acceptedHub.Clients.All.SendAsync(
                         PipelineContract.StreamNames.CallAccepted,
@@ -496,6 +519,7 @@ internal static class AcsEndpoints
                     }
                     var acsSourceForDisc = ctx.RequestServices.GetRequiredService<AcsAudioSource>();
                     acsSourceForDisc.ForceCompleteCurrentSession();
+                    ctx.RequestServices.GetRequiredService<PipelineCurrentStateStore>().ClearActiveCall(callIdForDisc);
                     storeForDisc.Clear();
                     ctx.RequestServices.GetRequiredService<LiveSentimentStore>().Clear();
                     var hubForDisc = ctx.RequestServices.GetRequiredService<IHubContext<PipelineHub>>();
@@ -635,6 +659,7 @@ internal static class AcsEndpoints
 
                 if (!string.IsNullOrEmpty(endedCallId))
                 {
+                    ctx.RequestServices.GetRequiredService<PipelineCurrentStateStore>().ClearActiveCall(endedCallId);
                     // Broadcast call-ended so every console client transitions back to Disconnected.
                     await hub.Clients.All.SendAsync(
                         PipelineContract.StreamNames.CallEnded,

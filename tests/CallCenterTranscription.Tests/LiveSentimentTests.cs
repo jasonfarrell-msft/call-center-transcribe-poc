@@ -60,9 +60,9 @@ public sealed class LiveSentimentTests
         Assert.True(afterNegative.Events[^1].Score < 0d);
         Assert.Equal("negative", afterNegative.Summary.OverallLabel);
 
-        // Conversation recovers — rolling score should rise.
-        store.Append("call-1", "Okay, thank you, that works great, I really appreciate it.");
-        store.Append("call-1", "Yes that is perfect, wonderful, thanks so much.");
+        // Conversation recovers — rolling score should rise without forcing a resolved label.
+        store.Append("call-1", "Thank you, I appreciate the help and the clear update.");
+        store.Append("call-1", "That sounds good, and I feel much better about it now.");
         var afterRecovery = store.GetFeed();
 
         Assert.True(afterRecovery.Events[^1].Score > afterNegative.Events[^1].Score);
@@ -70,6 +70,51 @@ public sealed class LiveSentimentTests
 
         // Summary text is intentionally blank in live mode.
         Assert.Equal(string.Empty, afterRecovery.Summary.SummaryText);
+    }
+
+    [Fact]
+    public void Store_RepResolutionCue_PublishesEarlierRecoverySignal()
+    {
+        var store = new LiveSentimentStore();
+        store.Reset("call-1");
+
+        store.Append("call-1", "I am frustrated and do not want to run out before the weekend.", "customer");
+        var afterComplaint = store.GetFeed();
+
+        var repUpdate = store.Append(
+            "call-1",
+            "I can schedule the earliest Friday delivery window and make sure you get an update if dispatch changes it.",
+            "rep");
+
+        var afterRepOffer = store.GetFeed();
+
+        Assert.NotNull(repUpdate);
+        Assert.Equal(2, afterRepOffer.Events.Count);
+        Assert.True(afterRepOffer.Events[^1].Score > afterComplaint.Events[^1].Score);
+        Assert.Equal("improving", afterRepOffer.Events[^1].Trend);
+    }
+
+    [Fact]
+    public void Store_FinalResolutionOverridesEarlyNegativeWhenCustomerAccepts()
+    {
+        var store = new LiveSentimentStore();
+        store.Reset("call-1");
+
+        store.Append("call-1", "I am frustrated and do not want to run out before the weekend.", "customer");
+        store.Append(
+            "call-1",
+            "I can set up the earliest delivery window and switch you to auto-delivery so you do not have to watch the gauge.",
+            "rep");
+        store.Append(
+            "call-1",
+            "Go ahead and switch me to auto-delivery. I do not want another low-tank scare.",
+            "customer");
+
+        var feed = store.GetFeed();
+
+        Assert.Equal("resolved", feed.Summary.OverallLabel);
+        Assert.Equal("improving", feed.Summary.Trend);
+        Assert.True(feed.Events[^1].Score > 0d);
     }
 
     [Fact]

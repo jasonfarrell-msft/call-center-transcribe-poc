@@ -224,8 +224,12 @@ public sealed class WebHomepageSmokeTests(WebApplicationFactory<CallCenterTransc
         var html = await client.GetStringAsync("/");
 
         Assert.Contains("data-live-mode=\"true\"", html, StringComparison.Ordinal);
+        Assert.Contains("data-live-call-state=\"idle\"", html, StringComparison.Ordinal);
         Assert.Contains("data-live-knowledge-panel", html, StringComparison.Ordinal);
         Assert.Contains("data-live-sentiment-panel", html, StringComparison.Ordinal);
+        Assert.Contains("Speech services offline", html, StringComparison.Ordinal);
+        Assert.Contains("Incoming call — accept to begin transcription.", html, StringComparison.Ordinal);
+        Assert.Contains("data-rep-accept", html, StringComparison.Ordinal);
         Assert.DoesNotContain("data-console-refresh-region=\"sentiment\"", html, StringComparison.Ordinal);
         Assert.Contains("signalr.min.js", html, StringComparison.Ordinal);
         Assert.Contains("live-transcript.js", html, StringComparison.Ordinal);

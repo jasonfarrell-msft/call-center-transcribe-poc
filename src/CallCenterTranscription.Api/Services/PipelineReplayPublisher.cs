@@ -39,6 +39,11 @@ public sealed class PipelineReplayPublisher
         CancellationToken cancellationToken)
     {
         await client.SendCoreAsync(PipelineContract.StreamNames.CurrentState, [snapshot], cancellationToken);
+        var callState = await ReplayLifecycleAsync(client, snapshot, cancellationToken);
+        if (callState == "pending")
+        {
+            return;
+        }
 
         foreach (var evt in snapshot.TranscriptEvents.OrderBy(static item => item.Sequence))
         {
@@ -69,5 +74,46 @@ public sealed class PipelineReplayPublisher
         {
             await client.SendCoreAsync(PipelineContract.StreamNames.NextBestAction, [evt], cancellationToken);
         }
+    }
+
+    private static async Task<string> ReplayLifecycleAsync(
+        IClientProxy client,
+        PipelineCurrentStateResponse snapshot,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(snapshot.Call.CallId))
+        {
+            return "idle";
+        }
+
+        var state = (snapshot.Call.State ?? string.Empty).Trim().ToLowerInvariant();
+        if (state == "pending")
+        {
+            await client.SendCoreAsync(
+                PipelineContract.StreamNames.CallPending,
+                [new CallLifecycleEvent
+                {
+                    CallId = snapshot.Call.CallId,
+                    Status = "pending",
+                    TimestampUtc = snapshot.GeneratedAtUtc
+                }],
+                cancellationToken);
+            return state;
+        }
+
+        if (state is "accepted" or "active" or "live")
+        {
+            await client.SendCoreAsync(
+                PipelineContract.StreamNames.CallAccepted,
+                [new CallLifecycleEvent
+                {
+                    CallId = snapshot.Call.CallId,
+                    Status = "accepted",
+                    TimestampUtc = snapshot.GeneratedAtUtc
+                }],
+                cancellationToken);
+        }
+
+        return state;
     }
 }

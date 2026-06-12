@@ -18,6 +18,7 @@ public sealed class PipelineReplayPublisherTests
 
         Assert.NotEmpty(client.Messages);
         Assert.Equal(PipelineContract.StreamNames.CurrentState, client.Messages[0].Method);
+        Assert.Equal(PipelineContract.StreamNames.CallAccepted, client.Messages[1].Method);
 
         var transcript = client.Messages
             .Where(static message => message.Method == PipelineContract.StreamNames.Transcript)
@@ -36,6 +37,27 @@ public sealed class PipelineReplayPublisherTests
             client.Messages.Count(static message => message.Method == PipelineContract.StreamNames.KnowledgeCards));
         Assert.Equal(snapshot.NextBestActionEvents.Count,
             client.Messages.Count(static message => message.Method == PipelineContract.StreamNames.NextBestAction));
+    }
+
+    [Fact]
+    public async Task ReplayForCallAsync_WhenSnapshotIsPending_ReplaysPendingLifecycleBeforeTranscript()
+    {
+        var publisher = new PipelineReplayPublisher();
+        var baseline = new ScriptedPropaneRetentionScenarioFeed().GetCurrentState();
+        var snapshot = baseline with
+        {
+            Call = baseline.Call with
+            {
+                State = "pending"
+            }
+        };
+        var client = new RecordingClientProxy();
+
+        await publisher.ReplayForCallAsync(client, snapshot, snapshot.Call.CallId, CancellationToken.None);
+
+        Assert.Equal(PipelineContract.StreamNames.CurrentState, client.Messages[0].Method);
+        Assert.Equal(PipelineContract.StreamNames.CallPending, client.Messages[1].Method);
+        Assert.DoesNotContain(client.Messages, message => message.Method == PipelineContract.StreamNames.Transcript);
     }
 
     [Fact]

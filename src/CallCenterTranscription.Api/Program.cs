@@ -97,8 +97,8 @@ if (requireAuth)
     apiRoutes.RequireAuthorization("AgentAssistAccess");
 }
 
-apiRoutes.MapGet("/session/current", (IScriptedScenarioFeed scriptedScenarioFeed) =>
-    Results.Ok(scriptedScenarioFeed.GetCurrentSession()));
+apiRoutes.MapGet("/session/current", (PipelineCurrentStateStore currentStateStore) =>
+    Results.Ok(currentStateStore.GetCurrentSession()));
 apiRoutes.MapGet("/session/current-state", (PipelineCurrentStateStore currentStateStore) =>
     Results.Ok(currentStateStore.GetSnapshot()));
 

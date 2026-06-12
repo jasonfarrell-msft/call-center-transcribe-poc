@@ -88,3 +88,8 @@
   - `samples/agent-assist-demo-scripts.v1.json`
   - `samples/agent-assist-demo-trigger-expectations.v1.json`
   - `tests/CallCenterTranscription.Tests/SyntheticCorpusTests.cs`
+
+- **Date:** 2026-06-12T10:14:21.594-04:00
+- **Demo sentiment tuning:** A short rolling window (2 recent customer signals) plus deterministic resolution/acceptance cues makes the meter move earlier and lets a successful save/upsell finish as `resolved` instead of staying anchored to opening frustration.
+- **Deterministic cueing rule:** Only clearly-attributed rep turns may contribute recovery cues; ambiguous diarization IDs stay out of sentiment, and bilingual scripted demo turns should score from the translated English override when available so the Spanish competitor complaint still moves the timeline.
+- **Known live limitation:** Rep-first post-accept diarization can still misattribute roles in ACS if the customer is silent before accept; acceptable for scripted demo, but live production trust still needs participant-identity-based attribution.

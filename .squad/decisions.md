@@ -1,19 +1,15 @@
 ---
 ## Active Decisions
+- **2026-06-12 | Jason (Directive)** — Use only English for the demo.
+- **2026-06-12 | Jason (Directive)** — Assume the demo can be run using our Azure resources.
+- **2026-06-12 | Lunamaria** — Header softphone shows Accept as soon as call state is pending while the lower transcript badge stays scoped to speech-service status.
+- **2026-06-12 | Meyrin** — Live ACS boots idle, flips pending immediately after answer, exposes lifecycle state through session/current APIs, and replays lifecycle before transcript.
+- **2026-06-12 | Lacus** — Demo sentiment uses shorter customer windows, rep resolution cues, translated-script scoring, and a resolved end-state for successful save flows.
+- **2026-06-12 | Yzak** — Approved the early-accept + demo-sentiment regressions with accepted-call and low-tank recovery coverage; full suite passed 123 total / 120 passed / 3 skipped.
 - **2026-06-11 | Jason (Directive)** — Treat the inbound caller as the customer who joins first; the rep is the second participant added to the call.
 - **2026-06-11 | Athrun** — Next slice is wiring the synthetic agent-assist JSONL corpus into the existing `stream.knowledgeCards` path with deterministic trigger-phrase/keyword matching on customer utterances.
 - **2026-06-11 | Lacus** — Retrieval should score a short rolling window of recent customer turns and emit ranked, citation-backed guidance with matched signals and score metadata.
 - **2026-06-11 | Meyrin** — Agent assist should publish one utterance-correlated update per customer turn, after translation/normalization when needed, via the existing knowledge-card plus next-best-action stream.
-- **2026-06-05 | Squad** — Keep both diarization and translation: Azure AI Speech handles real-time STT/diarization, and Azure Translator handles non-English text so the POC supports both live attribution and rep comprehension.
-- **2026-06-05 | Squad** — Translation is split by consumer: backend always translates for AI; the rep UI uses `detectedLanguage` plus a click-to-translate affordance. `transcript.detectedLanguage` is now part of the shared schema.
-- **2026-06-05 | Lacus** — Translation trigger follows `transcript.detectedLanguage`; the backend may translate immediately or defer UI reveal, while still normalizing non-English text for churn/NBA/RAG.
-- **2026-06-05 | Lunamaria** — Frontend recommendation was auto-translate inline with a language badge and original-text toggle. **Superseded** by the accepted click-to-translate rep-display decision, but retained as the UI rationale that informed the final shape.
-- **2026-06-05 | Kira** — Demo/domain remains a propane-retention scenario with one scripted call, tiny mock customer/knowledge data, and churn signals tied to real propane complaints and save offers.
-- **2026-06-05 | Squad** — Core platform is C#/.NET + Razor Pages/Blazor-capable UI + SignalR, with backend on Azure Container Apps and frontend on Azure App Service; GPT-5.x reasoning flows through `IReasoningClient`, with MAI swap-ready later.
-- **2026-06-05 | Athrun** — Revised solution structure splits Api, Web, Shared, Ai, and Telephony projects, with `IAudioSource` / `IReasoningClient` abstractions and Bicep + CI scaffold. **Supersedes** the earlier TypeScript/Node/React architecture proposal.
-- **2026-06-05 | Squad** — Real ACS is part of the final demo, with public callback/WebSocket endpoints on ACA and a fallback `MockAudioSource` for reliability.
-- **2026-06-05 | Squad** — ACS call topology is Option A: customer dials the ACS number, backend answers, starts media streaming, then adds the rep via `AddParticipant`; mixed audio is the POC starting point, with a Phase-2 spike to validate rep audio after join.
-- **2026-06-05 | Dyakka** — ACS dual-call/runbook work owns inbound answering, media streaming, rep join mechanics, and the repeatable demo script; Dyakka was hired mid-session to solve the two-party ACS path.
 - **2026-06-08T15:24:21-04:00 | Jason (Directive)** — US toll-free number **+18774178275** has been purchased on the recreated ACS resource (acs-cctrans-kdarok). This enables real inbound PSTN calls for the live ACS demo. Next: Event Grid IncomingCall subscription → webhook, the audio→Speech consumer, then flip AudioSource__Mode=Acs.
 - **2026-06-11 | Jason (Directive)** — Transcription cannot start until the Rep accepts the call.
 - **2026-06-11 | Dyakka** — Rep-accept latency is mostly ACS/browser delivery timing; the safe optimization is an immediate post-answer add-rep attempt while keeping the transcription gate intact.
@@ -23,6 +19,124 @@
 - **2026-06-11 | Lacus** — Customer sentiment should latch only the first two distinct known speakers and ignore ambiguous later diarization IDs.
 - **2026-06-11 | Lunamaria** — Rep UI should reuse the right-rail assist panel, surface citation/rank/matched-evidence metadata, and show a scripted guidance timeline grouped by customer turn for demo playback.
 - **2026-06-11 | Yzak** — Demo assist stays approved only while scripted scenarios deterministically surface their expected knowledge IDs with snippet/citation/source/matched-evidence metadata and no stray cards.
+
+- **Source:** `.squad/decisions/inbox/copilot-directive-2026-06-12T10-06-22.md`
+
+### 2026-06-12T10:06:22.404-04:00: User directive
+**By:** Jason (via Copilot)
+**What:** Use only English for the demo.
+**Why:** User request — captured for team memory
+
+- **Source:** `.squad/decisions/inbox/copilot-directive-2026-06-12T10-04-08.md`
+
+### 2026-06-12T10:04:08.603-04:00: User directive
+**By:** Jason (via Copilot)
+**What:** Assume the demo can be run using our Azure resources.
+**Why:** User request — captured for team memory
+
+# Lunamaria — Early Accept UI + lower badge scope
+
+- **Date:** 2026-06-12
+- **Status:** Implemented
+- **Source:** `.squad/decisions/inbox/lunamaria-accept-ui-badges.md`
+
+## Decision
+- Treat the **header softphone bar** as the source of truth for rep call actions (`Accept`, `Decline`, in-call controls).
+- Treat the **lower transcript badge** as the source of truth for **speech-service connectivity/status only**.
+- On `stream.callPending`, show the header Accept affordance immediately, even if the browser has not yet received the local ACS `incomingCall` object.
+
+## Why
+Demo feedback showed that tying the visible Accept affordance too closely to the local ACS invite makes the rep feel late to the call. The SignalR pending event arrives earlier and is the right UI trigger for "a call is incoming." At the same time, the transcript badge was overloading call-state and infrastructure-state, which made the screen harder to read.
+
+## Implementation notes
+- `live-transcript.js` now writes `data-live-call-state` / `data-live-call-id` on the console root and dispatches `rep.callPending` / `rep.callAccepted` events.
+- `rep-phone.js` listens for `rep.callPending` so the header bar can reveal Accept immediately; Accept stays disabled until the ACS SDK delivers the actual `incomingCall` handle.
+- Decline remains available during this early pending window and still posts `/rep/hangup` so the PSTN leg is torn down if the rep declines before local audio fully arrives.
+- The lower badge text now reflects speech-service states like offline / connected / reconnecting / transcribing, not pending-call lifecycle.
+
+## Contract note for Meyrin
+Today `/api/calls/active` only returns `{ callId }`, which is enough to tell the UI that **a call exists** but not enough to distinguish **pending** vs **already accepted** after reload/reconnect. The frontend now safely resyncs into **pending** first and waits for stronger evidence (`stream.callAccepted` or transcript replay) before promoting the UI.
+
+### Requested follow-up
+Please expose an authoritative live call-phase contract (for example `pending | accepted | ended`, ideally with rep-accepted state) on either:
+- `/api/calls/active`, or
+- `/api/session/current-state`
+
+That would remove the remaining reload/reconnect ambiguity for the softphone header.
+
+# Meyrin — Early Accept state contract
+
+- **Date:** 2026-06-12
+- **Status:** Implemented
+- **Source:** `.squad/decisions/inbox/meyrin-early-accept-state.md`
+
+- **Decision:** Treat backend lifecycle state as the earliest reliable source for Rep Accept availability.
+
+## Decision
+- `PipelineCurrentStateStore` is now the authority for live call bootstrap state.
+- In `AudioSource:Mode=Acs`, the store starts `idle`, switches to `pending` immediately after `AnswerCallAsync`, and switches to `accepted` on `AddParticipantSucceeded`.
+- `/api/session/current`, `/api/session/current-state`, and `/api/calls/active` all read from that authoritative state so late-joining browsers can discover a pending call before any customer utterance.
+- SignalR replay now emits lifecycle events before transcript replay and suppresses transcript replay entirely while the snapshot is still `pending`.
+- Mock/scripted mode remains authoritative for deterministic history, and live ACS callbacks are ignored when `AudioSource:Mode` is not `Acs`.
+
+## Consequences
+- The web app can bootstrap an incoming/pending Accept offer without waiting for transcript/customer speech.
+- Live replay semantics are now honest: lifecycle-only until real buffered history exists.
+- Future frontend work can bind directly to call state from REST/bootstrap and existing lifecycle stream names.
+
+# Lacus — Demo sentiment tuning
+
+- **Date:** 2026-06-12
+- **Status:** Implemented
+- **Source:** `.squad/decisions/inbox/lacus-demo-sentiment-tuning.md`
+
+- **Owner:** Lacus
+
+## Decision
+Use a deterministic conversation tracker for demo sentiment that combines:
+1. a short rolling window of the two most recent customer sentiment signals,
+2. explicit rep resolution cues (delivery/payment-plan/renewal/auto-delivery commitments) only when the rep speaker is clearly attributed, and
+3. explicit customer acceptance cues to allow the final state to land on `resolved`.
+
+## Why
+The prior sentiment behavior stayed negative too long because early complaint language dominated the full conversation, and scripted bilingual turns could miss scoring entirely. The demo needs visible mid-call movement and a final state that reflects a successful save/upsell outcome.
+
+## Consequences
+- Demo sentiment updates earlier, including before the final customer close when the rep makes a concrete recovery offer.
+- Successful scripts (especially low-tank → auto-delivery conversion) finish `resolved` instead of merely less negative.
+- Scripted non-English complaint turns use the deterministic English override for scoring when present.
+- Live ACS remains limited by the known rep-first post-accept diarization ambiguity; do not treat this heuristic as production-grade attribution.
+
+# Yzak — Demo feedback regression gate
+
+- **Date:** 2026-06-12
+- **Status:** APPROVE
+- **Source:** `.squad/decisions/inbox/yzak-demo-feedback-regressions.md`
+
+- **Owner:** Yzak
+
+## Decision
+Approve the resumed demo-feedback fixes for:
+1. early pending/Accept availability before transcript, with the lower badge reserved for speech-service status only; and
+2. low-tank auto-delivery sentiment recovery ending `resolved` instead of staying negative.
+
+## Why
+- `AcsEndpoints` now marks the call pending immediately after answer, `PipelineCurrentStateStore` exposes `acceptAvailable` before transcript, and `PipelineReplayPublisher` withholds transcript replay while the call is still pending.
+- `live-transcript.js` keeps the lower badge on speech-service connectivity (`Speech services connected`) while `rep-phone.js` owns the top-bar Accept/Decline state.
+- The low-tank scripted sentiment path now shows visible recovery before the close: turn 4 publishes an `improving` event, turn 6 is already `positive`, and the final customer acceptance resolves the summary.
+
+## Evidence
+- Added `ApiHost_LiveMode_ExposesAcceptedCallStateWithoutReopeningAccept`.
+- Tightened `Feed_LowTankConversion_UpdatesSentimentBeforeFinalAcceptanceAndEndsResolved` to assert:
+  - turn 4 sentiment trend is `improving`,
+  - turn 6 sentiment label is `positive`,
+  - final summary is `resolved`.
+- Validation passed:
+  - Focused regression suite: 7/7 green.
+  - Full suite: `dotnet test CallCenterTranscription.sln --nologo --no-restore` → 123 total, 120 passed, 3 skipped, 0 failed.
+
+## Non-blocking note
+An independent second review re-raised the known live ACS limitation where a rep-first post-accept utterance can still confuse diarization if the customer was silent before accept. This is already documented as a pre-existing demo-scope limitation and is not a regression introduced by the pending/sentiment fixes reviewed here.
 
 # 2026-06-08T15:24:21-04:00 — ACS Go-Live Architecture Sign-Off
 **By:** Athrun (Lead/Architect)
@@ -54,6 +168,7 @@ Go-live sequence is defined across 5 correlated decisions:
 - If Speech SDK + push stream hits blocker, fallback to REST-based batch recognition (no interim results)
 **Owners:** Lacus (consumer+guard), Meyrin (Event Grid+RBAC+deploy+flip), Dyakka (test+runbook), Athrun (gate review)
 **VERDICT: APPROVE TO BUILD**
+
 # 2026-06-08T15:24:21-04:00 — Go-Live Build Review (REQUEST CHANGES → FIXED)
 **Date:** 2026-06-08T15:24:21-04:00
 **Reviewer:** Athrun
@@ -81,6 +196,7 @@ Go-live sequence is defined across 5 correlated decisions:
 - **Build:** `dotnet build` → 0 errors; `az bicep build` → 0 errors
 - **Deploy Sequence:** Correct order (build→update→webhook live→create topic→create subscription→flip mode); Advisory: Step 6 now includes Speech__Region + Speech__ResourceId env vars
 **Overall:** APPROVED (after Meyrin's Speech env vars fix).
+
 # 2026-06-08T15:24:21.856-04:00 — Speech Consumer Built — SpeechTranscriptionService
 **Author:** Lacus (AI Engineer)
 **Status:** IMPLEMENTED & COMMITTED (7426ebe)
@@ -92,6 +208,7 @@ Go-live sequence is defined across 5 correlated decisions:
 **Package:** Microsoft.CognitiveServices.Speech v1.50.0 (latest GA).
 **Coexistence:** Mock mode yields no frames → service idles; Acs mode consumes live Channel → produces transcripts. Scripted feed REST endpoints unchanged.
 **Status:** Closes Step 1 of Athrun's go-live sequence. Fallback remains: flip AudioSource__Mode=Mock if live path fails during demo.
+
 # 2026-06-08T15:24:21.856-04:00 — ACS Event Grid Wiring, Speech RBAC Verification, Deploy Recipe
 **By:** Meyrin (Backend Dev)
 **Requested by:** Jason
@@ -124,6 +241,7 @@ No surgical fix required. Consumer will auth successfully via DefaultAzureCreden
 ### Bicep Consistency
 Both Speech__Region + Speech__ResourceId wired in Bicep (lines ~300–315). Future `azd provision` includes them; surgical command also sets them explicitly for live instance.
 **Status:** Ready for Steps 1–3 (consumer built, verified); Steps 4–6 blocked on Lacus consumer PR merge + image deploy.
+
 # 2026-06-08T15:24:21.856-04:00 — Speech Env Vars Fix (Meyrin)
 **Status:** COMPLETE & COMMITTED (4decb78)
 **Fix:** Added `Speech__Region=swedencentral` + `Speech__ResourceId=<ARM ID>` to ACA container env vars in `infra/main.bicep`. These unblock managed-identity Speech auth for the consumer.
@@ -132,7 +250,6 @@ Both Speech__Region + Speech__ResourceId wired in Bicep (lines ~300–315). Futu
 az containerapp update -n ca-api-cctrans-kdarok -g rg-callcentertranscribe-swc-mx01 --min-replicas 1 --set-env-vars AudioSource__Mode=Acs Speech__Region=swedencentral Speech__ResourceId=/subscriptions/bb4b2781-6739-4fa1-994e-4ad6ce55c59c/resourceGroups/rg-callcentertranscribe-swc-mx01/providers/Microsoft.CognitiveServices/accounts/speech-cctrans-kdarok
 ```
 **Bicep build:** 0 errors.
-- **2026-06-05 | Squad** — Two review passes ran this session and both returned APPROVE-WITH-CHANGES; the canonical plan was updated with the required fixes before archive merge.
 - **2026-06-05T16:20:08.868-04:00 — Phase 0 .NET scaffold baseline and seams**
 - **By:** Meyrin
 - **What:** Implemented the Phase 0 baseline as a `net9.0` multi-project solution (`Api`, `Web`, `Shared`, `Ai`, `Telephony`, `Tests`) with swappable interfaces (`IAudioSource`, `IReasoningClient`), shared real-time event DTO contracts (including `transcript.detectedLanguage`), SignalR-ready API routing, and mock-first DI registrations. Added an optional API auth seam (`Security:RequireAuth`) to enable route/hub authorization in later phases without changing contracts.
@@ -144,6 +261,7 @@ az containerapp update -n ca-api-cctrans-kdarok -g rg-callcentertranscribe-swc-m
 - **Why:** Live-demo reliability depends on compile-safe seams and predictable startup wiring before Phase 1+ integration. Validation evidence includes successful `dotnet build CallCenterTranscription.sln` and `dotnet test CallCenterTranscription.sln` (4/4 passing), so this scaffold is safe to advance.
 - **Source:** `.squad/decisions/inbox/yzak-phase-0-review.md`
 - **Source:** `.squad/decisions/inbox/athrun-azure-deployment-architecture.md`
+
 # 2026-06-06T15:20:19.326-04:00 — Minimal Azure deployment architecture for the Sweden Central POC
 - **By:** Athrun
 - **Decision proposal:** Keep the POC architecture as the thinnest viable split already accepted by Squad: **API on Azure Container Apps**, **Web on Azure App Service**, **real ACS for the live demo**, **Azure AI Speech + Translator + Language + Azure AI Foundry** for the AI path, and **mock audio** as the fallback path.
@@ -245,6 +363,7 @@ az containerapp update -n ca-api-cctrans-kdarok -g rg-callcentertranscribe-swc-m
 - If the requirement means **“put every regional ARM resource in Sweden Central and keep exceptions explicit,”** this architecture is the minimal viable POC shape.
 - If the requirement means **“all data must be processed only in Sweden Central,”** the current accepted scope is blocked by **ACS** and **Translator**, and deployment should stop until the requirement or scope is changed.
 - **Source:** `.squad/decisions/inbox/athrun-dashboard-redesign-review.md`
+
 # Review: Agent-Assist Dashboard Visual Redesign
 **Date:** 2026-06-08T09:48:02.673-04:00
 **Reviewer:** Athrun (Lead / Architect)
@@ -773,8 +892,6 @@ As a **deployment readiness** checkpoint, this stays **REJECT** until the missin
 
 Second-pass devil's-advocate review agreed with that call: the missing items are core acceptance criteria, not cleanup.
 
-
-
 # 2026-06-08T10:57:44.227-04:00 — Agent Console 80/20 Column Layout + Mission Control Link
 
 - **By:** Lunamaria
@@ -1142,6 +1259,7 @@ Build the plumbing first (Option C). This unblocks Lacus + Meyrin and lets us re
 4. **`minReplicas = 1` as a permanent Bicep default or a manual az CLI step before demo?** — Permanent is safer; adds ~$15–30/month for a tiny ACA instance.
 5. **Event Grid webhook security method** — Microsoft Entra-protected webhook (preferred; more complex to configure) or HMAC shared secret stored in Key Vault (simpler for POC)?
 6. **ACS RBAC role to assign** — `Communication Services Contributor` covers everything but is broad. Needs Athrun sign-off on which built-in role is appropriate for the POC scope.
+
 # ACS Option C Plumbing Built
 **By:** Dyakka — ACS / Telephony Specialist
 **Date:** 2026-06-08T14:05:26.525-04:00
@@ -1282,6 +1400,7 @@ new MediaStreamingOptions(MediaStreamingAudioChannel.Mixed, StreamingTransport.W
 ```
 
 `MediaStreamingAudioChannel`, `MediaStreamingContent`, and `StreamingTransport` are struct-based extensible enums (not C# enums) — they have static properties like `Mixed`, `Audio`, `Websocket`.
+
 # US Phone Number Feasibility Advisory
 **By:** Dyakka — ACS / Telephony Specialist
 **Date:** 2026-06-08T14:05:26.535-04:00
@@ -1386,6 +1505,7 @@ Event Grid subscription is already deferred (TODO in Bicep). No impact — it wa
 | Does the rest of the stack need to move? | ❌ No — ACA/App Service can stay in Sweden Central |
 | Best number type for the demo? | US toll-free (fastest, fewest hoops) |
 | Real blocker? | Subscription type eligibility — must verify in portal first |
+
 # Architecture & Security Sign-Off: ACS Option C Build Spec
 **By:** Athrun — Lead / Architect
 **Date:** 2026-06-08T14:05:26.525-04:00
@@ -1611,6 +1731,7 @@ Dyakka and Meyrin may proceed with implementation using the decisions above as b
 | Role | Agent | Verdict |
 |------|-------|---------|
 | Lead / Architect | Athrun | ✅ APPROVE TO BUILD |
+
 # Infra Decision: ACS Option C Bicep — RBAC, minReplicas, AudioSource__Mode
 
 **By:** Meyrin — Backend Dev
@@ -1712,6 +1833,7 @@ This is an accepted known gap in Azure RBAC granularity for ACS at POC stage.
 ## Bicep Validation
 
 `az bicep build infra/main.bicep` — **0 errors, 0 warnings**.
+
 # Infra Decision: ACS dataLocation Switched from Europe to United States
 
 **By:** Meyrin — Backend Dev
@@ -1842,6 +1964,7 @@ These steps are for Jason or whoever runs provision — not implemented here, ju
 | Entra webhook delivery auth | Deferred — blocked on Event Grid |
 | `AudioSource__Mode` flip to `'Acs'` | Deferred — blocked on phone number + Event Grid |
 | Any new secrets / connection strings | Out of scope — zero secrets policy enforced |
+
 # Reviewer Gate: ACS dataLocation EU → US Flip — APPROVED
 
 **Reviewer:** Athrun — Lead / Architect
@@ -1965,7 +2088,6 @@ Per meyrin's decision file and Dyakka's advisory:
 5. Flip `AudioSource__Mode=Acs` on ACA env vars (one-liner)
 
 No risk of unintended in-place update failure; all preconditions met.
-
 
 # Decision: ACS RBAC Role Correction
 
@@ -2093,7 +2215,6 @@ The prior role choice ("Communication Services Contributor" / `2b4609a5-...`) wa
 **Date:** 2026-06-08T15:05:37-04:00
 
 `infra/main.bicep` updated: ACS role var renamed `communicationServicesContributorRoleDefinitionId` → `communicationServiceOwnerRoleDefinitionId`, GUID corrected `2b4609a5-7812-4aba-b5e3-076e6a078419` → `09976791-48a7-449e-bb21-39d1a415f350` ("Communication and Email Service Owner"), and the single reference at the role assignment updated to match — per Athrun's spec; `az bicep build` passes clean; unblocks future `azd provision`.
-
 
 # Rep Call-Control Lifecycle & Customer-Only Sentiment
 
@@ -2299,7 +2420,6 @@ Hangup (either party) → EVERYTHING disconnects
 - **Architecture:** Mixed audio stays. No Unmixed regression risk. New `repAccepted` SignalR event gates the UI.
 - **Lifecycle:** Accept gates transcription visibility; Decline triggers full HangUp teardown; Hangup from either side disconnects everything.
 - **Owners:** Lunamaria (UI), Meyrin (repAccepted event), Dyakka (decline→HangUp), Lacus (no work this sprint).
-
 
 # Yzak — Rep Call Control: Test Scenarios & Verification Plan
 
@@ -2617,6 +2737,7 @@ See companion file: `tests/CallCenterTranscription.Tests/RepCallControlTests.cs`
 ---
 
 *Yzak sign-off: These scenarios cover the full ring→accept→live→teardown loop plus the five edge cases requested. The "Call Pending" badge gap is the single blocking implementation item before the demo flow is complete end-to-end.*
+
 # Review: Rep Call-Control Feature
 
 **Reviewer:** Athrun (Lead/Architect)
@@ -2665,6 +2786,7 @@ The customer speaker latch only fires in the `Transcribed` (final) handler. If t
 - `src/CallCenterTranscription.Web/wwwroot/js/live-transcript.js` — Lunamaria
 - `src/CallCenterTranscription.Web/wwwroot/js/rep-phone.js` — Lunamaria
 - `tests/CallCenterTranscription.Tests/RepCallControlTests.cs` — Yzak (new)
+
 # Dyakka — Call Lifecycle: Pending / Accepted / Ended + Reject=HangUp
 
 **Date:** 2026-06-10T06:38:30-04:00
@@ -2796,6 +2918,7 @@ Listen for these three stream names to drive the badge state machine:
 - Use it to gate whether sentiment scoring should be active for the current call
 - `MarkAccepted()` is called by Dyakka's code only; Lacus reads, never writes
 - `RepAccepted` resets to false on every `Clear()` / `CompleteIncomingClaim()` — safe across calls
+
 # Lacus — Sentiment Stream Analysis: Mixed vs Customer-Only
 
 **Date:** 2026-06-10T06:38:30-04:00
@@ -2884,6 +3007,7 @@ Why? Because mixing them destroys both. Agent empathy signals (apologies, acknow
 ---
 
 *Analysis grounded in: `athrun-rep-call-control` decision (decisions.md), `LiveSentimentStore.cs` (EMA α=0.4 lexicon impl), `SpeechTranscriptionService.cs` (line 250: scores every Recognized event from Mixed stream regardless of speaker), industry CCaaS platform architecture patterns.*
+
 # ConversationTranscriber Swap + Customer-Only Sentiment
 
 **Author:** Lacus (AI Engineer)
@@ -2997,6 +3121,7 @@ dotnet test CallCenterTranscription.sln --nologo --no-build -c Release
 
 The 3 skipped tests are pre-existing (`yzak-rep-call-control-tests.md §1`
  and related frontend/contract gaps) — **none are related to this change**.
+
 # Lunamaria — Rep Call-Control UI Decision
 
 **Date:** 2026-06-10T06:38:30-04:00
@@ -3100,6 +3225,7 @@ Without step 2, the customer was left on the answered call with nobody listening
 | `wwwroot/js/rep-phone.js` | Decline handler: `POST /rep/hangup`; new `rep.callEnded` listener for cross-module teardown |
 | `Pages/Index.cshtml` | Added `<p data-live-pending hidden>` inside transcript scroller |
 | `wwwroot/css/site.css` | Added `.conn-status--pending` + `@keyframes conn-ring` |
+
 # Yzak — Rep Call-Control Feature Verdict
 
 **Reviewer:** Yzak (Tester / QA)
@@ -4024,13 +4150,11 @@ The next logical backend/API handoff is to formalize these as **one logical agen
 
 We can likely cut worst-case “connected → rep prompt” delay by removing deferred add-rep windows and tightening registration freshness, while strictly preserving: **transcription starts only after Rep accepts**.
 
-
 # Kira demo scripts decision
 
 - Store demo-call definitions as a machine-friendly JSON artifact at `samples/agent-assist-demo-scripts.v1.json` so UI/pipeline work can bind transcript turns directly to expected knowledge-card IDs.
 - Keep the set to one broad retention save plus two narrower support flows (low-tank auto-delivery conversion and renewal-hardship save) so the demo can choose between 2-3 deterministic conversations without inventing new corpus records.
 - Attach primary knowledge expectations to customer turns and keep expected surfacing to one or two cards per turn so live rep guidance stays legible during playback.
-
 
 # Lacus Decision — Sentiment Update
 
@@ -4061,7 +4185,6 @@ Turn-taking fallback can misclassify rep alias IDs as customer and pollute the s
 
 For production-quality late-call recovery, integrate deterministic participant identity from ACS (unmixed participant identity/correlation), then map aliases with evidence rather than heuristics.
 
-
 # 2026-06-11T16:42:31.815-04:00 — Rep Accept Prompt Latency Fast-Path
 **By:** Meyrin
 **Requested by:** current local user
@@ -4087,7 +4210,6 @@ This preserves the core gate: transcription/AI remains inactive for rep UI until
   - verifies pending emit still occurs when no rep is registered.
   - verifies active-call ID matching behavior.
 - Full suite passed after changes: `dotnet test CallCenterTranscription.sln`.
-
 
 # 2026-06-11T16:42:31.815-04:00 — Rep Accept Latency Fix Review
 **By:** Yzak (Tester / QA)
