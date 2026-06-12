@@ -24,6 +24,9 @@ param apiContainerImage string = 'mcr.microsoft.com/azuredocs/containerapps-hell
 @description('Enable ACA liveness/readiness probes only after the real API image is deployed and /healthz is confirmed.')
 param enableApiHealthProbes bool = false
 
+@description('Create the ACS IncomingCall Event Grid webhook subscription. Enable only after the real API image is deployed and the webhook validation endpoint is live.')
+param enableAcsIncomingCallSubscription bool = false
+
 @description('Comma-separated candidate languages for Speech auto-detection.')
 param speechCandidateLanguages string = 'en-US,sv-SE,de-DE,fr-FR'
 
@@ -97,6 +100,7 @@ var aiServicesEndpoint = 'https://${aiServicesCustomSubdomainName}.cognitiveserv
 var acsEndpoint = 'https://${communicationServiceName}.communication.azure.com/'
 var apiFqdn = '${apiContainerAppName}.${containerAppsEnvironment.properties.defaultDomain}'
 var apiBaseUrl = 'https://${apiFqdn}'
+var webBaseUrl = 'https://${webAppName}.azurewebsites.net'
 resource logAnalyticsWorkspace 'Microsoft.OperationalInsights/workspaces@2023-09-01' = {
   name: logAnalyticsWorkspaceName
   location: location
@@ -280,6 +284,10 @@ resource apiContainerApp 'Microsoft.App/containerApps@2024-03-01' = {
             {
               name: 'Security__RequireAuth'
               value: 'false'
+            }
+            {
+              name: 'Cors__AllowedOrigins__0'
+              value: webBaseUrl
             }
             {
               name: 'Speech__Endpoint'
@@ -496,7 +504,7 @@ resource acsEventGridSystemTopic 'Microsoft.EventGrid/systemTopics@2022-06-15' =
 // return the validation response or subscription creation will fail.
 // Default retry: 30 attempts, exponential backoff, 24 h TTL (eventTimeToLiveInMinutes=1440).
 // No dead-letter for POC — missed calls are observable in ACA diagnostic logs.
-resource acsIncomingCallSubscription 'Microsoft.EventGrid/systemTopics/eventSubscriptions@2022-06-15' = {
+resource acsIncomingCallSubscription 'Microsoft.EventGrid/systemTopics/eventSubscriptions@2022-06-15' = if (enableAcsIncomingCallSubscription) {
   name: 'sub-incoming-call'
   parent: acsEventGridSystemTopic
   properties: {
@@ -544,9 +552,12 @@ output serviceEndpoints object = {
   apiBaseUrl: apiBaseUrl
   apiHealthUrl: '${apiBaseUrl}/healthz'
   acsEventGridWebhookEndpoint: '${apiBaseUrl}/api/events/acs/incoming-call'
-  acsLiveAutomationStatus: 'Event Grid system topic provisioned. Subscription live after API image with webhook handler is deployed to ACA.'
-  webBaseUrl: 'https://${webApp.properties.defaultHostName}'
-  webHealthUrl: 'https://${webApp.properties.defaultHostName}/healthz'
+  acsIncomingCallSubscriptionEnabled: enableAcsIncomingCallSubscription
+  acsLiveAutomationStatus: enableAcsIncomingCallSubscription
+    ? 'Event Grid system topic and IncomingCall subscription are provisioned.'
+    : 'Event Grid system topic is provisioned. Set enableAcsIncomingCallSubscription=true only after the real API image validates ${apiBaseUrl}/api/events/acs/incoming-call.'
+  webBaseUrl: webBaseUrl
+  webHealthUrl: '${webBaseUrl}/healthz'
   keyVaultUri: keyVault.properties.vaultUri
   containerRegistryLoginServer: containerRegistry.properties.loginServer
   speechEndpoint: speechEndpoint
@@ -580,7 +591,7 @@ output manualPostProvisionSteps array = [
   'ACR pulls are split to user-assigned identity ${acrPullUserAssignedIdentity.name}; runtime Key Vault/Cognitive/ACS access remains on the API Container App system-assigned identity principal ${apiContainerApp.identity.principalId}.'
   'The Container App registry binding is preconfigured for ${containerRegistry.properties.loginServer} with UAMI ${acrPullUserAssignedIdentity.id} so azd deploy can pull ACR-hosted images.'
   'After deploying the real API image, set enableApiHealthProbes=true and re-apply infrastructure once ${apiBaseUrl}/healthz returns healthy responses from the API runtime.'
-  'Implement and validate the ACS incoming-call webhook at ${apiBaseUrl}/api/events/acs/incoming-call before adding Event Grid.'
+  'Validate the ACS incoming-call webhook at ${apiBaseUrl}/api/events/acs/incoming-call before setting enableAcsIncomingCallSubscription=true.'
   'Implement and validate the ACS media WebSocket endpoint at wss://${apiFqdn}/api/calls/media-stream before enabling live ACS automation.'
   'ACS data-plane RBAC (Communication Services Contributor) is already assigned to the API Container App system-assigned identity, scoped to the ACS resource. No manual role assignment needed.'
   'To activate live ACS audio, set AudioSource__Mode=Acs on the Container App env vars after provisioning the ACS phone number and Event Grid subscription.'

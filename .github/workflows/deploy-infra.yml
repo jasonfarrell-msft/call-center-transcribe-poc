@@ -45,7 +45,9 @@ jobs:
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Validate Bicep template
-        run: az bicep build --file infra/main.bicep --stdout > /dev/null
+        run: |
+          az bicep build --file infra/main.bicep --stdout > /dev/null
+          az bicep build --file infra/deploy.bicep --stdout > /dev/null
 
       - name: Resolve current API image
         if: github.event_name != 'workflow_dispatch' || github.event.inputs.preserve_api_image == 'true'
@@ -83,9 +85,13 @@ jobs:
       - name: Deploy infrastructure
         env:
           AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+          AZURE_LOCATION: ${{ vars.AZURE_LOCATION }}
           CURRENT_API_IMAGE: ${{ steps.current_api_image.outputs.api_image }}
         run: |
           set -euo pipefail
+          : "${AZURE_RESOURCE_GROUP:?AZURE_RESOURCE_GROUP repository/environment variable is required.}"
+          : "${AZURE_LOCATION:?AZURE_LOCATION repository/environment variable is required.}"
+
           DEPLOYMENT_NAME="infra-${GITHUB_RUN_NUMBER}-${GITHUB_SHA::7}"
 
           PARAM_OVERRIDES=()
@@ -93,11 +99,13 @@ jobs:
             PARAM_OVERRIDES+=("apiContainerImage=${CURRENT_API_IMAGE}")
           fi
 
-          az deployment group create \
-            --resource-group "$AZURE_RESOURCE_GROUP" \
+          az deployment sub create \
+            --location "$AZURE_LOCATION" \
             --name "$DEPLOYMENT_NAME" \
-            --template-file infra/main.bicep \
-            --parameters @infra/main.parameters.json \
+            --template-file infra/deploy.bicep \
+            --parameters @infra/deploy.parameters.json \
+              resourceGroupName="$AZURE_RESOURCE_GROUP" \
+              location="$AZURE_LOCATION" \
             "${PARAM_OVERRIDES[@]}" \
             --query "properties.provisioningState" \
             -o tsv

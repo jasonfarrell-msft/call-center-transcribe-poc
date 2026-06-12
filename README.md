@@ -93,6 +93,21 @@ Use the repo docs for implementation detail beneath this overview:
 - [`docs/live-data-security-guardrails.md`](docs/live-data-security-guardrails.md) — auth model, CORS, telemetry redaction, and live-data guardrails
 - [`docs/regression-baseline.md`](docs/regression-baseline.md) — scripted demo regression baseline and QA expectations
 
+## Infrastructure deployment
+
+The subscription-scope Bicep entrypoint is [`infra/deploy.bicep`](infra/deploy.bicep). It creates or updates the named resource group, then deploys the solution resources into that group using the selected region:
+
+```bash
+az deployment sub create \
+  --location <region> \
+  --template-file infra/deploy.bicep \
+  --parameters @infra/deploy.parameters.json \
+    resourceGroupName=<resource-group-name> \
+    location=<region>
+```
+
+The resource-group-scope template remains [`infra/main.bicep`](infra/main.bicep) for existing resource group deployments.
+
 ## What this README intentionally does not cover
 
 To keep this document architecture-review friendly, it does **not** include:
