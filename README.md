@@ -53,61 +53,9 @@ The POC keeps the live path as thin as possible.
 
 ## Logical architecture
 
-```mermaid
-flowchart LR
-    caller[Customer PSTN caller]
-    rep[Rep using browser softphone]
+![Logical architecture diagram](docs/assets/logical-architecture.svg)
 
-    subgraph AzureIngress[Azure ingress and telephony]
-        acs[Azure Communication Services]
-        eg[Event Grid system topic + subscription]
-    end
-
-    subgraph Runtime[Application runtime]
-        api["API on Azure Container Apps<br/>- REST endpoints<br/>- ACS webhooks<br/>- media WebSocket<br/>- ASP.NET Core SignalR"]
-        state["In-app pipeline state<br/>current snapshot + replay"]
-        web[Web UI on Azure App Service]
-    end
-
-    subgraph AIServices[Azure AI services]
-        speech[Azure AI Speech]
-        translator[Azure AI Translator]
-        foundry["Azure AI Foundry / Azure AI Services<br/>reasoning seam"]
-    end
-
-    subgraph Ops[Platform and operations]
-        appi[Application Insights]
-        la[Log Analytics]
-        kv[Key Vault]
-        acr[Azure Container Registry]
-    end
-
-    caller --> acs
-    acs -->|IncomingCall event| eg
-    eg -->|POST /api/events/acs/incoming-call| api
-    api -->|AnswerCall + AddParticipant| acs
-    acs -->|mid-call callbacks| api
-    acs -->|WSS /api/calls/media-stream| api
-    rep <-->|Browser softphone call leg| acs
-    web -->|token/register/control| api
-
-    api --> speech
-    speech --> api
-    api --> translator
-    translator --> api
-    api --> foundry
-    foundry --> api
-
-    api --> state
-    web -->|GET current state| api
-    web <-->|SignalR /hubs/pipeline| api
-    state --> web
-
-    api -. telemetry .-> appi
-    appi --> la
-    api -. secret/RBAC boundary .-> kv
-    acr -->|API image supply| api
-```
+Diagram source: [`docs/assets/logical-architecture.mmd`](docs/assets/logical-architecture.mmd).
 
 ## Azure components in use
 
