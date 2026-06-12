@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using CallCenterTranscription.Api.Services;
 
 namespace CallCenterTranscription.Tests;
@@ -45,7 +46,7 @@ public sealed class RepCallControlTests
 
         store.SetCallId("call-abc");
         store.TryBeginAddRep();
-        store.MarkRepAdded();
+        store.MarkRepAdded("call-abc");
         store.TryBeginMediaClaim();
         // Simulate a complete call lifecycle then teardown.
         store.EndMediaClaim();
@@ -56,6 +57,22 @@ public sealed class RepCallControlTests
         Assert.True(store.TryBeginIncomingClaim(), "incoming claim must be available after Clear");
         Assert.True(store.TryBeginMediaClaim(), "media claim must be available after Clear");
         Assert.True(store.TryBeginAddRep(), "rep-add claim must be available after Clear");
+    }
+
+    [Fact]
+    public void ActiveCallStore_RepAdd_StaleCompletionDoesNotMutateNewCall()
+    {
+        var store = new ActiveCallStore();
+        store.SetCallId("call-a");
+        Assert.True(store.TryBeginAddRep());
+
+        store.Clear("call-a");
+        store.SetCallId("call-b");
+
+        store.MarkRepAdded("call-a");
+        Assert.False(store.RepAdded, "stale add completion must not mark the new call as already invited");
+
+        Assert.True(store.TryBeginAddRep(), "new call must still be able to start its own add flow");
     }
 
     // ── TC-16: ActiveCallStore — MediaClaim released on teardown ────────────────────────
@@ -227,16 +244,56 @@ public sealed class RepCallControlTests
 
     // ── TC-02: pending call offer shows before transcript starts ─────────────────────────
     // Lower transcript badge now reflects speech-service connectivity only; the Accept offer
-    // must appear in the header call bar as soon as stream.callPending arrives.
+    // must appear in the header call bar as soon as stream.callPending arrives, but MUST stay
+    // disabled until the ACS Calling SDK provides a real incomingCall handle.
 
-    [Fact(Skip = "Frontend JS behaviour — validate rep-callbar exposes Accept on stream.callPending while the lower speech badge stays connected, once Playwright coverage exists")]
-    public void Frontend_AcceptOffer_ShowsOnPendingCall_WithoutSwitchingSpeechBadge()
+    [Fact]
+    public void Frontend_AcceptOffer_ShowsOnPendingCall_ButOnlyEnablesAfterIncomingInvite()
     {
-        // When stream.callPending fires:
-        // - [data-rep-accept] must be visible immediately (disabled until ACS incomingCall arrives).
-        // - [data-conn-label] must continue to reflect speech-service connectivity, not call pending.
-        // - Transcript content area must contain zero .transcript-line elements.
-        // Implement once Playwright coverage is available for the live browser path.
+        var source = ReadWebScript("rep-phone.js");
+
+        Assert.Contains("showPendingOffer(callId, !!currentIncoming);", source, StringComparison.Ordinal);
+        Assert.Contains("showPendingOffer(root.getAttribute(\"data-live-call-id\"), false);", source, StringComparison.Ordinal);
+        Assert.Contains("currentIncoming = incoming;", source, StringComparison.Ordinal);
+        Assert.Contains("showPendingOffer(pendingCallId, true);", source, StringComparison.Ordinal);
+        Assert.Contains("if (!currentIncoming) return;", source, StringComparison.Ordinal);
+        Assert.Matches(
+            new Regex(@"document\.addEventListener\(""rep\.callPending"".*showPendingOffer\(callId, !!currentIncoming\);", RegexOptions.Singleline),
+            source);
+    }
+
+    [Fact]
+    public void Frontend_PendingCall_KeepsSpeechBadgeConnectedWhileShowingAcceptOffer()
+    {
+        var source = ReadWebScript("live-transcript.js");
+
+        Assert.Matches(
+            new Regex(@"async function onCallPending\(evt\).*showPendingState\(\).*setState\(""live"", ""Speech services connected""\);.*dispatchRepEvent\(""rep\.callPending""", RegexOptions.Singleline),
+            source);
+        Assert.DoesNotContain("setState(\"pending\"", source, StringComparison.Ordinal);
+        Assert.Contains("setText(summaryEl, \"Live mode • Waiting for rep acceptance\");", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Frontend_Resync_GatesPendingOfferOnAnswerableActiveCallState()
+    {
+        var source = ReadWebScript("live-transcript.js");
+
+        Assert.Contains("data.acceptAvailable", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("if (data && data.callId) {", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Frontend_Resync_DoesNotReopenAcceptedOrMockCallsAsPending()
+    {
+        var source = ReadWebScript("live-transcript.js");
+
+        Assert.Matches(
+            new Regex(@"if\s*\(data\.acceptAvailable.*await onCallPending\(\{ callId: data\.callId \}\);", RegexOptions.Singleline),
+            source);
+        Assert.Matches(
+            new Regex(@"if\s*\(data\.repAccepted|data\.state\s*===\s*[""']accepted[""']", RegexOptions.Singleline),
+            source);
     }
 
     // ── TC-11: Customer-only sentiment ──────────────────────────────────────────────────
@@ -270,8 +327,9 @@ public sealed class RepCallControlTests
     public void ActiveCallStore_Teardown_FirstCallReturnsTrue()
     {
         var store = new ActiveCallStore();
+        store.SetCallId("call-tear-1");
 
-        var first = store.TryBeginTeardown();
+        var first = store.TryBeginTeardown("call-tear-1");
         Assert.True(first, "first caller must claim teardown");
     }
 
@@ -279,10 +337,11 @@ public sealed class RepCallControlTests
     public void ActiveCallStore_Teardown_SubsequentCallsReturnFalse()
     {
         var store = new ActiveCallStore();
+        store.SetCallId("call-tear-1");
 
-        Assert.True(store.TryBeginTeardown(), "first caller claims teardown");
-        Assert.False(store.TryBeginTeardown(), "second concurrent caller is blocked");
-        Assert.False(store.TryBeginTeardown(), "third caller is also blocked — no double-teardown");
+        Assert.True(store.TryBeginTeardown("call-tear-1"), "first caller claims teardown");
+        Assert.False(store.TryBeginTeardown("call-tear-1"), "second concurrent caller is blocked");
+        Assert.False(store.TryBeginTeardown("call-tear-1"), "third caller is also blocked — no double-teardown");
     }
 
     [Fact]
@@ -291,17 +350,30 @@ public sealed class RepCallControlTests
         var store = new ActiveCallStore();
 
         store.SetCallId("call-tear-1");
-        Assert.True(store.TryBeginTeardown(), "first call teardown claimed");
-        Assert.False(store.TryBeginTeardown(), "teardown still locked before Clear");
+        Assert.True(store.TryBeginTeardown("call-tear-1"), "first call teardown claimed");
+        Assert.False(store.TryBeginTeardown("call-tear-1"), "teardown still locked before Clear");
 
         // Teardown completes — Clear() resets the latch for the next call lifecycle.
-        store.Clear();
+        store.Clear("call-tear-1");
         Assert.Null(store.CallId);
 
         // A new call can now claim teardown.
         store.SetCallId("call-tear-2");
-        Assert.True(store.TryBeginTeardown(), "teardown claim available after Clear for new call");
-        Assert.False(store.TryBeginTeardown(), "new call teardown also locks after first claim");
+        Assert.True(store.TryBeginTeardown("call-tear-2"), "teardown claim available after Clear for new call");
+        Assert.False(store.TryBeginTeardown("call-tear-2"), "new call teardown also locks after first claim");
+    }
+
+    [Fact]
+    public void ActiveCallStore_Teardown_RejectsStaleCallId()
+    {
+        var store = new ActiveCallStore();
+        store.SetCallId("call-current");
+
+        Assert.False(store.TryBeginTeardown("call-stale"), "stale call id must not claim teardown");
+        Assert.Equal("call-current", store.CallId);
+
+        store.Clear("call-stale");
+        Assert.Equal("call-current", store.CallId);
     }
 
     // ── TC-03 (partial): ActiveCallStore — RepAccepted state machine ────────────────────
@@ -322,7 +394,7 @@ public sealed class RepCallControlTests
         Assert.False(store.RepAccepted, "CompleteIncomingClaim must not set RepAccepted");
 
         // Rep clicks Accept → ACS fires AddParticipantSucceeded → MarkAccepted().
-        store.MarkAccepted();
+        store.MarkAccepted("call-accept-1");
         Assert.True(store.RepAccepted, "MarkAccepted should set RepAccepted to true");
 
         // Teardown: Clear() resets the flag.
@@ -331,8 +403,64 @@ public sealed class RepCallControlTests
 
         // Second call: CompleteIncomingClaim also resets (guards against stale accept bleed-over).
         store.TryBeginIncomingClaim();
-        store.MarkAccepted(); // simulate late stale MarkAccepted call
+        store.MarkAccepted("call-accept-1"); // simulate late stale MarkAccepted call
         store.CompleteIncomingClaim("call-accept-2");
         Assert.False(store.RepAccepted, "CompleteIncomingClaim must reset RepAccepted for the new call window");
+    }
+
+    [Fact]
+    public void ActiveCallStore_CallConnected_StateTransitions()
+    {
+        var store = new ActiveCallStore();
+
+        Assert.False(store.CallConnected, "should start disconnected");
+
+        store.TryBeginIncomingClaim();
+        store.CompleteIncomingClaim("call-connected-1");
+        Assert.False(store.CallConnected, "answer submission alone must not mark the call connected");
+
+        store.MarkConnected("call-connected-1");
+        Assert.True(store.CallConnected, "CallConnected callback should mark the call connected");
+
+        store.Clear();
+        Assert.False(store.CallConnected, "Clear must reset CallConnected");
+
+        store.TryBeginIncomingClaim();
+        store.MarkConnected("call-connected-1");
+        store.CompleteIncomingClaim("call-connected-2");
+        Assert.False(store.CallConnected, "CompleteIncomingClaim must reset stale CallConnected state for the new call");
+    }
+
+    [Fact]
+    public void ActiveCallStore_CallConnectedAndAccepted_StaleCallbacksDoNotMutateNewCall()
+    {
+        var store = new ActiveCallStore();
+        store.SetCallId("call-a");
+        store.Clear("call-a");
+        store.SetCallId("call-b");
+
+        store.MarkConnected("call-a");
+        store.MarkAccepted("call-a");
+
+        Assert.False(store.CallConnected);
+        Assert.False(store.RepAccepted);
+    }
+
+    private static string ReadWebScript(string fileName)
+    {
+        var path = Path.GetFullPath(Path.Combine(
+            AppContext.BaseDirectory,
+            "..",
+            "..",
+            "..",
+            "..",
+            "..",
+            "src",
+            "CallCenterTranscription.Web",
+            "wwwroot",
+            "js",
+            fileName));
+
+        return File.ReadAllText(path);
     }
 }

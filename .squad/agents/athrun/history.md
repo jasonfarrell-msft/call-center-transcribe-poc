@@ -162,3 +162,8 @@
 ### 2026-06-12 — After deterministic assist, the next gate is repeatable operability
 - Once scripted assist data, matching, and UI rendering are in place, the next honest milestone is not more retrieval work; it is a repeatable Mock-mode startup + smoke path that Jason can launch and observe reliably.
 - The demo gate should prove `current-state`/replay plus customer-turn-correlated assist visibility in the live UI, while Mission Control clearly signals mock/deferred readiness.
+
+### 2026-06-12 — Resync must fail closed on call action state
+- The frontend may use `/api/calls/active` as the fast hint for whether a live call exists, but it must only reopen the rep Accept/pending affordance when `acceptAvailable` is true.
+- For reconnect/reload recovery into an already accepted call, pair the active-call snapshot with `/api/session/current-state` and require the same `callId` plus an accepted/live state before promoting the UI; otherwise stale or mock snapshots can resurrect the wrong softphone state.
+- Keep the early-accept UX split intact: SignalR/REST can surface the pending offer immediately, while `rep-phone.js` still waits for the real ACS `incomingCall` handle before enabling Accept.

@@ -63,11 +63,14 @@ public sealed class PipelineCurrentStateStore
     {
         var snapshot = GetSnapshot();
         var state = NormalizeCallState(snapshot.Call.State);
+        var liveAcceptAvailable = _liveAcsMode &&
+            string.Equals(state, "pending", StringComparison.Ordinal) &&
+            !string.IsNullOrWhiteSpace(snapshot.Call.CallId);
         return new ActiveCallStateResponse
         {
             CallId = snapshot.Call.CallId,
             State = state,
-            AcceptAvailable = string.Equals(state, "pending", StringComparison.Ordinal),
+            AcceptAvailable = liveAcceptAvailable,
             RepAccepted = IsAcceptedState(state),
             StartedAtUtc = string.IsNullOrWhiteSpace(snapshot.Call.CallId)
                 ? null
@@ -77,7 +80,7 @@ public sealed class PipelineCurrentStateStore
 
     public void MarkPending(string callId, DateTimeOffset? startedAtUtc = null)
     {
-        if (string.IsNullOrWhiteSpace(callId))
+        if (!_liveAcsMode || string.IsNullOrWhiteSpace(callId))
         {
             return;
         }
@@ -122,13 +125,45 @@ public sealed class PipelineCurrentStateStore
 
     public void MarkAccepted(string callId)
     {
-        if (string.IsNullOrWhiteSpace(callId))
+        if (!_liveAcsMode || string.IsNullOrWhiteSpace(callId))
         {
             return;
         }
 
         lock (_gate)
         {
+            if (string.IsNullOrWhiteSpace(_currentState.Call.CallId))
+            {
+                var effectiveStart = _currentState.Call.StartedAtUtc == default
+                    ? DateTimeOffset.UtcNow
+                    : _currentState.Call.StartedAtUtc;
+
+                _currentState = _currentState with
+                {
+                    Call = _currentState.Call with
+                    {
+                        CallId = callId,
+                        SessionId = string.IsNullOrWhiteSpace(_currentState.Call.SessionId)
+                            ? $"session-{callId}"
+                            : _currentState.Call.SessionId,
+                        CustomerName = string.IsNullOrWhiteSpace(_currentState.Call.CustomerName)
+                            ? "Inbound caller"
+                            : _currentState.Call.CustomerName,
+                        AgentName = string.IsNullOrWhiteSpace(_currentState.Call.AgentName)
+                            ? "Representative"
+                            : _currentState.Call.AgentName,
+                        QueueName = string.IsNullOrWhiteSpace(_currentState.Call.QueueName)
+                            ? "Live Queue"
+                            : _currentState.Call.QueueName,
+                        StartedAtUtc = effectiveStart,
+                        ScenarioName = string.IsNullOrWhiteSpace(_currentState.Call.ScenarioName)
+                            ? "Live ACS call"
+                            : _currentState.Call.ScenarioName,
+                        Source = _liveAcsMode ? "acs-live" : _currentState.Call.Source
+                    }
+                };
+            }
+
             if (!string.Equals(_currentState.Call.CallId, callId, StringComparison.Ordinal))
             {
                 return;

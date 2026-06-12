@@ -1,9 +1,8 @@
-using Azure.Communication.CallAutomation;
-using Azure.Identity;
 using CallCenterTranscription.Api;
-using CallCenterTranscription.Api.Services;
 using CallCenterTranscription.Shared.Events;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.SignalR;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace CallCenterTranscription.Tests;
@@ -11,18 +10,8 @@ namespace CallCenterTranscription.Tests;
 public sealed class AcsEndpointsLatencyTests
 {
     [Fact]
-    public async Task EmitCallPendingAndTryAddRepAsync_EmitsPendingBeforeRepAddAttempt()
+    public async Task EmitCallPendingAsync_EmitsPendingEvent()
     {
-        var callStore = new ActiveCallStore();
-        callStore.CompleteIncomingClaim("call-latency-1");
-
-        var registry = new RepRegistry();
-        registry.Register("8:acs:rep");
-
-        var callClient = new CallAutomationClient(
-            new Uri("https://contoso.communication.azure.com"),
-            new DefaultAzureCredential());
-
         var pendingPayloads = new List<CallLifecycleEvent>();
         var proxy = new RecordingClientProxy((method, args) =>
         {
@@ -33,103 +22,64 @@ public sealed class AcsEndpointsLatencyTests
             }
         });
 
-        var sequence = 0;
-        var pendingSequence = 0;
-        var addSequence = 0;
-        proxy.OnSend = (method, _) =>
-        {
-            if (method == PipelineContract.StreamNames.CallPending)
-            {
-                pendingSequence = ++sequence;
-            }
-        };
-
-        await AcsEndpoints.EmitCallPendingAndTryAddRepAsync(
+        await AcsEndpoints.EmitCallPendingAsync(
             "call-latency-1",
             proxy,
-            callClient,
-            callStore,
-            registry,
-            NullLogger.Instance,
             CancellationToken.None,
-            (_, _, _, _, _) =>
-            {
-                addSequence = ++sequence;
-                return Task.CompletedTask;
-            });
+            DateTimeOffset.Parse("2026-06-12T17:00:00Z"));
 
         Assert.Single(pendingPayloads);
         Assert.Equal("call-latency-1", pendingPayloads[0].CallId);
         Assert.Equal("pending", pendingPayloads[0].Status);
-        Assert.True(pendingSequence > 0, "callPending must be emitted.");
-        Assert.True(addSequence > pendingSequence, "rep add attempt must happen after callPending emit.");
+        Assert.Equal(DateTimeOffset.Parse("2026-06-12T17:00:00Z"), pendingPayloads[0].TimestampUtc);
     }
 
     [Fact]
-    public async Task EmitCallPendingAndTryAddRepAsync_EmitsPendingEvenWhenRepNotRegistered()
+    public void ResolvePublicBaseUri_UsesConfiguredPublicBaseUrl()
     {
-        var callStore = new ActiveCallStore();
-        callStore.CompleteIncomingClaim("call-latency-2");
-        var registry = new RepRegistry();
-
-        var callClient = new CallAutomationClient(
-            new Uri("https://contoso.communication.azure.com"),
-            new DefaultAzureCredential());
-
-        var pendingCount = 0;
-        var proxy = new RecordingClientProxy((method, _) =>
-        {
-            if (method == PipelineContract.StreamNames.CallPending)
+        var ctx = new DefaultHttpContext();
+        ctx.Request.Host = new HostString("internal.example.local");
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
             {
-                pendingCount++;
-            }
-        });
+                ["Acs:PublicBaseUrl"] = "https://demo.example.com"
+            })
+            .Build();
 
-        var addAttempted = false;
-        await AcsEndpoints.EmitCallPendingAndTryAddRepAsync(
-            "call-latency-2",
-            proxy,
-            callClient,
-            callStore,
-            registry,
-            NullLogger.Instance,
-            CancellationToken.None,
-            (_, _, _, _, _) =>
-            {
-                addAttempted = true;
-                return Task.CompletedTask;
-            });
+        var uri = AcsEndpoints.ResolvePublicBaseUri(ctx, configuration, NullLogger.Instance);
 
-        Assert.Equal(1, pendingCount);
-        Assert.False(addAttempted, "rep add should not be attempted when no rep is registered.");
+        Assert.Equal("https://demo.example.com/", uri.ToString());
     }
 
     [Fact]
-    public async Task EmitCallPendingAndTryAddRepAsync_DoesNotFailWhenEarlyAddThrows()
+    public void ResolvePublicBaseUri_PreservesConfiguredBasePath()
     {
-        var callStore = new ActiveCallStore();
-        callStore.CompleteIncomingClaim("call-latency-3");
-        var registry = new RepRegistry();
-        registry.Register("8:acs:rep");
-        var callClient = new CallAutomationClient(
-            new Uri("https://contoso.communication.azure.com"),
-            new DefaultAzureCredential());
+        var ctx = new DefaultHttpContext();
+        ctx.Request.Host = new HostString("internal.example.local");
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["Acs:PublicBaseUrl"] = "https://demo.example.com/edge"
+            })
+            .Build();
 
-        var methods = new List<string>();
-        var proxy = new RecordingClientProxy((method, _) => methods.Add(method));
+        var uri = AcsEndpoints.ResolvePublicBaseUri(ctx, configuration, NullLogger.Instance);
+        var callbackUri = AcsEndpoints.BuildPublicUri(uri, PathString.Empty, "/api/events/acs/callbacks");
 
-        await AcsEndpoints.EmitCallPendingAndTryAddRepAsync(
-            "call-latency-3",
-            proxy,
-            callClient,
-            callStore,
-            registry,
-            NullLogger.Instance,
-            CancellationToken.None,
-            (_, _, _, _, _) => throw new InvalidOperationException("expected test fault"));
+        Assert.Equal("https://demo.example.com/edge", uri.ToString());
+        Assert.Equal("https://demo.example.com/edge/api/events/acs/callbacks", callbackUri.ToString());
+    }
 
-        Assert.Single(methods);
-        Assert.Equal(PipelineContract.StreamNames.CallPending, methods[0]);
+    [Fact]
+    public void BuildPublicUri_PreservesPathBaseAndRequestedScheme()
+    {
+        var baseUri = new Uri("https://demo.example.com");
+
+        var callbackUri = AcsEndpoints.BuildPublicUri(baseUri, new PathString("/edge"), "/api/events/acs/callbacks");
+        var mediaUri = AcsEndpoints.BuildPublicUri(baseUri, new PathString("/edge"), "/api/calls/media-stream", "wss");
+
+        Assert.Equal("https://demo.example.com/edge/api/events/acs/callbacks", callbackUri.ToString());
+        Assert.Equal("wss://demo.example.com/edge/api/calls/media-stream", mediaUri.ToString());
     }
 
     [Theory]

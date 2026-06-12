@@ -147,6 +147,66 @@ public sealed class ApiWiringSmokeTests(WebApplicationFactory<Program> factory)
     }
 
     [Fact]
+    public async Task ApiHost_LiveMode_ExposesAcceptedCallStateEvenIfPendingWasMissed()
+    {
+        using var envScope = new EnvironmentVariableScope(new Dictionary<string, string?>
+        {
+            ["AudioSource__Mode"] = "Acs"
+        });
+        using var liveFactory = new WebApplicationFactory<Program>();
+
+        using (var scope = liveFactory.Services.CreateScope())
+        {
+            var currentStateStore = scope.ServiceProvider.GetRequiredService<PipelineCurrentStateStore>();
+            currentStateStore.MarkAccepted("call-live-accepted-direct-1");
+        }
+
+        using var client = liveFactory.CreateClient();
+        var session = await client.GetFromJsonAsync<SessionCurrentResponse>("/api/session/current");
+        var activeCall = await client.GetFromJsonAsync<ActiveCallStateResponse>("/api/calls/active");
+
+        Assert.NotNull(session);
+        Assert.NotNull(activeCall);
+        Assert.Equal("call-live-accepted-direct-1", session.Call.CallId);
+        Assert.Equal("accepted", session.Call.State);
+        Assert.Equal("call-live-accepted-direct-1", activeCall.CallId);
+        Assert.Equal("accepted", activeCall.State);
+        Assert.False(activeCall.AcceptAvailable);
+        Assert.True(activeCall.RepAccepted);
+    }
+
+    [Fact]
+    public async Task ApiHost_MockMode_DoesNotExposeSyntheticPendingAcceptState()
+    {
+        using var envScope = new EnvironmentVariableScope(new Dictionary<string, string?>
+        {
+            ["AudioSource__Mode"] = "Mock"
+        });
+        using var mockFactory = new WebApplicationFactory<Program>();
+
+        using (var scope = mockFactory.Services.CreateScope())
+        {
+            var currentStateStore = scope.ServiceProvider.GetRequiredService<PipelineCurrentStateStore>();
+            currentStateStore.MarkPending("synthetic-pending-call", DateTimeOffset.Parse("2026-06-12T14:10:00Z"));
+        }
+
+        using var client = mockFactory.CreateClient();
+        var session = await client.GetFromJsonAsync<SessionCurrentResponse>("/api/session/current");
+        var currentState = await client.GetFromJsonAsync<PipelineCurrentStateResponse>("/api/session/current-state");
+        var activeCall = await client.GetFromJsonAsync<ActiveCallStateResponse>("/api/calls/active");
+
+        Assert.NotNull(session);
+        Assert.NotNull(currentState);
+        Assert.NotNull(activeCall);
+        Assert.True(session.IsMockFeedActive);
+        Assert.Equal("call-propane-retention-0001", session.Call.CallId);
+        Assert.Equal("active", currentState.Call.State);
+        Assert.Equal("call-propane-retention-0001", activeCall.CallId);
+        Assert.False(activeCall.AcceptAvailable);
+        Assert.True(activeCall.RepAccepted);
+    }
+
+    [Fact]
     public async Task ApiHost_MockMode_IgnoresIncomingCallWebhookEvenWhenAcsEndpointExists()
     {
         using var envScope = new EnvironmentVariableScope(new Dictionary<string, string?>

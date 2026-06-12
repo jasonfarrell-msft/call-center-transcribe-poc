@@ -206,15 +206,24 @@ internal static class AcsEndpoints
                         return Results.Ok();
                     }
 
-                    // ACA external ingress provides HTTPS/WSS — always use secure schemes.
-                    var callbackUri    = new Uri($"https://{ctx.Request.Host}/api/events/acs/callbacks");
-                    var mediaStreamUri = new Uri($"wss://{ctx.Request.Host}/api/calls/media-stream");
+                    var publicBaseUri = ResolvePublicBaseUri(
+                        ctx,
+                        ctx.RequestServices.GetRequiredService<IConfiguration>(),
+                        logger);
+                    var callbackUri = BuildPublicUri(publicBaseUri, ctx.Request.PathBase, "/api/events/acs/callbacks");
+                    var mediaStreamUri = BuildPublicUri(publicBaseUri, ctx.Request.PathBase, "/api/calls/media-stream", "wss");
+                    logger.LogInformation(
+                        "IncomingCall received from {From} to {To}; answering via callback {CallbackUri} and media stream {MediaUri}.",
+                        DescribeIdentifier(callData, "from"),
+                        DescribeIdentifier(callData, "to"),
+                        callbackUri,
+                        mediaStreamUri);
 
                     try
                     {
                         // SDK 1.5.1 API: ctor takes (audioChannelType, streamingTransport);
                         // TransportUri and MediaStreamingContent are set as properties.
-                        // Use Mixed audio so both customer (PSTN) and rep (CommunicationUser)
+                        // Keep Mixed audio so both customer (PSTN) and rep (CommunicationUser)
                         // are combined into one stream for the single Speech recognizer pipeline.
                         var answerOptions = new AnswerCallOptions(incomingCallContext, callbackUri)
                         {
@@ -235,20 +244,6 @@ internal static class AcsEndpoints
                         // route transcript events to the correct SignalR group.
                         var answeredCallId = result.Value.CallConnection.CallConnectionId;
                         callStore.CompleteIncomingClaim(answeredCallId);
-
-                        var currentStateStore = ctx.RequestServices.GetRequiredService<PipelineCurrentStateStore>();
-                        currentStateStore.MarkPending(answeredCallId);
-
-                        var hub = ctx.RequestServices.GetRequiredService<IHubContext<PipelineHub>>();
-                        var registry = ctx.RequestServices.GetRequiredService<RepRegistry>();
-                        await EmitCallPendingAndTryAddRepAsync(
-                            answeredCallId,
-                            hub.Clients.All,
-                            callClient,
-                            callStore,
-                            registry,
-                            logger,
-                            ct);
 
                         logger.LogInformation(
                             "ACS call answered; callId={CallId} media streaming directed to {MediaUri}",
@@ -272,18 +267,15 @@ internal static class AcsEndpoints
         return Results.Ok();
     }
 
-    // Broadcasts stream.callPending immediately after AnswerCall succeeds, then opportunistically
-    // tries to AddParticipant the rep without waiting for CallConnected callback delivery.
-    // This pulls the rep Accept prompt earlier while keeping transcript/media gates unchanged.
-    internal static async Task EmitCallPendingAndTryAddRepAsync(
+    // Broadcasts stream.callPending once ACS has created a real rep invitation (AddParticipant
+    // accepted the invite request). This keeps the visible Accept state correlated to an actual
+    // browser-routable ACS incoming-call leg instead of a synthetic "answered server-side only"
+    // placeholder that the rep cannot accept yet.
+    internal static async Task EmitCallPendingAsync(
         string callId,
         IClientProxy broadcastClient,
-        CallAutomationClient? callClient,
-        ActiveCallStore callStore,
-        RepRegistry registry,
-        ILogger logger,
         CancellationToken ct,
-        Func<CallAutomationClient, ActiveCallStore, RepRegistry, ILogger, CancellationToken, Task>? tryAddRepAsync = null)
+        DateTimeOffset? timestampUtc = null)
     {
         await broadcastClient.SendAsync(
             PipelineContract.StreamNames.CallPending,
@@ -291,25 +283,9 @@ internal static class AcsEndpoints
             {
                 CallId = callId,
                 Status = "pending",
-                TimestampUtc = DateTimeOffset.UtcNow
+                TimestampUtc = timestampUtc ?? DateTimeOffset.UtcNow
             },
             ct);
-
-        if (callClient is null || callStore.RepAdded || string.IsNullOrEmpty(registry.CurrentUserId))
-            return;
-
-        var addRep = tryAddRepAsync ?? RepEndpoints.TryAddRepToCallAsync;
-        try
-        {
-            await addRep(callClient, callStore, registry, logger, ct);
-        }
-        catch (Exception ex)
-        {
-            logger.LogWarning(
-                ex,
-                "Early AddParticipant attempt failed for call {CallId}; waiting for callback/register reconverge.",
-                callId);
-        }
     }
 
     // ────────────────────────────────────────────────────────────────────────────────────────────
@@ -357,6 +333,17 @@ internal static class AcsEndpoints
                     var callStore = ctx.RequestServices.GetRequiredService<ActiveCallStore>();
                     var registry = ctx.RequestServices.GetRequiredService<RepRegistry>();
 
+                    if (!IsCurrentActiveCall(callStore.CallId, connected.CallConnectionId))
+                    {
+                        logger.LogInformation(
+                            "Ignoring CallConnected for stale call {CallbackCallId}; active call is {ActiveCallId}.",
+                            connected.CallConnectionId,
+                            callStore.CallId ?? "<none>");
+                        break;
+                    }
+
+                    callStore.MarkConnected(connected.CallConnectionId);
+
                     if (callClient is null)
                     {
                         logger.LogWarning("CallConnected received but CallAutomationClient is not registered.");
@@ -372,7 +359,17 @@ internal static class AcsEndpoints
                         break;
                     }
 
-                    await RepEndpoints.TryAddRepToCallAsync(callClient, callStore, registry, logger, ct);
+                    var invitedCallId = await RepEndpoints.TryAddRepToCallAsync(callClient, callStore, registry, logger, ct);
+                    if (!string.IsNullOrWhiteSpace(invitedCallId))
+                    {
+                        ctx.RequestServices.GetRequiredService<PipelineCurrentStateStore>()
+                            .MarkPending(invitedCallId);
+                        var connectedHub = ctx.RequestServices.GetRequiredService<IHubContext<PipelineHub>>();
+                        await EmitCallPendingAsync(
+                            invitedCallId,
+                            connectedHub.Clients.All,
+                            ct);
+                    }
                     break;
 
                 case AddParticipantSucceeded ok:
@@ -391,7 +388,7 @@ internal static class AcsEndpoints
 
                     logger.LogInformation(
                         "ACS AddParticipant succeeded (rep answered) for call {CallId}.", ok.CallConnectionId);
-                    acceptedStore.MarkAccepted();
+                    acceptedStore.MarkAccepted(ok.CallConnectionId);
                     ctx.RequestServices.GetRequiredService<PipelineCurrentStateStore>().MarkAccepted(ok.CallConnectionId);
                     var acceptedHub = ctx.RequestServices.GetRequiredService<IHubContext<PipelineHub>>();
                     await acceptedHub.Clients.All.SendAsync(
@@ -416,11 +413,7 @@ internal static class AcsEndpoints
                     logger.LogWarning(
                         "ACS AddParticipant failed for call {CallId}: {Code} {Message} — hanging up.",
                         failed.CallConnectionId, failed.ResultInformation?.Code, failed.ResultInformation?.Message);
-                    if (isActiveCallFailure)
-                    {
-                        failedStore.ResetAddRep();
-                    }
-                    else
+                    if (!isActiveCallFailure)
                     {
                         logger.LogInformation(
                             "Skipping rep-add reset for stale AddParticipantFailed callback call {CallbackCallId}; active call is {ActiveCallId}.",
@@ -459,7 +452,14 @@ internal static class AcsEndpoints
                     {
                         var storeForPU = ctx.RequestServices.GetRequiredService<ActiveCallStore>();
                         var callIdForPU = storeForPU.CallId;
-                        if (!string.IsNullOrEmpty(callIdForPU))
+                        if (!IsCurrentActiveCall(callIdForPU, updated.CallConnectionId))
+                        {
+                            logger.LogInformation(
+                                "Ignoring ParticipantsUpdated for stale call {CallbackCallId}; active call is {ActiveCallId}.",
+                                updated.CallConnectionId,
+                                callIdForPU ?? "<none>");
+                        }
+                        else if (!string.IsNullOrEmpty(callIdForPU))
                         {
                             logger.LogInformation(
                                 "ParticipantsUpdated: no PSTN party in call {CallId} — customer hung up; " +
@@ -504,7 +504,16 @@ internal static class AcsEndpoints
                         "ACS CallDisconnected for call {CallId}.",
                         disconnected.CallConnectionId);
                     var storeForDisc = ctx.RequestServices.GetRequiredService<ActiveCallStore>();
-                    if (!storeForDisc.TryBeginTeardown())
+                    if (!IsCurrentActiveCall(storeForDisc.CallId, disconnected.CallConnectionId))
+                    {
+                        logger.LogInformation(
+                            "Ignoring CallDisconnected for stale call {CallbackCallId}; active call is {ActiveCallId}.",
+                            disconnected.CallConnectionId,
+                            storeForDisc.CallId ?? "<none>");
+                        break;
+                    }
+
+                    if (!storeForDisc.TryBeginTeardown(disconnected.CallConnectionId))
                     {
                         logger.LogDebug(
                             "CallDisconnected: teardown already claimed (WebSocket finally ran first); no-op.");
@@ -520,7 +529,7 @@ internal static class AcsEndpoints
                     var acsSourceForDisc = ctx.RequestServices.GetRequiredService<AcsAudioSource>();
                     acsSourceForDisc.ForceCompleteCurrentSession();
                     ctx.RequestServices.GetRequiredService<PipelineCurrentStateStore>().ClearActiveCall(callIdForDisc);
-                    storeForDisc.Clear();
+                    storeForDisc.Clear(callIdForDisc);
                     ctx.RequestServices.GetRequiredService<LiveSentimentStore>().Clear();
                     var hubForDisc = ctx.RequestServices.GetRequiredService<IHubContext<PipelineHub>>();
                     await hubForDisc.Clients.All.SendAsync(
@@ -547,6 +556,126 @@ internal static class AcsEndpoints
         !string.IsNullOrEmpty(activeCallId) &&
         !string.IsNullOrEmpty(callbackCallId) &&
         string.Equals(activeCallId, callbackCallId, StringComparison.Ordinal);
+
+    internal static Uri ResolvePublicBaseUri(HttpContext ctx, IConfiguration configuration, ILogger logger)
+    {
+        var configured = configuration["Acs:PublicBaseUrl"];
+        Uri? baseUri = null;
+        if (!string.IsNullOrWhiteSpace(configured) &&
+            Uri.TryCreate(configured, UriKind.Absolute, out var configuredUri))
+        {
+            baseUri = configuredUri;
+        }
+
+        if (baseUri is null)
+        {
+            if (!ctx.Request.Host.HasValue)
+            {
+                throw new InvalidOperationException(
+                    "Cannot resolve ACS public base URI. Configure Acs:PublicBaseUrl or ensure the inbound request includes a Host header.");
+            }
+
+            baseUri = new UriBuilder(Uri.UriSchemeHttps, ctx.Request.Host.Host, ctx.Request.Host.Port ?? -1).Uri;
+        }
+
+        if (string.Equals(baseUri.Host, "localhost", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(baseUri.Host, "127.0.0.1", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(baseUri.Host, "::1", StringComparison.OrdinalIgnoreCase))
+        {
+            logger.LogWarning(
+                "ACS public base URI resolved to {BaseUri}. ACS callbacks and media streaming require a publicly reachable HTTPS/WSS host. Configure Acs:PublicBaseUrl for live Azure-resource demos.",
+                baseUri);
+        }
+
+        return new UriBuilder(Uri.UriSchemeHttps, baseUri.Host, baseUri.IsDefaultPort ? -1 : baseUri.Port)
+        {
+            Path = NormalizeBasePath(baseUri.AbsolutePath)
+        }.Uri;
+    }
+
+    internal static Uri BuildPublicUri(Uri baseUri, PathString pathBase, string relativePath, string scheme = "https")
+    {
+        var configuredBasePath = NormalizeBasePath(baseUri.AbsolutePath);
+        var requestBasePath = NormalizeBasePath(pathBase.Value);
+        var combinedBasePath = configuredBasePath;
+        if (!string.IsNullOrEmpty(requestBasePath) &&
+            !string.Equals(requestBasePath, configuredBasePath, StringComparison.OrdinalIgnoreCase))
+        {
+            combinedBasePath = $"{configuredBasePath}{requestBasePath}";
+        }
+
+        var builder = new UriBuilder(baseUri)
+        {
+            Scheme = scheme,
+            Port = baseUri.IsDefaultPort ? -1 : baseUri.Port,
+            Path = $"{combinedBasePath}{relativePath}"
+        };
+        return builder.Uri;
+    }
+
+    private static string DescribeIdentifier(JsonElement parent, string propertyName)
+    {
+        if (!parent.TryGetProperty(propertyName, out var property))
+        {
+            return "<unknown>";
+        }
+
+        if (property.ValueKind == JsonValueKind.String)
+        {
+            return MaskValue(property.GetString());
+        }
+
+        if (property.ValueKind == JsonValueKind.Object)
+        {
+            if (property.TryGetProperty("rawId", out var rawId) && rawId.ValueKind == JsonValueKind.String)
+            {
+                return $"raw:{MaskValue(rawId.GetString())}";
+            }
+
+            if (property.TryGetProperty("phoneNumber", out var phoneNumber))
+            {
+                if (phoneNumber.ValueKind == JsonValueKind.String)
+                {
+                    return $"phone:{MaskValue(phoneNumber.GetString())}";
+                }
+
+                if (phoneNumber.ValueKind == JsonValueKind.Object &&
+                    phoneNumber.TryGetProperty("value", out var phoneValue) &&
+                    phoneValue.ValueKind == JsonValueKind.String)
+                {
+                    return $"phone:{MaskValue(phoneValue.GetString())}";
+                }
+            }
+
+            if (property.TryGetProperty("kind", out var kind) && kind.ValueKind == JsonValueKind.String)
+            {
+                return kind.GetString() ?? "<unknown>";
+            }
+        }
+
+        return property.ToString();
+    }
+
+    private static string NormalizeBasePath(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || path == "/")
+        {
+            return string.Empty;
+        }
+
+        return path.TrimEnd('/');
+    }
+
+    private static string MaskValue(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return "<unknown>";
+        }
+
+        var trimmed = value.Trim();
+        return trimmed.Length <= 4 ? "****" : $"***{trimmed[^4..]}";
+    }
 
     // ────────────────────────────────────────────────────────────────────────────────────────────
     // Media-stream WebSocket handler
@@ -577,6 +706,7 @@ internal static class AcsEndpoints
 
         WebSocket? ws = null;
         AcsAudioSource.Session? audioSession = null;
+        string? mediaSessionCallId = null;
         var buffer = new byte[8192]; // ACS sends 640-byte frames; 8 KB covers a few frames per read.
         using var ms = new MemoryStream();
 
@@ -588,6 +718,7 @@ internal static class AcsEndpoints
             // Start a fresh per-call audio session so the transcription consumer builds a new
             // recognizer for this call (and stays alive for the next one after it ends).
             audioSession = acsSource.BeginSession();
+            mediaSessionCallId = callStore.CallId;
 
             // Start a clean rolling-sentiment session for this call so the meter resets to
             // "Waiting for sentiment" and then tracks the new conversation.
@@ -646,15 +777,15 @@ internal static class AcsEndpoints
             // CallDisconnected callback) wins the claim and runs the full teardown.
             // The loser path still cleans up the audio session (idempotent) and always
             // releases the media claim so the next call can start.
-            if (callStore.TryBeginTeardown())
+            if (callStore.TryBeginTeardown(mediaSessionCallId))
             {
                 // Capture the callId BEFORE Clear() so the CallEnded broadcast carries it.
-                var endedCallId = callStore.CallId;
+                var endedCallId = mediaSessionCallId;
 
                 // Signal end-of-stream to all ReadAsync consumers regardless of how the loop ended.
                 if (audioSession is not null)
                     acsSource.CompleteStream(audioSession);
-                callStore.Clear();
+                callStore.Clear(endedCallId);
                 liveSentiment.Clear();
 
                 if (!string.IsNullOrEmpty(endedCallId))

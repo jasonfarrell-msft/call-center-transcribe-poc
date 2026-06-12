@@ -68,6 +68,8 @@ Build clean, ready for customer-hangup teardown follow-up.
 - README Mermaid accuracy matters for ACS lifecycles: `AnswerCall` / `AddParticipant` are API → ACS actions, while mid-call callbacks are ACS → API webhooks.
 - 2026-06-11T16:42:31.815-04:00: Rep Accept UI latency is dominated by the path `AnswerCallAsync` → ACS `CallConnected` callback → `AddParticipantAsync` invite → browser `incomingCall` event. We already emit `stream.callPending` immediately after `AnswerCallAsync`; the Accept button itself cannot appear before the `incomingCall` SDK event.
 - 2026-06-11T16:42:31.815-04:00: Biggest avoidable delay risk is missing/stale `RepRegistry.CurrentUserId` at `CallConnected`, which defers invite until `/rep/register` heartbeat (15s cadence). Lowering heartbeat interval and/or adding an immediate post-answer add-rep attempt is the safest latency reduction path without violating the transcription-after-accept gate.
+- 2026-06-12T13:16:06.171-04:00: `stream.callPending` can be emitted immediately after `AnswerCallAsync`, but the actual rep `AddParticipant` invite must stay gated on ACS `CallConnected`. Firing `AddParticipant` from the post-answer window (or from `/rep/register` before `CallConnected`) can recreate the exact 'Accept shows early but PSTN caller never gets answered' failure mode.
+- 2026-06-12T13:16:06.171-04:00: For live ACS demos, generate callback/media URIs from a public base (`Acs:PublicBaseUrl` override when needed), preserve any path prefix, and log only redacted caller/callee identifiers. If callbacks/media ever resolve to localhost or a non-public host, treat that as a deployment wiring fault, not an app-flow success.
 
 ---
 

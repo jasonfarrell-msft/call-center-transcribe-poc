@@ -24,6 +24,8 @@ public sealed class ActiveCallStore
     private const int IncomingClaimInProgress = 1;
     private const int MediaClaimNone = 0;
     private const int MediaClaimInProgress = 1;
+    private const int CallConnectedFalse = 0;
+    private const int CallConnectedTrue = 1;
     private const int RepAcceptedFalse = 0;
     private const int RepAcceptedTrue  = 1;
     private const int TeardownNone = 0;
@@ -33,8 +35,10 @@ public sealed class ActiveCallStore
     private int _repAddState = RepAddNone;
     private int _incomingClaimState = IncomingClaimNone;
     private int _mediaClaimState = MediaClaimNone;
+    private int _callConnected = CallConnectedFalse;
     private int _repAccepted = RepAcceptedFalse;
     private int _teardownState = TeardownNone;
+    private readonly object _teardownGate = new();
 
     /// <summary>Returns the current active call ID, or null if no call is in progress.</summary>
     public string? CallId => _callId;
@@ -43,8 +47,30 @@ public sealed class ActiveCallStore
     /// <remarks>Lacus reads this flag to know whether to gate sentiment scoring. Do not write from outside this class.</remarks>
     public bool RepAccepted => Volatile.Read(ref _repAccepted) == RepAcceptedTrue;
 
+    /// <summary>True once ACS has emitted CallConnected for the current call.</summary>
+    public bool CallConnected => Volatile.Read(ref _callConnected) == CallConnectedTrue;
+
+    /// <summary>Marks the active call as fully connected at the ACS platform layer.</summary>
+    public void MarkConnected(string callId)
+    {
+        if (!string.Equals(_callId, callId, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        Interlocked.Exchange(ref _callConnected, CallConnectedTrue);
+    }
+
     /// <summary>Marks the rep as having accepted the call (called from AddParticipantSucceeded callback).</summary>
-    public void MarkAccepted() => Interlocked.Exchange(ref _repAccepted, RepAcceptedTrue);
+    public void MarkAccepted(string callId)
+    {
+        if (!string.Equals(_callId, callId, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        Interlocked.Exchange(ref _repAccepted, RepAcceptedTrue);
+    }
 
     /// <summary>True once the rep participant has been added to the current call.</summary>
     public bool RepAdded => Volatile.Read(ref _repAddState) == RepAddDone;
@@ -52,16 +78,24 @@ public sealed class ActiveCallStore
     /// <summary>Sets the active call ID when a call is answered and resets rep-add state.</summary>
     public void SetCallId(string callId)
     {
-        _callId = callId;
         Interlocked.Exchange(ref _repAddState, RepAddNone);
+        Interlocked.Exchange(ref _callConnected, CallConnectedFalse);
+        _callId = callId;
     }
 
     /// <summary>Clears the call ID when the call ends or the stream is completed.</summary>
-    public void Clear()
+    public void Clear(string? callId = null)
     {
+        if (!string.IsNullOrWhiteSpace(callId) &&
+            !string.Equals(_callId, callId, StringComparison.Ordinal))
+        {
+            return;
+        }
+
         _callId = null;
         Interlocked.Exchange(ref _repAddState, RepAddNone);
         Interlocked.Exchange(ref _incomingClaimState, IncomingClaimNone);
+        Interlocked.Exchange(ref _callConnected, CallConnectedFalse);
         Interlocked.Exchange(ref _repAccepted, RepAcceptedFalse);
         Interlocked.Exchange(ref _teardownState, TeardownNone);
     }
@@ -73,11 +107,12 @@ public sealed class ActiveCallStore
     /// <summary>Commits the active call after AnswerCall succeeds and clears the incoming claim.</summary>
     public void CompleteIncomingClaim(string callId)
     {
-        _callId = callId;
         Interlocked.Exchange(ref _repAddState, RepAddNone);
-        Interlocked.Exchange(ref _incomingClaimState, IncomingClaimNone);
+        Interlocked.Exchange(ref _callConnected, CallConnectedFalse);
         Interlocked.Exchange(ref _repAccepted, RepAcceptedFalse);
         Interlocked.Exchange(ref _teardownState, TeardownNone);
+        _callId = callId;
+        Interlocked.Exchange(ref _incomingClaimState, IncomingClaimNone);
     }
 
     /// <summary>Releases a failed incoming-call answer claim so a later event may retry.</summary>
@@ -100,8 +135,29 @@ public sealed class ActiveCallStore
     /// Used to prevent a race between the media-stream WebSocket finally-block and the
     /// <c>CallDisconnected</c> ACS callback both attempting a full teardown simultaneously.
     /// </summary>
-    public bool TryBeginTeardown() =>
-        Interlocked.CompareExchange(ref _teardownState, TeardownInProgress, TeardownNone) == TeardownNone;
+    public bool TryBeginTeardown(string? callId)
+    {
+        if (string.IsNullOrWhiteSpace(callId))
+        {
+            return false;
+        }
+
+        lock (_teardownGate)
+        {
+            if (!string.Equals(_callId, callId, StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            if (_teardownState != TeardownNone)
+            {
+                return false;
+            }
+
+            _teardownState = TeardownInProgress;
+            return true;
+        }
+    }
 
     /// <summary>
     /// Atomically claims the right to add the rep to the current call. Returns true to EXACTLY
@@ -112,9 +168,24 @@ public sealed class ActiveCallStore
         Interlocked.CompareExchange(ref _repAddState, RepAddInProgress, RepAddNone) == RepAddNone;
 
     /// <summary>Commits the rep-add after AddParticipant succeeds (Adding → Added).</summary>
-    public void MarkRepAdded() => Interlocked.Exchange(ref _repAddState, RepAddDone);
+    public void MarkRepAdded(string callId)
+    {
+        if (!string.Equals(_callId, callId, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        Interlocked.Exchange(ref _repAddState, RepAddDone);
+    }
 
     /// <summary>Releases a failed rep-add claim so the next /register can retry (Adding → None).</summary>
-    public void ResetAddRep() =>
+    public void ResetAddRep(string callId)
+    {
+        if (!string.Equals(_callId, callId, StringComparison.Ordinal))
+        {
+            return;
+        }
+
         Interlocked.CompareExchange(ref _repAddState, RepAddNone, RepAddInProgress);
+    }
 }

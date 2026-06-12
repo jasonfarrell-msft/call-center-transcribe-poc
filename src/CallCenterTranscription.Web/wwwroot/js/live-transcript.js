@@ -782,18 +782,53 @@
     async function resync() {
         // Catch a call that started during the SignalR handshake / before this client connected,
         // or re-join the group after an automatic reconnect (groups don't survive reconnect).
-        // The active-call endpoint only proves that a call exists, not whether the rep already
-        // accepted it, so we resync into pending and let callAccepted/transcript replay promote
-        // the UI when the backend emits a stronger signal.
+        // Only reopen the pending/Accept affordance when the backend says the call is actually
+        // answerable. Accepted live calls should resubscribe without regressing back to pending,
+        // and mock/non-answerable snapshots must not light up the rep softphone.
         try {
-            const response = await fetch(apiBaseUrl + "/api/calls/active", { cache: "no-store" });
-            if (!response.ok) {
+            const [activeCallResponse, currentStateResponse] = await Promise.all([
+                fetch(apiBaseUrl + "/api/calls/active", { cache: "no-store" }),
+                fetch(apiBaseUrl + "/api/session/current-state", { cache: "no-store" })
+            ]);
+
+            if (!activeCallResponse.ok) {
                 return;
             }
 
-            const data = await response.json();
-            if (data && data.callId) {
+            const data = await activeCallResponse.json();
+            if (!data || !data.callId) {
+                return;
+            }
+
+            if (data.acceptAvailable) {
                 await onCallPending({ callId: data.callId });
+                return;
+            }
+
+            const currentState = currentStateResponse.ok
+                ? await currentStateResponse.json()
+                : null;
+            const isMockFeedActive = !!currentState?.isMockFeedActive;
+            const currentStateCallId = currentState?.call?.callId || "";
+            const currentStateCallState = typeof currentState?.call?.state === "string"
+                ? currentState.call.state.toLowerCase()
+                : "";
+
+            if (isMockFeedActive || currentStateCallId !== data.callId) {
+                return;
+            }
+
+            if (
+                (data.repAccepted ||
+                data.state === "accepted" ||
+                data.state === "active" ||
+                data.state === "live") &&
+                (currentStateCallState === "accepted" ||
+                currentStateCallState === "active" ||
+                currentStateCallState === "live")
+            ) {
+                await subscribeToCall(data.callId);
+                onCallAccepted({ callId: data.callId, source: "resync" });
             }
         } catch (err) {
             console.debug("live-transcript: resync skipped.", err);
