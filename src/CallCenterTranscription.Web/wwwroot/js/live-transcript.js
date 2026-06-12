@@ -57,6 +57,7 @@
     const STATE_CLASSES = {
         disconnected: "conn-status--disconnected",
         connecting: "conn-status--connecting",
+        pending: "conn-status--pending",
         live: "conn-status--live",
         ended: "conn-status--ended"
     };
@@ -66,6 +67,7 @@
     let ghostLine = null;
     let endedTimer = null;
     let translationPanelCounter = 0;
+    let pendingKnowledgeEvent = null;
     const lineByUtterance = new Map();
     const translationByUtterance = new Map();
     const expandedTranslationUtterances = new Set();
@@ -176,6 +178,46 @@
         }
 
         return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" });
+    }
+
+    function resetSentimentState() {
+        setHidden(sentimentEmptyEl, false);
+        setHidden(sentimentBodyEl, true);
+        setHidden(sentimentSummaryEl, true);
+        setText(sentimentScoreEl, "--");
+        setText(sentimentStateEl, "Awaiting sentiment");
+        setText(sentimentToneEl, WAITING);
+        setText(sentimentTrendEl, "Awaiting sentiment");
+        setText(sentimentUpdatedEl, WAITING);
+
+        if (sentimentMeterEl) {
+            sentimentMeterEl.style.width = "0%";
+            sentimentMeterEl.className = getSentimentVisualClass(50);
+        }
+    }
+
+    function resetKnowledgeState() {
+        if (!knowledgeListEl) {
+            return;
+        }
+
+        knowledgeListEl.innerHTML = "";
+        setHidden(knowledgeEmptyEl, false);
+        setHidden(knowledgeListEl, true);
+    }
+
+    function clearLiveCallArtifacts() {
+        isCallActive = false;
+        currentCallId = null;
+        ghostLine = null;
+        lineByUtterance.clear();
+        translationByUtterance.clear();
+        expandedTranslationUtterances.clear();
+        pendingKnowledgeEvent = null;
+        scroller.innerHTML = "";
+        showEmptyState();
+        resetSentimentState();
+        resetKnowledgeState();
     }
 
     function getSentimentVisualClass(scorePercent) {
@@ -479,15 +521,70 @@
         }
 
         const item = document.createElement("li");
+        const header = document.createElement("div");
+        header.className = "assist-card-header";
 
         const title = document.createElement("strong");
         title.textContent = card.title || "Knowledge card";
-        item.appendChild(title);
+        header.appendChild(title);
+
+        if (Number.isFinite(card.rank) && card.rank > 0) {
+            const rank = document.createElement("span");
+            rank.className = "assist-rank";
+            rank.textContent = `Priority ${card.rank}`;
+            header.appendChild(rank);
+        }
+
+        item.appendChild(header);
 
         if (card.snippet) {
             const snippet = document.createElement("p");
+            snippet.className = "assist-card-copy";
             snippet.textContent = card.snippet;
             item.appendChild(snippet);
+        }
+
+        const metaParts = [card.citationLabel, card.sourceSection].filter(Boolean);
+        if (metaParts.length > 0) {
+            const meta = document.createElement("p");
+            meta.className = "assist-card-meta";
+            meta.textContent = metaParts.join(" • ");
+            item.appendChild(meta);
+        }
+
+        if (Array.isArray(card.matchedEvidence) && card.matchedEvidence.length > 0) {
+            const evidenceList = document.createElement("ul");
+            evidenceList.className = "assist-evidence-list";
+            evidenceList.setAttribute("aria-label", "Matched evidence");
+
+            card.matchedEvidence.forEach((evidence) => {
+                const evidenceItem = document.createElement("li");
+
+                const kind = document.createElement("span");
+                kind.className = "assist-evidence-kind";
+                kind.textContent = toDisplayLabel(evidence.kind, "Match");
+                evidenceItem.appendChild(kind);
+
+                const detail = document.createElement("span");
+                detail.className = "assist-evidence-detail";
+
+                const transcriptText = evidence.transcriptText || "";
+                const normalizedText = evidence.normalizedText || "";
+                const matchedKnowledgeText = evidence.matchedKnowledgeText || "";
+                let message = transcriptText ? `“${transcriptText}”` : "Matched customer phrase";
+                if (normalizedText && transcriptText.trim().toLowerCase() !== normalizedText.trim().toLowerCase()) {
+                    message += ` → “${normalizedText}”`;
+                }
+                if (matchedKnowledgeText) {
+                    message += ` matched “${matchedKnowledgeText}”`;
+                }
+
+                detail.textContent = message;
+                evidenceItem.appendChild(detail);
+                evidenceList.appendChild(evidenceItem);
+            });
+
+            item.appendChild(evidenceList);
         }
 
         if (card.sourceUrl) {
@@ -495,6 +592,7 @@
                 const sourceUrl = new URL(card.sourceUrl, window.location.origin);
                 if (sourceUrl.protocol === "http:" || sourceUrl.protocol === "https:") {
                     const link = document.createElement("a");
+                    link.className = "assist-source-link";
                     link.href = sourceUrl.toString();
                     link.target = "_blank";
                     link.rel = "noopener noreferrer";
@@ -514,8 +612,29 @@
             return;
         }
 
+        if (!evt.callId || !currentCallId || evt.callId !== currentCallId) {
+            return;
+        }
+
+        if (!isCallActive) {
+            pendingKnowledgeEvent = evt;
+            return;
+        }
+
+        pendingKnowledgeEvent = null;
         knowledgeListEl.innerHTML = "";
-        evt.cards.forEach((card) => appendKnowledgeCardItem(card));
+        evt.cards
+            .slice()
+            .sort((left, right) => {
+                const leftRank = Number.isFinite(left.rank) && left.rank > 0 ? left.rank : Number.MAX_SAFE_INTEGER;
+                const rightRank = Number.isFinite(right.rank) && right.rank > 0 ? right.rank : Number.MAX_SAFE_INTEGER;
+                if (leftRank !== rightRank) {
+                    return leftRank - rightRank;
+                }
+
+                return String(left.title || "").localeCompare(String(right.title || ""));
+            })
+            .forEach((card) => appendKnowledgeCardItem(card));
 
         const hasCards = evt.cards.length > 0;
         setHidden(knowledgeEmptyEl, hasCards);
@@ -560,8 +679,10 @@
             scroller.appendChild(pendingEl);
         }
         showPendingState();
+        resetSentimentState();
+        resetKnowledgeState();
 
-        setState("disconnected", "Disconnected — waiting for call");
+        setState("pending", "Incoming call — awaiting acceptance");
         setText(summaryEl, "Live mode • Waiting for rep acceptance");
         setText(callIdEl, callId);
         setText(customerEl, "Inbound caller");
@@ -595,6 +716,10 @@
         setText(callIdEl, callId);
         setText(customerEl, "Inbound caller");
         setText(connectedEl, formatTime());
+
+        if (pendingKnowledgeEvent && pendingKnowledgeEvent.callId === callId) {
+            onKnowledgeCards(pendingKnowledgeEvent);
+        }
     }
 
     function onCallEnded(evt) {
@@ -620,6 +745,8 @@
             endedTimer = null;
             scroller.innerHTML = "";
             showEmptyState();
+            resetSentimentState();
+            resetKnowledgeState();
             setState("disconnected", "Disconnected — waiting for call");
             resetHeader();
         }, 4000);
@@ -665,12 +792,14 @@
     });
 
     connection.onreconnected(() => {
+        clearLiveCallArtifacts();
         setState("disconnected", "Disconnected — waiting for call");
         resetHeader();
         resync();
     });
 
     connection.onclose(() => {
+        clearLiveCallArtifacts();
         setState("disconnected", "Disconnected — connection lost");
         setText(summaryEl, "Live mode • Connection lost");
         setText(callIdEl, WAITING);
@@ -698,6 +827,8 @@
     async function start() {
         try {
             await connection.start();
+            resetSentimentState();
+            resetKnowledgeState();
             setState("disconnected", "Disconnected — waiting for call");
             resetHeader();
             await resync();

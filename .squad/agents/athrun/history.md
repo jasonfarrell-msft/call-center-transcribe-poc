@@ -147,6 +147,11 @@
 
 ## Learnings
 
+### 2026-06-11 — Next knowledge slice should prove runtime wiring, not future RAG
+- The new `synthetic-agent-assist-knowledge.v1.jsonl` corpus is currently a data artifact only; the runtime still retrieves from legacy embedded `synthetic-knowledge.v1.json` via `SyntheticCorpusLoader` → `KiraContentPack`.
+- The shortest honest POC path is to bridge the new JSONL into the existing `KnowledgeCardEvent`/SignalR/UI flow rather than introduce Azure AI Search before the data is visible in-call.
+- Acceptance for this slice must include deterministic utterance-to-record mapping and at least one negative case; otherwise a default fallback card can create a false sense that retrieval works.
+
 ### 2026-06-10 — Architect README framing
 - Top-level README should be treated as an **Explanation** document for architects/reviewers, not a setup guide or API reference.
 - The architecture view should center on the Azure runtime split: Web on App Service, API on Container Apps, ACS/Event Grid ingress, Speech/Translator/Foundry downstream, and SignalR fan-out from the API.

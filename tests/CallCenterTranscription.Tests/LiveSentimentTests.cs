@@ -111,4 +111,45 @@ public sealed class LiveSentimentTests
         Assert.NotEmpty(store.GetFeed().Events);
         Assert.Equal("call-2", store.GetFeed().CallId);
     }
+
+    [Fact]
+    public void Store_RoutingTreatsNewDiarizationIdAsAmbiguous_DoesNotMoveCustomerSentiment()
+    {
+        var store = new LiveSentimentStore();
+        var attribution = new SpeakerAttributionState();
+        const string callId = "call-1";
+        store.Reset(callId);
+
+        // First observed speaker is customer.
+        attribution.Observe("Guest-1", repAccepted: true);
+        if (attribution.IsCustomer("Guest-1"))
+        {
+            store.Append(callId, "I am frustrated and this is terrible.");
+        }
+
+        var afterNegative = store.GetFeed();
+        Assert.NotEmpty(afterNegative.Events);
+        Assert.True(afterNegative.Events[^1].Score < 0d);
+        var eventCountAfterNegative = afterNegative.Events.Count;
+        var scoreAfterNegative = afterNegative.Events[^1].Score;
+
+        // Rep speaks.
+        attribution.Observe("Guest-2", repAccepted: true);
+        Assert.False(attribution.IsCustomer("Guest-2"));
+
+        // Diarization emits a new speaker ID near the end. It must remain ambiguous rather than
+        // being guessed as customer via turn-taking, because it could be rep speech.
+        attribution.Observe("Guest-2", repAccepted: true); // rep most recent
+        attribution.Observe("Guest-3", repAccepted: true); // ambiguous new cluster
+        Assert.False(attribution.IsCustomer("Guest-3"));
+
+        if (attribution.IsCustomer("Guest-3"))
+        {
+            store.Append(callId, "Thank you, this sounds perfect and I appreciate your help.");
+        }
+
+        var afterAmbiguous = store.GetFeed();
+        Assert.Equal(eventCountAfterNegative, afterAmbiguous.Events.Count);
+        Assert.Equal(scoreAfterNegative, afterAmbiguous.Events[^1].Score);
+    }
 }

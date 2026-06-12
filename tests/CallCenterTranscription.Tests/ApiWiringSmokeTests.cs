@@ -70,9 +70,10 @@ public sealed class ApiWiringSmokeTests(WebApplicationFactory<Program> factory)
 
         Assert.NotNull(session);
         Assert.Equal("call-propane-retention-0001", session.Call.CallId);
-        Assert.Equal("Maria Alvarez", session.Call.CustomerName);
+        Assert.Equal("Elena Morales", session.Call.CustomerName);
         Assert.True(session.IsMockFeedActive);
         Assert.Equal("cooling_down", session.SentimentSummary.OverallLabel);
+        Assert.Contains("DemoScript__ScriptId", session.Notes, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -89,7 +90,7 @@ public sealed class ApiWiringSmokeTests(WebApplicationFactory<Program> factory)
         Assert.Single(translations);
         Assert.Contains(translations[0].UtteranceId, transcript.Select(t => t.UtteranceId));
         Assert.Equal("evt-transcript-0003", translations[0].RelatedTranscriptEventId);
-        Assert.Equal("es", translations[0].SourceLanguage);
+        Assert.Equal("es-US", translations[0].SourceLanguage);
     }
 
     [Fact]
@@ -102,7 +103,7 @@ public sealed class ApiWiringSmokeTests(WebApplicationFactory<Program> factory)
         Assert.NotNull(sentiment);
         Assert.Equal("call-propane-retention-0001", sentiment.CallId);
         Assert.Equal("improving", sentiment.Summary.Trend);
-        Assert.Equal(3, sentiment.Events.Count);
+        Assert.Equal(4, sentiment.Events.Count);
     }
 
     [Fact]
@@ -123,9 +124,11 @@ public sealed class ApiWiringSmokeTests(WebApplicationFactory<Program> factory)
         Assert.All(churnRisk, item => Assert.Equal("call-propane-retention-0001", item.CallId));
         Assert.All(knowledgeCards, item => Assert.Equal("call-propane-retention-0001", item.CallId));
         Assert.All(nextBestActions, item => Assert.Equal("call-propane-retention-0001", item.CallId));
-        Assert.Equal("evt-transcript-0003", churnRisk[0].RelatedTranscriptEventId);
-        Assert.Equal("evt-transcript-0003", knowledgeCards[0].RelatedTranscriptEventId);
-        Assert.Equal("evt-transcript-0003", nextBestActions[0].RelatedTranscriptEventId);
+        Assert.Equal("evt-transcript-0002", churnRisk[0].RelatedTranscriptEventId);
+        Assert.Equal("evt-transcript-0002", knowledgeCards[0].RelatedTranscriptEventId);
+        Assert.Equal("evt-transcript-0002", nextBestActions[0].RelatedTranscriptEventId);
+        Assert.NotEmpty(knowledgeCards[0].Cards[0].MatchedEvidence);
+        Assert.False(string.IsNullOrWhiteSpace(knowledgeCards[0].Cards[0].CitationLabel));
     }
 
     [Fact]
@@ -138,9 +141,9 @@ public sealed class ApiWiringSmokeTests(WebApplicationFactory<Program> factory)
         Assert.NotNull(currentState);
         Assert.Equal("call-propane-retention-0001", currentState.Call.CallId);
         Assert.Equal("full_history_for_active_call", currentState.StreamReplayPolicy);
-        Assert.Equal(5, currentState.TranscriptEvents.Count);
+        Assert.Equal(6, currentState.TranscriptEvents.Count);
         Assert.Single(currentState.TranslationEvents);
-        Assert.Equal(3, currentState.SentimentEvents.Count);
+        Assert.Equal(4, currentState.SentimentEvents.Count);
         Assert.NotEmpty(currentState.ChurnRiskEvents);
         Assert.NotEmpty(currentState.KnowledgeCardEvents);
         Assert.NotEmpty(currentState.NextBestActionEvents);

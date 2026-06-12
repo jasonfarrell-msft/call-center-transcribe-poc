@@ -1,0 +1,252 @@
+{
+  "schema_version": "1.0",
+  "artifact_type": "demo_script_set",
+  "artifact_id": "propane-agent-assist-demo-scripts-v1",
+  "knowledge_corpus_path": "src/CallCenterTranscription.Ai/Knowledge/synthetic-agent-assist-knowledge.v1.jsonl",
+  "human_note": "Three tightly-scoped propane support scripts for driving agent-assist knowledge cards during live or mocked rep/customer conversations. All names and account details are synthetic.",
+  "scripts": [
+    {
+      "script_id": "demo-missed-delivery-bilingual-save",
+      "scenario_name": "Missed delivery save with Spanish competitor mention",
+      "demo_purpose": "Shows service recovery, bilingual trigger handling, rising churn risk, and a successful save using a replacement delivery plus a steadier billing option.",
+      "success_criterion": "Customer agrees to stay after the rep books the fastest replacement delivery and offers budget billing as the approved save path.",
+      "turns": [
+        {
+          "turn_number": 1,
+          "speaker": "rep",
+          "speaker_label": "Rep",
+          "language": "en-US",
+          "utterance": "Thank you for calling Valley Fuel, this is Megan. Before we get started, can I verify your service address and the name on the account?",
+          "expected_knowledge_item_ids": [],
+          "expected_rep_visible_guidance": []
+        },
+        {
+          "turn_number": 2,
+          "speaker": "customer",
+          "speaker_label": "Customer",
+          "language": "en-US",
+          "utterance": "It's Elena Morales at 18 Cedar Lane. You missed my delivery yesterday, and I took off work for that window.",
+          "expected_knowledge_item_ids": [
+            "kb-delivery-missed-window-save"
+          ],
+          "expected_rep_visible_guidance": [
+            "Lead with a direct apology, confirm the fastest replacement window, and review service recovery only after verifying the miss was company-caused."
+          ]
+        },
+        {
+          "turn_number": 3,
+          "speaker": "customer",
+          "speaker_label": "Customer",
+          "language": "es-US",
+          "utterance": "Adem\u00e1s, me lleg\u00f3 un volante de NorthStar Propane con un precio mucho m\u00e1s bajo, as\u00ed que s\u00ed estoy pensando cambiarme.",
+          "expected_knowledge_item_ids": [
+            "kb-competitor-price-save"
+          ],
+          "expected_rep_visible_guidance": [
+            "Stay calm, show you heard the price comparison, and pivot to the best approved retention offer instead of defending margins."
+          ]
+        },
+        {
+          "turn_number": 4,
+          "speaker": "customer",
+          "speaker_label": "Customer",
+          "language": "en-US",
+          "utterance": "And my winter bills keep jumping around. I need something steadier if I'm going to stay.",
+          "expected_knowledge_item_ids": [
+            "kb-budget-billing-overview"
+          ],
+          "expected_rep_visible_guidance": [
+            "Acknowledge bill shock and explain budget billing as steadier monthly payments with periodic review, not a cheaper total bill."
+          ]
+        },
+        {
+          "turn_number": 5,
+          "speaker": "rep",
+          "speaker_label": "Rep",
+          "language": "en-US",
+          "utterance": "I'm sorry we missed that stop, Elena. I can lock in the first replacement window for tomorrow morning, and I can also quote budget billing so your monthly payments are easier to plan around.",
+          "expected_knowledge_item_ids": [],
+          "expected_rep_visible_guidance": []
+        },
+        {
+          "turn_number": 6,
+          "speaker": "customer",
+          "speaker_label": "Customer",
+          "language": "en-US",
+          "utterance": "If the truck is coming tomorrow and you can set up the steadier payment plan, I'll stay with Valley Fuel.",
+          "expected_knowledge_item_ids": [],
+          "expected_rep_visible_guidance": []
+        }
+      ]
+    },
+    {
+      "script_id": "demo-low-tank-auto-delivery-conversion",
+      "scenario_name": "Low-tank scare converted from will-call to auto-delivery",
+      "demo_purpose": "Shows operational urgency without a full emergency, then uses next-best-action guidance to convert a repeat will-call customer to keep-full.",
+      "success_criterion": "Customer accepts the earliest delivery window and agrees to switch from will-call to auto-delivery before the call ends.",
+      "turns": [
+        {
+          "turn_number": 1,
+          "speaker": "rep",
+          "speaker_label": "Rep",
+          "language": "en-US",
+          "utterance": "Valley Fuel support, this is Darren. What's going on today?",
+          "expected_knowledge_item_ids": [],
+          "expected_rep_visible_guidance": []
+        },
+        {
+          "turn_number": 2,
+          "speaker": "customer",
+          "speaker_label": "Customer",
+          "language": "en-US",
+          "utterance": "My gauge is down to 15 percent, and I really do not want to run out before the weekend. How soon can someone come?",
+          "expected_knowledge_item_ids": [
+            "kb-low-tank-not-empty-guidance"
+          ],
+          "expected_rep_visible_guidance": [
+            "Move straight to scheduling the earliest practical delivery and avoid scolding the customer for calling late."
+          ]
+        },
+        {
+          "turn_number": 3,
+          "speaker": "customer",
+          "speaker_label": "Customer",
+          "language": "en-US",
+          "utterance": "The storm pushed my last stop back, so I need to know whether Friday morning is really available or if I should expect another delay.",
+          "expected_knowledge_item_ids": [
+            "kb-weather-delay-delivery-update",
+            "kb-delivery-scheduling-window-request"
+          ],
+          "expected_rep_visible_guidance": [
+            "Share the best known route window, avoid fake certainty, and set a callback commitment if dispatch has not locked the ETA."
+          ]
+        },
+        {
+          "turn_number": 4,
+          "speaker": "rep",
+          "speaker_label": "Rep",
+          "language": "en-US",
+          "utterance": "I can request the earliest Friday stop and, if dispatch changes that window, I'll make sure you get an update instead of being left guessing. Are you still on will-call?",
+          "expected_knowledge_item_ids": [],
+          "expected_rep_visible_guidance": []
+        },
+        {
+          "turn_number": 5,
+          "speaker": "customer",
+          "speaker_label": "Customer",
+          "language": "en-US",
+          "utterance": "Yes, and honestly I'm tired of watching the gauge. What's the difference between will-call and keep-full again?",
+          "expected_knowledge_item_ids": [
+            "kb-auto-delivery-vs-will-call"
+          ],
+          "expected_rep_visible_guidance": [
+            "Position auto-delivery as convenience and runout prevention, not a hard sell, and make the will-call responsibility explicit."
+          ]
+        },
+        {
+          "turn_number": 6,
+          "speaker": "rep",
+          "speaker_label": "Rep",
+          "language": "en-US",
+          "utterance": "With auto-delivery, we watch expected usage and schedule fills before you get this low. Since you've had another close call, switching from will-call would take the gauge-watching pressure off you.",
+          "expected_knowledge_item_ids": [],
+          "expected_rep_visible_guidance": []
+        },
+        {
+          "turn_number": 7,
+          "speaker": "customer",
+          "speaker_label": "Customer",
+          "language": "en-US",
+          "utterance": "Go ahead and set up the earliest Friday delivery you can get and switch me to auto-delivery. I do not want another low-tank scare.",
+          "expected_knowledge_item_ids": [],
+          "expected_rep_visible_guidance": []
+        }
+      ]
+    },
+    {
+      "script_id": "demo-renewal-rate-hardship-save",
+      "scenario_name": "Contract renewal price objection with temporary hardship",
+      "demo_purpose": "Shows a save path when renewal-rate friction and short-term payment stress happen in the same call, letting the rep combine retention framing with a practical payment plan.",
+      "success_criterion": "Customer renews on an approved retention option and accepts a temporary payment arrangement instead of canceling service.",
+      "turns": [
+        {
+          "turn_number": 1,
+          "speaker": "rep",
+          "speaker_label": "Rep",
+          "language": "en-US",
+          "utterance": "Thanks for calling Valley Fuel renewals, this is Ashley. How can I help today?",
+          "expected_knowledge_item_ids": [],
+          "expected_rep_visible_guidance": []
+        },
+        {
+          "turn_number": 2,
+          "speaker": "customer",
+          "speaker_label": "Customer",
+          "language": "en-US",
+          "utterance": "My renewal notice came in higher than last year, and if this is the new rate I may need to leave.",
+          "expected_knowledge_item_ids": [
+            "kb-contract-renewal-rate-increase"
+          ],
+          "expected_rep_visible_guidance": [
+            "Frame the renewal as an options conversation, not a defense of market pricing, and be ready to use the approved loyalty offer."
+          ]
+        },
+        {
+          "turn_number": 3,
+          "speaker": "customer",
+          "speaker_label": "Customer",
+          "language": "en-US",
+          "utterance": "I also cannot pay this whole balance today. Winter hit us hard, so I need a little more time and something steadier going forward.",
+          "expected_knowledge_item_ids": [
+            "kb-payment-plan-hardship",
+            "kb-budget-billing-overview"
+          ],
+          "expected_rep_visible_guidance": [
+            "Stay practical and nonjudgmental: offer a payment arrangement with exact timing and explain budget billing as the future-stability option."
+          ]
+        },
+        {
+          "turn_number": 4,
+          "speaker": "rep",
+          "speaker_label": "Rep",
+          "language": "en-US",
+          "utterance": "We can do this in plain language. I can review the renewal options on your account, and I can split the current balance into one payment today and one on the 15th so you are not trying to solve everything at once.",
+          "expected_knowledge_item_ids": [],
+          "expected_rep_visible_guidance": []
+        },
+        {
+          "turn_number": 5,
+          "speaker": "customer",
+          "speaker_label": "Customer",
+          "language": "en-US",
+          "utterance": "If there is a loyalty option on the renewal and I can split the balance that way, I'd rather stay than move the account.",
+          "expected_knowledge_item_ids": [
+            "kb-contract-renewal-rate-increase",
+            "kb-payment-plan-hardship"
+          ],
+          "expected_rep_visible_guidance": [
+            "Use the approved loyalty or protection offer that matches the account, then close with the concrete payment-plan terms."
+          ]
+        },
+        {
+          "turn_number": 6,
+          "speaker": "rep",
+          "speaker_label": "Rep",
+          "language": "en-US",
+          "utterance": "Great. I'll renew you on the loyalty option available today, set the two-part payment arrangement, and send the budget-billing quote for next month so the bills are easier to plan for.",
+          "expected_knowledge_item_ids": [],
+          "expected_rep_visible_guidance": []
+        },
+        {
+          "turn_number": 7,
+          "speaker": "customer",
+          "speaker_label": "Customer",
+          "language": "en-US",
+          "utterance": "That works for me. Renew it, split the balance the way you described, and send me the budget-billing details.",
+          "expected_knowledge_item_ids": [],
+          "expected_rep_visible_guidance": []
+        }
+      ]
+    }
+  ]
+}

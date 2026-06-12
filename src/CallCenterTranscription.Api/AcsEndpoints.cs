@@ -217,18 +217,15 @@ internal static class AcsEndpoints
                         var answeredCallId = result.Value.CallConnection.CallConnectionId;
                         callStore.CompleteIncomingClaim(answeredCallId);
 
-                        // Broadcast call-pending so every console client transitions Disconnected → Pending
-                        // (the rep softphone is now ringing; rep has NOT accepted yet).
-                        // CallAccepted fires later on AddParticipantSucceeded to transition Pending → Live.
                         var hub = ctx.RequestServices.GetRequiredService<IHubContext<PipelineHub>>();
-                        await hub.Clients.All.SendAsync(
-                            PipelineContract.StreamNames.CallPending,
-                            new CallLifecycleEvent
-                            {
-                                CallId = answeredCallId,
-                                Status = "pending",
-                                TimestampUtc = DateTimeOffset.UtcNow
-                            },
+                        var registry = ctx.RequestServices.GetRequiredService<RepRegistry>();
+                        await EmitCallPendingAndTryAddRepAsync(
+                            answeredCallId,
+                            hub.Clients.All,
+                            callClient,
+                            callStore,
+                            registry,
+                            logger,
                             ct);
 
                         logger.LogInformation(
@@ -253,8 +250,48 @@ internal static class AcsEndpoints
         return Results.Ok();
     }
 
+    // Broadcasts stream.callPending immediately after AnswerCall succeeds, then opportunistically
+    // tries to AddParticipant the rep without waiting for CallConnected callback delivery.
+    // This pulls the rep Accept prompt earlier while keeping transcript/media gates unchanged.
+    internal static async Task EmitCallPendingAndTryAddRepAsync(
+        string callId,
+        IClientProxy broadcastClient,
+        CallAutomationClient? callClient,
+        ActiveCallStore callStore,
+        RepRegistry registry,
+        ILogger logger,
+        CancellationToken ct,
+        Func<CallAutomationClient, ActiveCallStore, RepRegistry, ILogger, CancellationToken, Task>? tryAddRepAsync = null)
+    {
+        await broadcastClient.SendAsync(
+            PipelineContract.StreamNames.CallPending,
+            new CallLifecycleEvent
+            {
+                CallId = callId,
+                Status = "pending",
+                TimestampUtc = DateTimeOffset.UtcNow
+            },
+            ct);
+
+        if (callClient is null || callStore.RepAdded || string.IsNullOrEmpty(registry.CurrentUserId))
+            return;
+
+        var addRep = tryAddRepAsync ?? RepEndpoints.TryAddRepToCallAsync;
+        try
+        {
+            await addRep(callClient, callStore, registry, logger, ct);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(
+                ex,
+                "Early AddParticipant attempt failed for call {CallId}; waiting for callback/register reconverge.",
+                callId);
+        }
+    }
+
     // ────────────────────────────────────────────────────────────────────────────────────────────
-    // Mid-call callbacks handler (CallConnected → AddParticipant the rep)
+    // Mid-call callbacks handler (CallConnected fallback reconverge for rep AddParticipant)
     // ────────────────────────────────────────────────────────────────────────────────────────────
 
     private static async Task HandleCallbacksAsync(HttpContext ctx, ILogger logger, CancellationToken ct)
@@ -320,9 +357,19 @@ internal static class AcsEndpoints
                     // Rep clicked Accept on their softphone — ACS confirmed the join.
                     // Mark the store so Lacus can read RepAccepted, and broadcast CallAccepted
                     // so the UI transitions Pending → Live and begins showing transcript lines.
+                    var acceptedStore = ctx.RequestServices.GetRequiredService<ActiveCallStore>();
+                    if (!IsCurrentActiveCall(acceptedStore.CallId, ok.CallConnectionId))
+                    {
+                        logger.LogInformation(
+                            "Ignoring AddParticipantSucceeded for stale call {CallbackCallId}; active call is {ActiveCallId}.",
+                            ok.CallConnectionId,
+                            acceptedStore.CallId ?? "<none>");
+                        break;
+                    }
+
                     logger.LogInformation(
                         "ACS AddParticipant succeeded (rep answered) for call {CallId}.", ok.CallConnectionId);
-                    ctx.RequestServices.GetRequiredService<ActiveCallStore>().MarkAccepted();
+                    acceptedStore.MarkAccepted();
                     var acceptedHub = ctx.RequestServices.GetRequiredService<IHubContext<PipelineHub>>();
                     await acceptedHub.Clients.All.SendAsync(
                         PipelineContract.StreamNames.CallAccepted,
@@ -340,10 +387,24 @@ internal static class AcsEndpoints
                     // Hang up the ACS call so the customer leg drops and the media-stream
                     // WebSocket closes. The existing finally-block in HandleMediaStreamAsync
                     // then runs: CompleteStream → callStore.Clear → liveSentiment.Clear → CallEnded.
+                    var failedStore = ctx.RequestServices.GetRequiredService<ActiveCallStore>();
+                    var isActiveCallFailure = IsCurrentActiveCall(failedStore.CallId, failed.CallConnectionId);
+
                     logger.LogWarning(
                         "ACS AddParticipant failed for call {CallId}: {Code} {Message} — hanging up.",
                         failed.CallConnectionId, failed.ResultInformation?.Code, failed.ResultInformation?.Message);
-                    ctx.RequestServices.GetRequiredService<ActiveCallStore>().ResetAddRep();
+                    if (isActiveCallFailure)
+                    {
+                        failedStore.ResetAddRep();
+                    }
+                    else
+                    {
+                        logger.LogInformation(
+                            "Skipping rep-add reset for stale AddParticipantFailed callback call {CallbackCallId}; active call is {ActiveCallId}.",
+                            failed.CallConnectionId,
+                            failedStore.CallId ?? "<none>");
+                    }
+
                     var failedCallClient = ctx.RequestServices.GetService<CallAutomationClient>();
                     if (failedCallClient is not null && !string.IsNullOrEmpty(failed.CallConnectionId))
                     {
@@ -457,6 +518,11 @@ internal static class AcsEndpoints
             }
         }
     }
+
+    internal static bool IsCurrentActiveCall(string? activeCallId, string? callbackCallId) =>
+        !string.IsNullOrEmpty(activeCallId) &&
+        !string.IsNullOrEmpty(callbackCallId) &&
+        string.Equals(activeCallId, callbackCallId, StringComparison.Ordinal);
 
     // ────────────────────────────────────────────────────────────────────────────────────────────
     // Media-stream WebSocket handler

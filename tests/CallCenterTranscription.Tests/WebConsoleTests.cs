@@ -56,6 +56,10 @@ public sealed class WebConsoleTests
         Assert.Contains(model.MissionControlHealth.Components, component => !component.IsLive && component.Status == "mock");
         Assert.Equal("cooling_down", model.SentimentFeed.Summary.OverallLabel);
         Assert.Equal("improving", model.SentimentFeed.Summary.Trend);
+        Assert.Single(model.KnowledgeGuidance);
+        Assert.Equal("Customer turn 2", model.KnowledgeGuidance[0].TurnLabel);
+        Assert.Equal("Priority 1", model.KnowledgeGuidance[0].Cards[0].RankLabel);
+        Assert.True(model.KnowledgeGuidance[0].Cards[0].Evidence[0].HasNormalizedText);
         Assert.False(model.HasConnectionIssues);
     }
 
@@ -338,6 +342,42 @@ file sealed class StubPipelineHandler : HttpMessageHandler
                     Source = "mock-script"
                 }
             },
+            "/api/events/knowledge-cards" => new[]
+            {
+                new KnowledgeCardEvent
+                {
+                    CallId = "call-1",
+                    EventId = "kc-1",
+                    EventType = "knowledge_cards",
+                    TimestampUtc = DateTimeOffset.Parse("2026-06-07T00:10:24Z"),
+                    Sequence = 2,
+                    RelatedTranscriptEventId = "evt-2",
+                    RelatedTranscriptSequence = 2,
+                    Cards =
+                    [
+                        new KnowledgeCard
+                        {
+                            Id = "kb-low-tank-not-empty-guidance",
+                            Title = "Low tank guidance",
+                            Snippet = "Move straight to the earliest practical delivery window.",
+                            CitationLabel = "Playbook",
+                            SourceSection = "Urgent deliveries",
+                            Rank = 1,
+                            MatchedEvidence =
+                            [
+                                new KnowledgeCardMatchedEvidence
+                                {
+                                    Kind = "translated_phrase",
+                                    TranscriptText = "No tenemos propano",
+                                    NormalizedText = "We do not have propane",
+                                    MatchedKnowledgeText = "out of propane",
+                                    Locale = "es-US"
+                                }
+                            ]
+                        }
+                    ]
+                }
+            },
             "/api/mission-control/health" => new MissionControlHealthResponse
             {
                 OverallStatus = "degraded",
@@ -411,6 +451,7 @@ file sealed class SuccessfulEmptyPipelineHandler : HttpMessageHandler
             "/api/events/transcript" => Array.Empty<TranscriptEvent>(),
             "/api/events/translation" => Array.Empty<TranslationEvent>(),
             "/api/events/sentiment" => new SentimentFeedResponse(),
+            "/api/events/knowledge-cards" => Array.Empty<KnowledgeCardEvent>(),
             "/api/mission-control/health" => new MissionControlHealthResponse(),
             _ => new { message = "ok" }
         };
@@ -448,6 +489,7 @@ file sealed class PartialFailurePipelineHandler : HttpMessageHandler
             },
             "/api/events/translation" => Array.Empty<TranslationEvent>(),
             "/api/events/sentiment" => new SentimentFeedResponse(),
+            "/api/events/knowledge-cards" => Array.Empty<KnowledgeCardEvent>(),
             "/api/mission-control/health" => new MissionControlHealthResponse(),
             _ => new { message = "ok" }
         };

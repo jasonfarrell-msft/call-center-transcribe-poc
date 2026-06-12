@@ -346,9 +346,12 @@ public sealed class SpeechTranscriptionService : BackgroundService
                 translatorRegion,
                 translatorTargetLanguage);
 
-            _ = PublishReasoningAsync(
-                group,
-                transcriptEvent);
+            if (isCustomer)
+            {
+                _ = PublishReasoningAsync(
+                    group,
+                    transcriptEvent);
+            }
 
             _logger.LogInformation(
                 "SpeechTranscriptionService: FINAL utterance seq={Seq} callId={CallId} speaker={SpeakerId} isCustomer={IsCustomer} language={Language} text=\"{Text}\"",

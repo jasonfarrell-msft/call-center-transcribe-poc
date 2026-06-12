@@ -1,0 +1,428 @@
+{
+  "schema_version": "1.0",
+  "artifact_type": "demo_retrieval_expectations",
+  "artifact_id": "propane-agent-assist-demo-trigger-expectations-v1",
+  "script_artifact_path": "samples/agent-assist-demo-scripts.v1.json",
+  "knowledge_corpus_path": "src/CallCenterTranscription.Ai/Knowledge/synthetic-agent-assist-knowledge.v1.jsonl",
+  "human_note": "Demo-only retrieval expectations for the scripted propane conversations. Customer turns drive surfacing; matched evidence should stay short and explainable instead of replaying whole transcript turns.",
+  "trigger_rules": {
+    "customer_turns_only": true,
+    "max_cards_per_turn": 2,
+    "matched_evidence_excerpt_max_chars": 80,
+    "translation_rule": "When the customer turn is non-English, keep the original customer text excerpt and include normalizedText for the translated/normalized evidence shown to the rep or used by backend scoring.",
+    "ranking_rule": "When two cards match the same turn, emit the operationally urgent or primary customer intent first and the supporting card second."
+  },
+  "minimal_event_shape": {
+    "stream": "stream.knowledgeCards",
+    "compatibility_note": "Build on the current KnowledgeCardEvent/KnowledgeCard contract by adding citation metadata, rank, and matchedEvidence per card; do not implement retrieval logic in this artifact.",
+    "top_level_fields": [
+      {
+        "field": "callId",
+        "purpose": "Primary call partition key."
+      },
+      {
+        "field": "eventId",
+        "purpose": "Immutable event identifier for the knowledge-card emission."
+      },
+      {
+        "field": "eventType",
+        "purpose": "Keep value knowledge_cards for contract consistency."
+      },
+      {
+        "field": "timestampUtc",
+        "purpose": "Emission time for timeline ordering."
+      },
+      {
+        "field": "sequence",
+        "purpose": "Monotonic per-stream order within the call."
+      },
+      {
+        "field": "utteranceId",
+        "purpose": "Links the card emission to the customer utterance window that triggered it."
+      },
+      {
+        "field": "relatedTranscriptEventId",
+        "purpose": "Direct transcript correlation for replay and debugging."
+      },
+      {
+        "field": "relatedTranscriptSequence",
+        "purpose": "Transcript-order correlation when event IDs are not enough."
+      },
+      {
+        "field": "source",
+        "purpose": "Emitter identity such as demo_trigger_matcher."
+      },
+      {
+        "field": "cards",
+        "purpose": "Ranked knowledge cards to display for the turn."
+      }
+    ],
+    "card_fields": [
+      {
+        "field": "id",
+        "purpose": "Stable knowledge item ID from the JSONL corpus."
+      },
+      {
+        "field": "title",
+        "purpose": "Rep-visible card title."
+      },
+      {
+        "field": "snippet",
+        "purpose": "Short answer/guidance text shown in the UI."
+      },
+      {
+        "field": "sourceUrl",
+        "purpose": "Portable source URI carried through from the corpus."
+      },
+      {
+        "field": "citationLabel",
+        "purpose": "Rep-visible provenance label even when sourceUrl is synthetic://."
+      },
+      {
+        "field": "sourceSection",
+        "purpose": "Human-readable playbook section for trust and debugging."
+      },
+      {
+        "field": "rank",
+        "purpose": "Display order for multi-card turns."
+      },
+      {
+        "field": "matchedEvidence",
+        "purpose": "Minimal evidence snippets that explain why the card surfaced."
+      }
+    ],
+    "matched_evidence_fields": [
+      {
+        "field": "kind",
+        "purpose": "Why this evidence matched: trigger_phrase, keyword, translated_phrase, or translated_keyword."
+      },
+      {
+        "field": "transcriptText",
+        "purpose": "Short excerpt from the customer utterance."
+      },
+      {
+        "field": "normalizedText",
+        "purpose": "Translated/normalized excerpt when the original text is non-English or noisy."
+      },
+      {
+        "field": "matchedKnowledgeText",
+        "purpose": "Trigger phrase or keyword from the knowledge item that fired."
+      },
+      {
+        "field": "locale",
+        "purpose": "Locale of the customer excerpt carried into the event."
+      }
+    ]
+  },
+  "scripts": [
+    {
+      "script_id": "demo-missed-delivery-bilingual-save",
+      "trigger_expectations": [
+        {
+          "turn_number": 2,
+          "speaker": "customer",
+          "utterance_excerpt": "You missed my delivery yesterday, and I took off work for that window.",
+          "expected_cards": [
+            {
+              "knowledge_item_id": "kb-delivery-missed-window-save",
+              "rank": 1,
+              "why_now": "Company-caused missed stop plus inconvenience/frustration should surface the recovery play immediately.",
+              "matched_evidence": [
+                {
+                  "kind": "trigger_phrase",
+                  "transcript_text": "missed my delivery yesterday",
+                  "normalized_text": "missed my delivery yesterday",
+                  "matched_knowledge_text": "you missed my delivery",
+                  "locale": "en-US"
+                },
+                {
+                  "kind": "trigger_phrase",
+                  "transcript_text": "I took off work for that window",
+                  "normalized_text": "I took off work for that window",
+                  "matched_knowledge_text": "I took off work for this",
+                  "locale": "en-US"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "turn_number": 3,
+          "speaker": "customer",
+          "utterance_excerpt": "Me llegó un volante de NorthStar Propane con un precio mucho más bajo, así que sí estoy pensando cambiarme.",
+          "expected_cards": [
+            {
+              "knowledge_item_id": "kb-competitor-price-save",
+              "rank": 1,
+              "why_now": "Spanish competitor-pricing mention should immediately surface the retention save card with translation-backed evidence.",
+              "matched_evidence": [
+                {
+                  "kind": "translated_phrase",
+                  "transcript_text": "me llegó un volante",
+                  "normalized_text": "I got a flyer",
+                  "matched_knowledge_text": "me llegó un volante más barato",
+                  "locale": "es-US"
+                },
+                {
+                  "kind": "translated_keyword",
+                  "transcript_text": "precio mucho más bajo",
+                  "normalized_text": "much lower price",
+                  "matched_knowledge_text": "precio más bajo",
+                  "locale": "es-US"
+                },
+                {
+                  "kind": "translated_keyword",
+                  "transcript_text": "NorthStar Propane",
+                  "normalized_text": "NorthStar Propane",
+                  "matched_knowledge_text": "northstar",
+                  "locale": "es-US"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "turn_number": 4,
+          "speaker": "customer",
+          "utterance_excerpt": "My winter bills keep jumping around. I need something steadier if I'm going to stay.",
+          "expected_cards": [
+            {
+              "knowledge_item_id": "kb-budget-billing-overview",
+              "rank": 1,
+              "why_now": "Billing volatility plus a request for steadier payments should surface budget billing before the rep responds.",
+              "matched_evidence": [
+                {
+                  "kind": "keyword",
+                  "transcript_text": "winter bills keep jumping around",
+                  "normalized_text": "winter bills keep jumping around",
+                  "matched_knowledge_text": "winter usage",
+                  "locale": "en-US"
+                },
+                {
+                  "kind": "trigger_phrase",
+                  "transcript_text": "I need something steadier",
+                  "normalized_text": "I need something steadier",
+                  "matched_knowledge_text": "I need steadier payments",
+                  "locale": "en-US"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "script_id": "demo-low-tank-auto-delivery-conversion",
+      "trigger_expectations": [
+        {
+          "turn_number": 2,
+          "speaker": "customer",
+          "utterance_excerpt": "My gauge is down to 15 percent, and I really do not want to run out before the weekend.",
+          "expected_cards": [
+            {
+              "knowledge_item_id": "kb-low-tank-not-empty-guidance",
+              "rank": 1,
+              "why_now": "Low-but-not-empty urgency is the primary intent and should surface immediately.",
+              "matched_evidence": [
+                {
+                  "kind": "trigger_phrase",
+                  "transcript_text": "down to 15 percent",
+                  "normalized_text": "down to 15 percent",
+                  "matched_knowledge_text": "I'm down to 15 percent",
+                  "locale": "en-US"
+                },
+                {
+                  "kind": "trigger_phrase",
+                  "transcript_text": "do not want to run out",
+                  "normalized_text": "do not want to run out",
+                  "matched_knowledge_text": "I don't want to run out",
+                  "locale": "en-US"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "turn_number": 3,
+          "speaker": "customer",
+          "utterance_excerpt": "The storm pushed my last stop back, so I need to know whether Friday morning is really available or if I should expect another delay.",
+          "expected_cards": [
+            {
+              "knowledge_item_id": "kb-weather-delay-delivery-update",
+              "rank": 1,
+              "why_now": "Operational delay anxiety is primary because the customer is asking whether the route changed again.",
+              "matched_evidence": [
+                {
+                  "kind": "keyword",
+                  "transcript_text": "The storm pushed my last stop back",
+                  "normalized_text": "The storm pushed my last stop back",
+                  "matched_knowledge_text": "storm",
+                  "locale": "en-US"
+                },
+                {
+                  "kind": "keyword",
+                  "transcript_text": "expect another delay",
+                  "normalized_text": "expect another delay",
+                  "matched_knowledge_text": "route delay",
+                  "locale": "en-US"
+                }
+              ]
+            },
+            {
+              "knowledge_item_id": "kb-delivery-scheduling-window-request",
+              "rank": 2,
+              "why_now": "The same utterance also asks for a concrete delivery window, so the scheduling card should appear as supporting guidance.",
+              "matched_evidence": [
+                {
+                  "kind": "trigger_phrase",
+                  "transcript_text": "whether Friday morning is really available",
+                  "normalized_text": "whether Friday morning is really available",
+                  "matched_knowledge_text": "can you schedule it for Friday morning",
+                  "locale": "en-US"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "turn_number": 5,
+          "speaker": "customer",
+          "utterance_excerpt": "What's the difference between will-call and keep-full again?",
+          "expected_cards": [
+            {
+              "knowledge_item_id": "kb-auto-delivery-vs-will-call",
+              "rank": 1,
+              "why_now": "The customer explicitly asks for plan comparison and signals fatigue with gauge monitoring.",
+              "matched_evidence": [
+                {
+                  "kind": "trigger_phrase",
+                  "transcript_text": "What's the difference",
+                  "normalized_text": "What's the difference",
+                  "matched_knowledge_text": "what's the difference",
+                  "locale": "en-US"
+                },
+                {
+                  "kind": "keyword",
+                  "transcript_text": "will-call and keep-full",
+                  "normalized_text": "will-call and keep-full",
+                  "matched_knowledge_text": "keep full",
+                  "locale": "en-US"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "script_id": "demo-renewal-rate-hardship-save",
+      "trigger_expectations": [
+        {
+          "turn_number": 2,
+          "speaker": "customer",
+          "utterance_excerpt": "My renewal notice came in higher than last year, and if this is the new rate I may need to leave.",
+          "expected_cards": [
+            {
+              "knowledge_item_id": "kb-contract-renewal-rate-increase",
+              "rank": 1,
+              "why_now": "Renewal-price objection is the primary intent and should surface before the rep defends pricing.",
+              "matched_evidence": [
+                {
+                  "kind": "keyword",
+                  "transcript_text": "renewal notice",
+                  "normalized_text": "renewal notice",
+                  "matched_knowledge_text": "renewal notice",
+                  "locale": "en-US"
+                },
+                {
+                  "kind": "trigger_phrase",
+                  "transcript_text": "higher than last year",
+                  "normalized_text": "higher than last year",
+                  "matched_knowledge_text": "my renewal is higher",
+                  "locale": "en-US"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "turn_number": 3,
+          "speaker": "customer",
+          "utterance_excerpt": "I also cannot pay this whole balance today. Winter hit us hard, so I need a little more time and something steadier going forward.",
+          "expected_cards": [
+            {
+              "knowledge_item_id": "kb-payment-plan-hardship",
+              "rank": 1,
+              "why_now": "Immediate payment hardship is the urgent operational need and should rank ahead of future billing stability.",
+              "matched_evidence": [
+                {
+                  "kind": "trigger_phrase",
+                  "transcript_text": "cannot pay this whole balance today",
+                  "normalized_text": "cannot pay this whole balance today",
+                  "matched_knowledge_text": "I can't pay all of this today",
+                  "locale": "en-US"
+                },
+                {
+                  "kind": "trigger_phrase",
+                  "transcript_text": "need a little more time",
+                  "normalized_text": "need a little more time",
+                  "matched_knowledge_text": "I need more time",
+                  "locale": "en-US"
+                }
+              ]
+            },
+            {
+              "knowledge_item_id": "kb-budget-billing-overview",
+              "rank": 2,
+              "why_now": "The same turn asks for steadier future payments, so budget billing should appear as the supporting option.",
+              "matched_evidence": [
+                {
+                  "kind": "trigger_phrase",
+                  "transcript_text": "something steadier going forward",
+                  "normalized_text": "something steadier going forward",
+                  "matched_knowledge_text": "I need steadier payments",
+                  "locale": "en-US"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "turn_number": 5,
+          "speaker": "customer",
+          "utterance_excerpt": "If there is a loyalty option on the renewal and I can split the balance that way, I'd rather stay than move the account.",
+          "expected_cards": [
+            {
+              "knowledge_item_id": "kb-contract-renewal-rate-increase",
+              "rank": 1,
+              "why_now": "The customer is still negotiating the renewal itself, so the renewal guidance stays primary.",
+              "matched_evidence": [
+                {
+                  "kind": "keyword",
+                  "transcript_text": "loyalty option on the renewal",
+                  "normalized_text": "loyalty option on the renewal",
+                  "matched_knowledge_text": "renewal notice",
+                  "locale": "en-US"
+                }
+              ]
+            },
+            {
+              "knowledge_item_id": "kb-payment-plan-hardship",
+              "rank": 2,
+              "why_now": "Balance-splitting remains active in the same utterance and should stay visible as the closing support card.",
+              "matched_evidence": [
+                {
+                  "kind": "trigger_phrase",
+                  "transcript_text": "split the balance",
+                  "normalized_text": "split the balance",
+                  "matched_knowledge_text": "can you split the balance",
+                  "locale": "en-US"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

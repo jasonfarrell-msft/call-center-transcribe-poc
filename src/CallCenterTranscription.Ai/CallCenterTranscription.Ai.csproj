@@ -6,6 +6,11 @@
 
   <ItemGroup>
     <EmbeddedResource Include="Knowledge\synthetic-knowledge.v1.json" />
+    <EmbeddedResource Include="Knowledge\synthetic-agent-assist-knowledge.v1.jsonl" />
+    <EmbeddedResource Include="..\..\samples\agent-assist-demo-scripts.v1.json" Link="Samples\agent-assist-demo-scripts.v1.json" />
+    <EmbeddedResource Include="..\..\samples\agent-assist-demo-trigger-expectations.v1.json" Link="Samples\agent-assist-demo-trigger-expectations.v1.json" />
+    <None Include="Knowledge\synthetic-agent-assist-knowledge.schema.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="Knowledge\synthetic-agent-assist-knowledge.v1.jsonl" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <PropertyGroup>

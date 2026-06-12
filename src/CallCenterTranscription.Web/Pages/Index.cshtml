@@ -262,10 +262,12 @@
 
                     <section class="card-shell assist-panel" aria-labelledby="knowledge-heading" data-live-knowledge-panel>
                         <div class="panel-header panel-header--stacked">
-                            <h2 id="knowledge-heading">Knowledge cards</h2>
-                            <p class="panel-copy">Relevant snippets update as the call evolves.</p>
+                            <div>
+                                <h2 id="knowledge-heading">Knowledge guidance</h2>
+                                <p class="panel-copy">Relevant playbook guidance updates as the call evolves.</p>
+                            </div>
                         </div>
-                        <p class="console-empty-state" data-live-knowledge-empty>Waiting for knowledge cards.</p>
+                        <p class="console-empty-state" data-live-knowledge-empty>Waiting for knowledge guidance.</p>
                         <ul class="assist-list" data-live-knowledge-list hidden></ul>
                     </section>
 
@@ -327,6 +329,110 @@
                             {
                                 <p class="sentiment-summary">@Model.Sentiment.SummaryText</p>
                             }
+                        }
+                    </section>
+
+                    <section class="card-shell assist-panel" aria-labelledby="knowledge-heading">
+                        <div class="panel-header panel-header--stacked">
+                            <div>
+                                <h2 id="knowledge-heading">Knowledge guidance</h2>
+                                <p class="panel-copy">Cards are grouped by customer turn so the scripted save path is easy to demo.</p>
+                            </div>
+                        </div>
+
+                        @if (!string.IsNullOrWhiteSpace(Model.KnowledgeWarning))
+                        {
+                            <p class="console-empty-state">@Model.KnowledgeWarning</p>
+                        }
+                        else if (Model.KnowledgeGuidance.Count == 0)
+                        {
+                            <p class="console-empty-state">Waiting for knowledge guidance.</p>
+                        }
+                        else
+                        {
+                            <ol class="assist-event-list" aria-label="Knowledge guidance timeline">
+                                @foreach (var guidance in Model.KnowledgeGuidance)
+                                {
+                                    <li class="assist-event">
+                                        <div class="assist-event-topline">
+                                            <p class="assist-event-kicker">@guidance.TurnLabel</p>
+                                            <time>@guidance.UpdatedDisplay</time>
+                                        </div>
+                                        @if (string.IsNullOrWhiteSpace(guidance.LanguageAttribute))
+                                        {
+                                            <p class="assist-event-utterance">@guidance.CustomerExcerpt</p>
+                                        }
+                                        else
+                                        {
+                                            <p class="assist-event-utterance" lang="@guidance.LanguageAttribute">@guidance.CustomerExcerpt</p>
+                                        }
+                                        <p class="assist-event-context">@guidance.LanguageLabel customer turn</p>
+
+                                        <ul class="assist-list">
+                                            @foreach (var card in guidance.Cards)
+                                            {
+                                                <li>
+                                                    <div class="assist-card-header">
+                                                        <strong>@card.Title</strong>
+                                                        @if (!string.IsNullOrWhiteSpace(card.RankLabel))
+                                                        {
+                                                            <span class="assist-rank">@card.RankLabel</span>
+                                                        }
+                                                    </div>
+
+                                                    @if (!string.IsNullOrWhiteSpace(card.Snippet))
+                                                    {
+                                                        <p class="assist-card-copy">@card.Snippet</p>
+                                                    }
+
+                                                    @if (!string.IsNullOrWhiteSpace(card.CitationLabel) || !string.IsNullOrWhiteSpace(card.SourceSection))
+                                                    {
+                                                        <p class="assist-card-meta">
+                                                            @if (!string.IsNullOrWhiteSpace(card.CitationLabel))
+                                                            {
+                                                                <span>@card.CitationLabel</span>
+                                                            }
+                                                            @if (!string.IsNullOrWhiteSpace(card.SourceSection))
+                                                            {
+                                                                <span>@card.SourceSection</span>
+                                                            }
+                                                        </p>
+                                                    }
+
+                                                    @if (card.Evidence.Count > 0)
+                                                    {
+                                                        <ul class="assist-evidence-list" aria-label="Matched evidence">
+                                                            @foreach (var evidence in card.Evidence)
+                                                            {
+                                                                <li>
+                                                                    <span class="assist-evidence-kind">@evidence.KindLabel</span>
+                                                                    <span class="assist-evidence-detail">
+                                                                        “@evidence.TranscriptText”
+                                                                        @if (evidence.HasNormalizedText)
+                                                                        {
+                                                                            <text> → “@evidence.NormalizedText”</text>
+                                                                        }
+                                                                        @if (!string.IsNullOrWhiteSpace(evidence.MatchedKnowledgeText))
+                                                                        {
+                                                                            <text> matched “@evidence.MatchedKnowledgeText”</text>
+                                                                        }
+                                                                    </span>
+                                                                </li>
+                                                            }
+                                                        </ul>
+                                                    }
+
+                                                    @if (Uri.TryCreate(card.SourceUrl, UriKind.Absolute, out var sourceUri)
+                                                        && (sourceUri.Scheme == Uri.UriSchemeHttp || sourceUri.Scheme == Uri.UriSchemeHttps))
+                                                    {
+                                                        <a class="assist-source-link" href="@sourceUri" target="_blank" rel="noopener noreferrer">View source</a>
+                                                    }
+                                                </li>
+                                            }
+                                        </ul>
+                                    </li>
+                                }
+                            </ol>
                         }
                     </section>
                 }

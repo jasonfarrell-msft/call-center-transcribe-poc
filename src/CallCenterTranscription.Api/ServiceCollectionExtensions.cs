@@ -29,6 +29,7 @@ public static class ServiceCollectionExtensions
         services.AddSignalR();
         services.AddHttpClient();
         services.Configure<ReasoningOptions>(configuration.GetSection("Reasoning"));
+        services.AddSingleton<DemoAssistMatcher>();
         services.AddSingleton<MockReasoningClient>();
         services.AddSingleton<AzureAiFoundryReasoningClient>();
         services.AddSingleton<IReasoningClient, ConfiguredReasoningClient>();

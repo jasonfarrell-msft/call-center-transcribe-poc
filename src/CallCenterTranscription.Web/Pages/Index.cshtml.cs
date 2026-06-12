@@ -40,6 +40,7 @@ public class IndexModel : PageModel
     public string? TranscriptWarning { get; private set; }
     public string? TranslationWarning { get; private set; }
     public string? SentimentWarning { get; private set; }
+    public string? KnowledgeWarning { get; private set; }
     public string? MissionControlWarning { get; private set; }
     public bool HasConnectionIssues => _connectionIssues.Count > 0;
     public IReadOnlyList<string> ConnectionIssues => _connectionIssues;
@@ -56,6 +57,7 @@ public class IndexModel : PageModel
         : "Waiting for call";
     public string FeedModeLabel => CurrentSession.IsMockFeedActive ? "Mock feed" : "Live feed";
     public SentimentPresentation Sentiment { get; private set; } = SentimentPresentation.Waiting;
+    public IReadOnlyList<KnowledgeGuidanceGroup> KnowledgeGuidance { get; private set; } = [];
 
     public async Task OnGetAsync()
     {
@@ -69,16 +71,28 @@ public class IndexModel : PageModel
         var currentSessionTask = LiveMode
             ? null
             : _pipelineApiClient.GetCurrentSessionAsync(cancellationToken);
-        var transcriptTask = _pipelineApiClient.GetTranscriptEventsAsync(cancellationToken);
-        var translationTask = _pipelineApiClient.GetTranslationEventsAsync(cancellationToken);
-        var sentimentTask = _pipelineApiClient.GetSentimentFeedAsync(cancellationToken);
-        var missionControlTask = _pipelineApiClient.GetMissionControlHealthAsync(cancellationToken);
+        var transcriptTask = LiveMode
+            ? Task.FromResult(ApiFetchResult<IReadOnlyList<TranscriptEvent>>.Success([]))
+            : _pipelineApiClient.GetTranscriptEventsAsync(cancellationToken);
+        var translationTask = LiveMode
+            ? Task.FromResult(ApiFetchResult<IReadOnlyList<TranslationEvent>>.Success([]))
+            : _pipelineApiClient.GetTranslationEventsAsync(cancellationToken);
+        var sentimentTask = LiveMode
+            ? Task.FromResult(ApiFetchResult<SentimentFeedResponse>.Success(new SentimentFeedResponse()))
+            : _pipelineApiClient.GetSentimentFeedAsync(cancellationToken);
+        var knowledgeTask = LiveMode
+            ? Task.FromResult(ApiFetchResult<IReadOnlyList<KnowledgeCardEvent>>.Success([]))
+            : _pipelineApiClient.GetKnowledgeCardEventsAsync(cancellationToken);
+        var missionControlTask = LiveMode
+            ? Task.FromResult(ApiFetchResult<MissionControlHealthResponse>.Success(new MissionControlHealthResponse()))
+            : _pipelineApiClient.GetMissionControlHealthAsync(cancellationToken);
 
-        await Task.WhenAll(transcriptTask, translationTask, sentimentTask, missionControlTask);
+        await Task.WhenAll(transcriptTask, translationTask, sentimentTask, knowledgeTask, missionControlTask);
 
         var transcriptResult = await transcriptTask;
         var translationResult = await translationTask;
         var sentimentResult = await sentimentTask;
+        var knowledgeResult = await knowledgeTask;
         var missionControlResult = await missionControlTask;
 
         if (currentSessionTask is not null)
@@ -114,6 +128,11 @@ public class IndexModel : PageModel
             new SentimentFeedResponse(),
             "sentiment feed",
             warning => SentimentWarning = warning);
+        var knowledgeEvents = ResolveResult(
+            knowledgeResult,
+            [],
+            "knowledge guidance",
+            warning => KnowledgeWarning = warning);
         MissionControlHealth = ResolveResult(
             missionControlResult,
             new MissionControlHealthResponse(),
@@ -122,6 +141,7 @@ public class IndexModel : PageModel
 
         TranscriptTimeline = BuildTranscriptTimeline(transcriptEvents, translationEvents);
         Sentiment = BuildSentimentPresentation(SentimentFeed);
+        KnowledgeGuidance = BuildKnowledgeGuidance(transcriptEvents, knowledgeEvents);
     }
 
     private static IReadOnlyList<TranscriptTimelineItem> BuildTranscriptTimeline(
@@ -223,6 +243,124 @@ public class IndexModel : PageModel
             ScoreStateLabel = GetSentimentScoreState(scorePercent),
             ScoreVisualClass = GetSentimentScoreVisualClass(scorePercent)
         };
+    }
+
+    private static IReadOnlyList<KnowledgeGuidanceGroup> BuildKnowledgeGuidance(
+        IReadOnlyList<TranscriptEvent> transcriptEvents,
+        IReadOnlyList<KnowledgeCardEvent> knowledgeEvents)
+    {
+        if (knowledgeEvents.Count == 0)
+        {
+            return [];
+        }
+
+        var transcriptByEventId = transcriptEvents
+            .Where(static evt => !string.IsNullOrWhiteSpace(evt.EventId))
+            .ToDictionary(static evt => evt.EventId, static evt => evt, StringComparer.OrdinalIgnoreCase);
+        var transcriptBySequence = transcriptEvents
+            .GroupBy(static evt => evt.Sequence)
+            .ToDictionary(static group => group.Key, static group => group.First());
+
+        var resolvedEvents = knowledgeEvents
+            .Select(knowledgeEvent =>
+            {
+                TranscriptEvent? relatedTranscript = null;
+                if (!string.IsNullOrWhiteSpace(knowledgeEvent.RelatedTranscriptEventId))
+                {
+                    transcriptByEventId.TryGetValue(knowledgeEvent.RelatedTranscriptEventId, out relatedTranscript);
+                }
+
+                if (relatedTranscript is null && knowledgeEvent.RelatedTranscriptSequence is long relatedSequence)
+                {
+                    transcriptBySequence.TryGetValue(relatedSequence, out relatedTranscript);
+                }
+
+                var groupingKey = !string.IsNullOrWhiteSpace(relatedTranscript?.EventId)
+            ? relatedTranscript.EventId
+            : knowledgeEvent.RelatedTranscriptSequence is long relatedSequenceValue
+                ? $"sequence:{relatedSequenceValue}"
+                : knowledgeEvent.EventId;
+
+                return new
+                {
+            GroupingKey = groupingKey,
+            Event = knowledgeEvent,
+            RelatedTranscript = relatedTranscript
+                };
+            })
+            .ToArray();
+
+        return resolvedEvents
+            .GroupBy(static item => item.GroupingKey, StringComparer.OrdinalIgnoreCase)
+            .OrderBy(group => group.Min(item => item.RelatedTranscript?.Sequence ?? item.Event.RelatedTranscriptSequence ?? long.MaxValue))
+            .ThenBy(group => group.Min(item => item.Event.Sequence))
+            .Select(group =>
+            {
+                var primaryItem = group
+            .OrderBy(item => item.Event.Sequence)
+            .ThenBy(item => item.Event.TimestampUtc)
+            .First();
+                var relatedTranscript = group.Select(item => item.RelatedTranscript).FirstOrDefault(static item => item is not null);
+                var excerpt = relatedTranscript?.Text;
+                if (string.IsNullOrWhiteSpace(excerpt))
+                {
+            excerpt = group
+                .SelectMany(item => item.Event.Cards)
+                .SelectMany(static card => card.MatchedEvidence)
+                .Select(static evidence => evidence.TranscriptText)
+                .FirstOrDefault(static text => !string.IsNullOrWhiteSpace(text));
+                }
+
+                var cards = group
+            .SelectMany(item => item.Event.Cards)
+            .GroupBy(card => string.IsNullOrWhiteSpace(card.Id) ? $"{card.Title}|{card.Snippet}" : card.Id, StringComparer.OrdinalIgnoreCase)
+            .Select(cardGroup => cardGroup
+                .OrderBy(static card => card.Rank <= 0 ? int.MaxValue : card.Rank)
+                .ThenBy(static card => card.Title, StringComparer.OrdinalIgnoreCase)
+                .First())
+            .OrderBy(static card => card.Rank <= 0 ? int.MaxValue : card.Rank)
+            .ThenBy(static card => card.Title, StringComparer.OrdinalIgnoreCase)
+            .Select(card => new KnowledgeGuidanceCard
+            {
+                Id = card.Id,
+                Title = string.IsNullOrWhiteSpace(card.Title) ? "Knowledge card" : card.Title,
+                Snippet = card.Snippet,
+                CitationLabel = card.CitationLabel,
+                SourceSection = card.SourceSection,
+                RankLabel = card.Rank > 0 ? $"Priority {card.Rank}" : string.Empty,
+                SourceUrl = card.SourceUrl,
+                Evidence = card.MatchedEvidence.Select(evidence => new KnowledgeGuidanceEvidence
+                {
+                    KindLabel = ToDisplayLabel(evidence.Kind),
+                    TranscriptText = evidence.TranscriptText,
+                    NormalizedText = evidence.NormalizedText,
+                    HasNormalizedText = !string.IsNullOrWhiteSpace(evidence.NormalizedText)
+                        && !string.Equals(
+                            evidence.TranscriptText?.Trim(),
+                            evidence.NormalizedText.Trim(),
+                            StringComparison.OrdinalIgnoreCase),
+                    MatchedKnowledgeText = evidence.MatchedKnowledgeText,
+                    LocaleLabel = GetLanguageLabel(evidence.Locale)
+                }).ToArray()
+            })
+            .ToArray();
+
+                return new KnowledgeGuidanceGroup
+                {
+            EventId = primaryItem.Event.EventId,
+            TurnLabel = relatedTranscript is not null
+                ? $"Customer turn {relatedTranscript.Sequence}"
+                : primaryItem.Event.RelatedTranscriptSequence is long sequence
+                    ? $"Customer turn {sequence}"
+                    : "Customer guidance",
+            CustomerExcerpt = string.IsNullOrWhiteSpace(excerpt) ? "Guidance surfaced without a captured customer excerpt." : excerpt,
+            LanguageAttribute = IsEnglish(relatedTranscript?.DetectedLanguage) ? string.Empty : NormalizeLanguageCode(relatedTranscript?.DetectedLanguage),
+            LanguageLabel = GetLanguageLabel(relatedTranscript?.DetectedLanguage),
+            UpdatedDisplay = group.Max(item => item.Event.TimestampUtc).ToLocalTime().ToString("h:mm:ss tt"),
+            Cards = cards
+                };
+            })
+            .ToArray();
     }
 
     private static string GetSentimentScoreState(int scorePercent)
@@ -420,5 +558,38 @@ public class IndexModel : PageModel
         public string UpdatedDisplay { get; init; } = "Waiting for call";
         public string ScoreStateLabel { get; init; } = "Awaiting sentiment";
         public string ScoreVisualClass { get; init; } = "sentiment-meter-bar sentiment-meter-bar--steady";
+    }
+
+    public sealed record KnowledgeGuidanceGroup
+    {
+        public string EventId { get; init; } = string.Empty;
+        public string TurnLabel { get; init; } = "Customer guidance";
+        public string CustomerExcerpt { get; init; } = string.Empty;
+        public string LanguageAttribute { get; init; } = string.Empty;
+        public string LanguageLabel { get; init; } = "Unknown";
+        public string UpdatedDisplay { get; init; } = string.Empty;
+        public IReadOnlyList<KnowledgeGuidanceCard> Cards { get; init; } = [];
+    }
+
+    public sealed record KnowledgeGuidanceCard
+    {
+        public string Id { get; init; } = string.Empty;
+        public string Title { get; init; } = "Knowledge card";
+        public string Snippet { get; init; } = string.Empty;
+        public string? CitationLabel { get; init; }
+        public string? SourceSection { get; init; }
+        public string RankLabel { get; init; } = string.Empty;
+        public string? SourceUrl { get; init; }
+        public IReadOnlyList<KnowledgeGuidanceEvidence> Evidence { get; init; } = [];
+    }
+
+    public sealed record KnowledgeGuidanceEvidence
+    {
+        public string KindLabel { get; init; } = "Match";
+        public string TranscriptText { get; init; } = string.Empty;
+        public string NormalizedText { get; init; } = string.Empty;
+        public bool HasNormalizedText { get; init; }
+        public string MatchedKnowledgeText { get; init; } = string.Empty;
+        public string LocaleLabel { get; init; } = "Unknown";
     }
 }

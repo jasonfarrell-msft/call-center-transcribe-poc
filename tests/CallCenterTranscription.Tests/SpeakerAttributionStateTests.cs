@@ -114,6 +114,38 @@ public sealed class SpeakerAttributionStateTests
         Assert.Equal("Guest-2", s.RepSpeakerId);
     }
 
+    [Fact]
+    public void Phase2B_NewSpeakerIdAfterBothSlotsLatched_IsAmbiguousAfterRepTurn()
+    {
+        var s = new SpeakerAttributionState();
+
+        s.Observe("Guest-1", repAccepted: true); // customer
+        s.Observe("Guest-2", repAccepted: true); // rep
+        s.Observe("Guest-2", repAccepted: true); // rep spoke most recently
+        var transition = s.Observe("Guest-3", repAccepted: true); // new diarization cluster
+
+        Assert.False(s.IsCustomer("Guest-3"), "new speaker after both slots are latched must remain ambiguous");
+        Assert.Null(transition);
+        Assert.Equal("Guest-1", s.CustomerSpeakerId);
+        Assert.Equal("Guest-2", s.RepSpeakerId);
+    }
+
+    [Fact]
+    public void Phase2B_NewSpeakerIdAfterBothSlotsLatched_IsAmbiguousAfterCustomerTurn()
+    {
+        var s = new SpeakerAttributionState();
+
+        s.Observe("Guest-1", repAccepted: true); // customer
+        s.Observe("Guest-2", repAccepted: true); // rep
+        s.Observe("Guest-1", repAccepted: true); // customer spoke most recently
+        var transition = s.Observe("Guest-4", repAccepted: true); // new diarization cluster
+
+        Assert.False(s.IsCustomer("Guest-4"), "new speaker after both slots are latched must remain ambiguous");
+        Assert.Null(transition);
+        Assert.Equal("Guest-1", s.CustomerSpeakerId);
+        Assert.Equal("Guest-2", s.RepSpeakerId);
+    }
+
     // ── Unknown / empty SpeakerIds must never be latched ─────────────────────────────────────
 
     [Fact]

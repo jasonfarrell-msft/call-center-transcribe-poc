@@ -24,3 +24,6 @@
 - **2026-06-11T15:36:11.935-04:00 — Synthetic answer dataset:** Added a service-agnostic JSONL format corpus at `src/CallCenterTranscription.Ai/Knowledge/synthetic-agent-assist-knowledge.v1.jsonl` so future search/RAG ingestion can index one standalone propane knowledge item per line.
 - **2026-06-11T15:36:11.935-04:00 — Record shape:** The dataset stays flat and retrieval-friendly with answer content plus rep-only fields like `rep_guidance`, `next_best_action`, `customer_intents`, and `trigger_phrases`; the companion schema lives at `src/CallCenterTranscription.Ai/Knowledge/synthetic-agent-assist-knowledge.schema.json`.
 - **2026-06-11T15:36:11.935-04:00 — User preference:** Keep synthetic CX data focused on realistic live-call answers for propane reps, not implementation wiring.
+
+- **2026-06-11T16:49:37.710-04:00 — Demo script packaging:** Added `samples/agent-assist-demo-scripts.v1.json` with three deterministic propane support conversations that map transcript turns to knowledge-card IDs and rep-visible guidance for implementation.
+- **2026-06-11T16:49:37.710-04:00 — Script design learning:** The cleanest agent-assist demo uses one broad retention save plus two narrower support flows, with primary knowledge triggers attached to customer turns and no more than one or two cards expected at once.

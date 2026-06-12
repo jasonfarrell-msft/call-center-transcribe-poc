@@ -48,3 +48,11 @@
 ### Test Results
 - `dotnet build` ✅ succeeded.
 - `dotnet test`: **76 pass, 0 fail, 3 skip** — all green.
+
+## 2026-06-11 — Demo assist UI for scripted conversations
+
+- **Requested by:** Jason
+- **What shipped:** The rep console now surfaces **knowledge guidance** in both modes: live SignalR rendering now shows rank, citation/source section, and matched evidence; scripted/mock mode now server-renders a grouped knowledge timeline by **customer turn** so the 3 approved demo scripts are immediately presentable without needing a live call.
+- **Important wiring note:** `KnowledgeCardEvent` is now consumed from `/api/events/knowledge-cards` for server-rendered scripted demos, while live mode keeps using `stream.knowledgeCards` and the same enriched card shape.
+- **State hygiene lesson:** For real-time side rails, transcript cleanup is not enough — sentiment and assist panels must also reset on pending/end/close/reconnect, and late events must be guarded by `callId` plus call-active state to avoid leaking prior-call guidance into the next conversation.
+- **Testing:** `WebConsoleTests` now verify scripted knowledge guidance loads with translated evidence, and `dotnet test --no-restore` stayed green (**113 total, 110 passed, 3 skipped**).

@@ -34,6 +34,11 @@ public sealed class PipelineApiClient(HttpClient httpClient, IOptions<BackendApi
         return await GetFromApiAsync<SentimentFeedResponse>("api/events/sentiment", cancellationToken);
     }
 
+    public async Task<ApiFetchResult<IReadOnlyList<KnowledgeCardEvent>>> GetKnowledgeCardEventsAsync(CancellationToken cancellationToken = default)
+    {
+        return await GetFromApiAsync<IReadOnlyList<KnowledgeCardEvent>>("api/events/knowledge-cards", cancellationToken);
+    }
+
     public async Task<ApiFetchResult<MissionControlHealthResponse>> GetMissionControlHealthAsync(CancellationToken cancellationToken = default)
     {
         return await GetFromApiAsync<MissionControlHealthResponse>("api/mission-control/health", cancellationToken);

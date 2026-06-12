@@ -35,6 +35,14 @@ namespace CallCenterTranscription.Api.Services;
 /// </summary>
 internal sealed class SpeakerAttributionState
 {
+    private enum Role
+    {
+        Customer,
+        Rep
+    }
+
+    private readonly Dictionary<string, Role> _roleBySpeakerId = new(StringComparer.Ordinal);
+
     /// <summary>Guest ID latched as the customer, or null if not yet resolved.</summary>
     public string? CustomerSpeakerId { get; private set; }
 
@@ -48,7 +56,7 @@ internal sealed class SpeakerAttributionState
     /// <param name="repAccepted">Current value of <see cref="ActiveCallStore.RepAccepted"/>.</param>
     /// <returns>
     /// A description string of the transition that occurred (for structured logging), or null if
-    /// the speaker was unknown / both slots were already latched.
+    /// the speaker was unknown, already attributed, or ambiguous after both slots were latched.
     /// </returns>
     public string? Observe(string? speakerId, bool repAccepted)
     {
@@ -57,11 +65,17 @@ internal sealed class SpeakerAttributionState
 
         var id = speakerId!;
 
+        if (_roleBySpeakerId.ContainsKey(id))
+        {
+            return null;
+        }
+
         if (CustomerSpeakerId is null)
         {
             // First observed known speaker is customer for this inbound call topology:
             // customer calls in first, rep joins second.
             CustomerSpeakerId = id;
+            _roleBySpeakerId[id] = Role.Customer;
             return repAccepted
                 ? $"customer latched POST-ACCEPT (call-order first) SpeakerId={id}"
                 : $"customer latched PRE-ACCEPT (definitive) SpeakerId={id}";
@@ -72,10 +86,14 @@ internal sealed class SpeakerAttributionState
         {
             // Second distinct known speaker is rep.
             RepSpeakerId = id;
+            _roleBySpeakerId[id] = Role.Rep;
             return $"rep latched (second distinct speaker) SpeakerId={id}";
         }
 
-        return null; // already fully resolved, or same-speaker repeat
+        // Once both slots are latched, a new diarization ID cannot be safely attributed. Treat it
+        // as ambiguous rather than guessing via turn-taking; this prevents rep speech from being
+        // routed into customer-only sentiment.
+        return null;
     }
 
     /// <summary>
@@ -85,7 +103,8 @@ internal sealed class SpeakerAttributionState
     public bool IsCustomer(string? speakerId) =>
         CustomerSpeakerId is not null &&
         IsSpeakerKnown(speakerId) &&
-        string.Equals(speakerId, CustomerSpeakerId, StringComparison.Ordinal);
+        _roleBySpeakerId.TryGetValue(speakerId!, out var role) &&
+        role == Role.Customer;
 
     /// <summary>Returns true if the SpeakerId is a clear attribution (not null/empty/"Unknown").</summary>
     public static bool IsSpeakerKnown(string? speakerId) =>

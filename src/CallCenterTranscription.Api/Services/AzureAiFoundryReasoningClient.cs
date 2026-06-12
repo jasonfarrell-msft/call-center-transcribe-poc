@@ -18,12 +18,14 @@ public sealed class AzureAiFoundryReasoningClient : IReasoningClient
     private readonly ReasoningOptions _options;
     private readonly TokenCredential _credential;
     private readonly ILogger<AzureAiFoundryReasoningClient> _logger;
+    private readonly DemoAssistMatcher _matcher;
 
     public AzureAiFoundryReasoningClient(
         IHttpClientFactory httpClientFactory,
         IOptions<ReasoningOptions> options,
-        ILogger<AzureAiFoundryReasoningClient> logger)
-        : this(httpClientFactory, options, logger, new DefaultAzureCredential())
+        ILogger<AzureAiFoundryReasoningClient> logger,
+        DemoAssistMatcher matcher)
+        : this(httpClientFactory, options, logger, new DefaultAzureCredential(), matcher)
     {
     }
 
@@ -31,40 +33,54 @@ public sealed class AzureAiFoundryReasoningClient : IReasoningClient
         IHttpClientFactory httpClientFactory,
         IOptions<ReasoningOptions> options,
         ILogger<AzureAiFoundryReasoningClient> logger,
-        TokenCredential credential)
+        TokenCredential credential,
+        DemoAssistMatcher matcher)
     {
         _httpClientFactory = httpClientFactory;
         _options = options.Value;
         _logger = logger;
         _credential = credential;
+        _matcher = matcher;
     }
 
     public async IAsyncEnumerable<IRealtimeEvent> ProcessTranscriptAsync(
         TranscriptEvent transcriptEvent,
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
+        if (!DemoAssistMatcher.IsCustomerTurn(transcriptEvent))
+        {
+            yield break;
+        }
+
         if (string.IsNullOrWhiteSpace(_options.FoundryChatCompletionsUrl))
         {
             throw new InvalidOperationException("Reasoning:FoundryChatCompletionsUrl must be set when Reasoning:Mode is Hybrid or Live.");
         }
 
-        var cards = KiraContentPack.Retrieve(transcriptEvent.Text, Math.Clamp(_options.MaxKnowledgeCards, 1, 3));
+        var match = _matcher.Match(transcriptEvent, Math.Clamp(_options.MaxKnowledgeCards, 1, 3));
+        if (!match.HasMatches)
+        {
+            yield break;
+        }
+
         var tokenRequest = new TokenRequestContext([_options.FoundryAudience]);
         var timeoutSeconds = Math.Clamp(_options.TimeoutSeconds, 3, 45);
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeoutCts.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds));
 
-        var content = await GenerateReasoningAsync(transcriptEvent, cards, tokenRequest, timeoutCts.Token).ConfigureAwait(false);
+        var content = await GenerateReasoningAsync(transcriptEvent, match.Matches, tokenRequest, timeoutCts.Token).ConfigureAwait(false);
         var parsed = ParseReasoning(content);
         var now = DateTimeOffset.UtcNow;
 
-        var groundingContext = string.Join("; ", cards.Select(card => card.Title));
-        var riskScore = Math.Clamp(parsed.RiskScore ?? 0.5, 0.01, 0.99);
+        var groundingContext = string.Join("; ", match.Matches.Select(card => card.KnowledgeItem.Title));
+        var fallbackChurn = match.CreateChurnRiskEvent("demo_trigger_matcher", now);
+        var riskScore = Math.Clamp(parsed.RiskScore ?? fallbackChurn.RiskScore, 0.01, 0.99);
         var riskLevel = NormalizeRiskLevel(parsed.RiskLevel, riskScore);
         var churnRationale = BuildRationale(parsed.Rationale, groundingContext);
 
-        var action = string.IsNullOrWhiteSpace(parsed.Action) ? cards[0].RecommendedAction : parsed.Action.Trim();
-        var confidence = Math.Clamp(parsed.Confidence ?? 0.6, 0.15, 0.99);
+        var fallbackAction = match.CreateNextBestActionEvent("demo_trigger_matcher", now);
+        var action = string.IsNullOrWhiteSpace(parsed.Action) ? fallbackAction.Action : parsed.Action.Trim();
+        var confidence = Math.Clamp(parsed.Confidence ?? fallbackAction.Confidence, 0.15, 0.99);
         var reasoning = BuildRationale(parsed.Reasoning, groundingContext);
 
         yield return new ChurnRiskEvent
@@ -82,17 +98,9 @@ public sealed class AzureAiFoundryReasoningClient : IReasoningClient
             Source = "azure-ai-foundry"
         };
 
-        yield return new KnowledgeCardEvent
+        yield return match.CreateKnowledgeCardEvent("azure-ai-foundry-grounded", now) with
         {
-            CallId = transcriptEvent.CallId,
-            EventId = $"evt-knowledge-card-live-{transcriptEvent.Sequence}",
-            Sequence = transcriptEvent.Sequence,
-            UtteranceId = transcriptEvent.UtteranceId,
-            RelatedTranscriptEventId = transcriptEvent.EventId,
-            RelatedTranscriptSequence = transcriptEvent.Sequence,
-            TimestampUtc = now,
-            Cards = KiraContentPack.ToKnowledgeCards(cards),
-            Source = "azure-ai-foundry-grounded"
+            EventId = $"evt-knowledge-card-live-{transcriptEvent.Sequence}"
         };
 
         yield return new NextBestActionEvent
@@ -113,7 +121,7 @@ public sealed class AzureAiFoundryReasoningClient : IReasoningClient
 
     private async Task<string> GenerateReasoningAsync(
         TranscriptEvent transcriptEvent,
-        IReadOnlyList<KiraContentPackEntry> cards,
+        IReadOnlyList<DemoAssistCardMatch> cards,
         TokenRequestContext tokenRequest,
         CancellationToken cancellationToken)
     {
@@ -179,7 +187,7 @@ public sealed class AzureAiFoundryReasoningClient : IReasoningClient
         return new Uri($"{raw}{separator}api-version={Uri.EscapeDataString(_options.FoundryApiVersion)}", UriKind.Absolute);
     }
 
-    private static string BuildPrompt(TranscriptEvent transcriptEvent, IReadOnlyList<KiraContentPackEntry> cards)
+    private static string BuildPrompt(TranscriptEvent transcriptEvent, IReadOnlyList<DemoAssistCardMatch> cards)
     {
         var sb = new StringBuilder();
         sb.AppendLine("Return strict JSON with this shape:");
@@ -195,7 +203,7 @@ public sealed class AzureAiFoundryReasoningClient : IReasoningClient
         sb.AppendLine("Grounding cards:");
         foreach (var card in cards)
         {
-            sb.AppendLine($"- [{card.Id}] {card.Title}: {card.Snippet}");
+            sb.AppendLine($"- [{card.KnowledgeItem.Id}] {card.KnowledgeItem.Title}: {card.KnowledgeItem.RepGuidance}");
         }
 
         return sb.ToString();

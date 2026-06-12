@@ -48,4 +48,34 @@ public sealed record KnowledgeCard
 
     [JsonPropertyName("sourceUrl")]
     public string? SourceUrl { get; init; }
+
+    [JsonPropertyName("citationLabel")]
+    public string? CitationLabel { get; init; }
+
+    [JsonPropertyName("sourceSection")]
+    public string? SourceSection { get; init; }
+
+    [JsonPropertyName("rank")]
+    public int Rank { get; init; }
+
+    [JsonPropertyName("matchedEvidence")]
+    public IReadOnlyList<KnowledgeCardMatchedEvidence> MatchedEvidence { get; init; } = [];
+}
+
+public sealed record KnowledgeCardMatchedEvidence
+{
+    [JsonPropertyName("kind")]
+    public string Kind { get; init; } = string.Empty;
+
+    [JsonPropertyName("transcriptText")]
+    public string TranscriptText { get; init; } = string.Empty;
+
+    [JsonPropertyName("normalizedText")]
+    public string NormalizedText { get; init; } = string.Empty;
+
+    [JsonPropertyName("matchedKnowledgeText")]
+    public string MatchedKnowledgeText { get; init; } = string.Empty;
+
+    [JsonPropertyName("locale")]
+    public string Locale { get; init; } = string.Empty;
 }

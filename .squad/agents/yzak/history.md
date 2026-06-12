@@ -71,3 +71,29 @@
 - **Integration verified.** `SpeechTranscriptionService.Transcribed` handler calls `attribution.Observe()` on every event, then `attribution.IsCustomer()` feeds into `BuildTranscriptEvent()` which sets `SpeakerRole = "customer" | "rep" | "unknown"`. Sentiment routing (`_liveSentiment.Append()`) is gated on `isCustomer == true`. No dead code paths.
 - **Residual known limitation (unchanged).** If the rep speaks first post-accept AND the customer was completely silent pre-accept, the rep gets labeled Customer. User confirmed this is not their flow. Demo-survivable.
 
+
+
+## Learnings — 2026-06-11T15:36:11.935-04:00 (Synthetic Answer Data Review)
+
+- **Verdict: APPROVE with targeted corrections applied.** Kira's new JSONL corpus already covered billing, emergency/safety, will-call vs keep-full, competitor churn, cancellation, fee waivers, delay updates, and minimum-delivery objections well enough for a live demo.
+- **Most obvious retrieval gap was Spanish competitor pricing.** The scripted retention call includes `"Además, me llegó un volante... precio mucho más bajo"`, but `kb-competitor-price-save` originally had English-only trigger coverage. I added Spanish trigger phrases/keywords plus `es-US` trigger locale so the demo utterance is no longer a lexical blind spot.
+- **Explicit delivery scheduling/reschedule coverage was missing.** Added `kb-delivery-scheduling-window-request` so reps now have live-call-safe language for `can you schedule it for Friday morning`, access-note handling, and no-fake-ETA guidance.
+- **Validation:** `dotnet test CallCenterTranscription.sln --nologo` passed before and after the data update (97 total, 94 pass, 3 skip, 0 fail). Secondary review agent verdict: approved, no blockers.
+
+## Learnings — 2026-06-11T16:42:31.815-04:00 (Rep Accept Latency Review)
+
+- **Verdict: APPROVE.** Meyrin's `EmitCallPendingAndTryAddRepAsync` fast-path is safe and correct. Dyakka's telephony analysis is sound.
+- **Key safety invariant preserved:** `ActiveCallStore.RepAccepted` (set only by `AddParticipantSucceeded` callback) remains the sole gate for transcription emission in `SpeechTranscriptionService`. The early `AddParticipant` attempt shortens time-to-ring but cannot bypass the accept gate.
+- **Stale-callback guard confirmed:** `IsCurrentActiveCall()` uses strict ordinal comparison of ACS call-connection IDs on both `AddParticipantSucceeded` and `AddParticipantFailed` handlers. A late-arriving callback from a previous call is silently dropped.
+- **Double-invite prevention:** `callStore.RepAdded` check (line 276) prevents the fast-path from re-inviting if `CallConnected` reconverge already succeeded — and vice versa via `TryBeginAddRep()` CAS latch.
+- **Test coverage:** 7 tests in `AcsEndpointsLatencyTests.cs` — ordering (pending before add), no-rep-registered path, fault resilience (add throws → pending still sent), and 4 `IsCurrentActiveCall` boundary cases (match, mismatch, empty active, empty callback).
+- **Residual latency is ACS-internal:** After `AddParticipant` fires, the time for ACS to deliver `incomingCall` to the browser Calling SDK is platform-controlled and not reducible from our code. User's observed ~8s includes this irreducible portion.
+- **Follow-up opportunity (non-blocking):** Reducing `/rep/register` heartbeat from 15s → 5s would shrink worst-case stale-registry delay when the fast-path fires before rep is registered.
+
+## Learnings — 2026-06-11T16:49:37.710-04:00 (Scripted Demo Validation)
+
+- **Verdict: APPROVE.** All three scripted demo conversations now prove the rep-facing knowledge path, not just raw transcript playback.
+- **Coverage added:** `DemoScriptedScenarioFeedTests` now validates every expected trigger turn across all 3 scripts (`demo-missed-delivery-bilingual-save`, `demo-low-tank-auto-delivery-conversion`, `demo-renewal-rate-hardship-save`) and checks exact knowledge item IDs, rank ordering, snippet/guidance payload, citation label, source section/URL, and matched-evidence metadata.
+- **Bilingual demo guard added:** The Spanish competitor-pricing turn is pinned to a translation-backed evidence assertion so the demo cannot silently regress to untranslated trigger metadata.
+- **Real bug found during QA and closed:** the scripted feed could emit an extra assist card on later customer turns because the matcher could still latch onto same-script expectation text after the intended turn. The feed now only emits assist events for customer turns whose script metadata explicitly expects knowledge IDs, keeping demo playback deterministic.
+- **Validation:** `dotnet test tests/CallCenterTranscription.Tests/CallCenterTranscription.Tests.csproj --nologo --no-restore --filter "DemoScriptedScenarioFeedTests|ReasoningClientTests"` passed (8/8). `dotnet test CallCenterTranscription.sln --nologo --no-restore` passed (116 total, 113 pass, 3 skip, 0 fail). Secondary review agent: no significant issues found.

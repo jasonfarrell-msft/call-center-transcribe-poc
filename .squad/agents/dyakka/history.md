@@ -66,6 +66,8 @@ Build clean, ready for customer-hangup teardown follow-up.
 ## Learnings
 
 - README Mermaid accuracy matters for ACS lifecycles: `AnswerCall` / `AddParticipant` are API → ACS actions, while mid-call callbacks are ACS → API webhooks.
+- 2026-06-11T16:42:31.815-04:00: Rep Accept UI latency is dominated by the path `AnswerCallAsync` → ACS `CallConnected` callback → `AddParticipantAsync` invite → browser `incomingCall` event. We already emit `stream.callPending` immediately after `AnswerCallAsync`; the Accept button itself cannot appear before the `incomingCall` SDK event.
+- 2026-06-11T16:42:31.815-04:00: Biggest avoidable delay risk is missing/stale `RepRegistry.CurrentUserId` at `CallConnected`, which defers invite until `/rep/register` heartbeat (15s cadence). Lowering heartbeat interval and/or adding an immediate post-answer add-rep attempt is the safest latency reduction path without violating the transcription-after-accept gate.
 
 ---
 
