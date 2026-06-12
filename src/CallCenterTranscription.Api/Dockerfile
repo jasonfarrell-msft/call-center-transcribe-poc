@@ -8,6 +8,7 @@ COPY ["src/CallCenterTranscription.Telephony/CallCenterTranscription.Telephony.c
 RUN dotnet restore "src/CallCenterTranscription.Api/CallCenterTranscription.Api.csproj"
 
 COPY src/ src/
+COPY samples/ samples/
 RUN dotnet publish "src/CallCenterTranscription.Api/CallCenterTranscription.Api.csproj" -c Release -o /app/publish /p:UseAppHost=false
 
 FROM mcr.microsoft.com/dotnet/aspnet:9.0 AS final

@@ -10,7 +10,6 @@
 - **2026-06-05 | Squad** — Real ACS is part of the final demo, with public callback/WebSocket endpoints on ACA and a fallback `MockAudioSource` for reliability.
 - **2026-06-05 | Squad** — ACS call topology is Option A: customer dials the ACS number, backend answers, starts media streaming, then adds the rep via `AddParticipant`; mixed audio is the POC starting point, with a Phase-2 spike to validate rep audio after join.
 - **2026-06-05 | Dyakka** — ACS dual-call/runbook work owns inbound answering, media streaming, rep join mechanics, and the repeatable demo script; Dyakka was hired mid-session to solve the two-party ACS path.
-
 - **2026-06-05 | Squad** — Two review passes ran this session and both returned APPROVE-WITH-CHANGES; the canonical plan was updated with the required fixes before archive merge.
 
 ## Archived Decision Records

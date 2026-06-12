@@ -9,6 +9,8 @@
 - **2026-06-12 | Yzak** — Rejected the first accept-answer refresh because `live-transcript.js` could reopen pending/Accept from any active `callId` without honoring answerability or accepted/mock state.
 - **2026-06-12 | Athrun** — Resync now reopens pending/Accept only when `/api/calls/active` reports `acceptAvailable`; accepted recovery also requires matching non-mock `/api/session/current-state` confirmation.
 - **2026-06-12 | Yzak** — Approved the revised accept-answer path after focused regressions and the full solution suite passed (133 total, 131 passed, 2 skipped, 0 failed).
+- **2026-06-12 | Meyrin** — API Docker publish must copy repo-root `samples/` into the build context because `CallCenterTranscription.Ai.csproj` embeds demo JSON resources from `../../samples/`.
+- **2026-06-12 | Yzak** — Approved the API Dockerfile `COPY samples/ samples/` fix after Release build/test passed and simulated `src/` + `samples/` publish succeeded; only a Docker-host build remains.
 - **2026-06-11 | Jason (Directive)** — Treat the inbound caller as the customer who joins first; the rep is the second participant added to the call.
 - **2026-06-11 | Athrun** — Next slice is wiring the synthetic agent-assist JSONL corpus into the existing `stream.knowledgeCards` path with deterministic trigger-phrase/keyword matching on customer utterances.
 - **2026-06-11 | Lacus** — Retrieval should score a short rolling window of recent customer turns and emit ranked, citation-backed guidance with matched signals and score metadata.
@@ -258,6 +260,173 @@ Approve the revised accept-answer/resync path for this gate.
 ## Team note
 - Keep the contract split explicit: `/api/calls/active` is authoritative for **answerable pending**, while accepted recovery must also satisfy `/api/session/current-state` agreement so mock/live mismatches cannot light up the softphone.
 
+# Meyrin — Release Build Fix
+
+- **Date:** 2026-06-12
+- **Area:** API container build / AI embedded resources
+- **Decision:** Keep the AI demo sample JSON files at the repo-root `samples/` location for now, and explicitly copy `samples/` into the API Docker build context before `dotnet publish`.
+- **Why:** `CallCenterTranscription.Ai.csproj` embeds `../../samples/agent-assist-demo-scripts.v1.json` and `../../samples/agent-assist-demo-trigger-expectations.v1.json`. Local solution builds succeed because those files exist in the repo checkout, but the API Dockerfile previously copied only `src/`, which caused containerized `dotnet publish` to fail with `CS1566` when ACR built the image.
+- **Implication:** Any future API container/Dockerfile refactor must preserve repo-root sample asset availability or relocate those resources into `src/CallCenterTranscription.Ai/` and update the project file.
+
+# Yzak — Release build review
+
+- **Date:** 2026-06-12
+- **Status:** APPROVE
+- **Requested by:** Jason
+
+## Decision
+- Approve Meyrin's Dockerfile fix that adds `COPY samples/ samples/` before the API publish step.
+
+## Why
+- `CallCenterTranscription.Ai.csproj` embeds demo-script resources from `../../samples/`.
+- The prior container build context copied only `src/`, so Release publish in that context fails with `CSC : error CS1566` on missing sample files.
+- Including `samples/` restores the expected publish context without touching runtime telephony logic.
+
+## Evidence
+- `dotnet build CallCenterTranscription.sln -c Release --nologo` ✅
+- `dotnet test CallCenterTranscription.sln -c Release --nologo --no-restore` ✅ (133 total, 131 passed, 2 skipped, 0 failed)
+- Simulated old Docker context (`src/` only) reproduced the failure:
+
+```text
+CSC : error CS1566: Error reading resource 'CallCenterTranscription.Ai.Samples.agent-assist-demo-scripts.v1.json'
+Could not find a part of the path '.../.qa-scratch-old/samples/agent-assist-demo-scripts.v1.json'.
+```
+
+- Simulated new Docker context (`src/` + `samples/`) made the same `dotnet publish src/CallCenterTranscription.Api/CallCenterTranscription.Api.csproj -c Release --nologo` succeed.
+
+## Caveat
+- Docker CLI is not installed in this QA environment, so the remaining release-gate command must run in CI or another Docker-capable host:
+
+```bash
+docker build -f src/CallCenterTranscription.Api/Dockerfile .
+```
+
+# Lacus Decision — Sentiment Update
+
+- **Date:** 2026-06-11T16:42:31.815-04:00
+- **Owner:** Lacus
+- **Scope:** Live diarization → customer sentiment routing
+
+## Decision
+
+Keep the accepted caller-order mapping for the first two distinct known speakers only:
+1. first known speaker = `Customer`
+2. second distinct known speaker = `Rep`
+
+After both slots are latched, treat any additional diarization speaker IDs as **ambiguous** and do not route them to customer sentiment.
+
+## Why
+
+Turn-taking fallback can misclassify rep alias IDs as customer and pollute the sentiment signal. For churn/next-step trust, a conservative no-update is safer than a confident wrong update.
+
+## Impact
+
+- Preserves customer-first call-order rule.
+- Preserves customer-only sentiment integrity.
+- Prevents late-call sentiment contamination from rep alias IDs.
+- Adds tests for ambiguous post-latch speaker IDs and sentiment non-movement.
+
+## Follow-up
+
+For production-quality late-call recovery, integrate deterministic participant identity from ACS (unmixed participant identity/correlation), then map aliases with evidence rather than heuristics.
+
+# Athrun Decision — Root README architecture framing
+
+- **Date:** 2026-06-10
+- **Owner:** Athrun
+- **Decision:** Reframe the root `README.md` as an architecture-facing overview for reviewers, using an explanation/reference mix rather than a scaffold or setup guide.
+
+## Why
+
+- The old README described the initial scaffold but not the current Azure system shape.
+- Reviewers need the live-path topology, POC boundaries, and Azure component roles faster than they need local setup detail.
+- The repo already holds deeper implementation docs under `docs/`; the root README should route people there instead of duplicating them.
+
+## Consequences
+
+- The README now centers on the Azure runtime split, logical flow, Mermaid architecture diagram, and a service table with caveats.
+- It explicitly states that SignalR is hosted inside the API app, not Azure SignalR Service.
+- It keeps production claims conservative: Event Grid delivery hardening, authorization detail, and full Foundry model deployment remain outside the README's claims.
+
+# Decision: RBAC Role Assignment GUID Seeds Must Include Principal ID
+
+- **Decision ID:** rbac-idempotency-fixer-role-assignment-guid-seeds
+- **Date:** 2026-06-06T16:36:28.287-04:00
+- **Requester:** Jason
+- **Revision Author:** rbac-idempotency-fixer
+
+## Context
+Security/deployment review rejected the prior revision because role assignment names were seeded with principal/resource names instead of principal IDs. This is not recovery-safe when managed identities are recreated and receive new principal IDs.
+
+## Decision
+1. Runtime role assignments in `infra/main.bicep` now use:
+   - `guid(scope.id, apiContainerApp.identity.principalId, roleDefinitionId)`
+2. `infra/modules/acr-pull-role-assignment.bicep` now seeds role assignment name with:
+   - `guid(registry.id, principalId, acrPullRoleDefinitionId)`
+3. The module parameter `principalName` is removed; callers pass only `principalId`.
+
+## Constraints Preserved
+- ACA **user-assigned** identity remains dedicated to ACR pulls.
+- ACA **system-assigned** identity remains dedicated to runtime Key Vault/Cognitive/ACS RBAC.
+- No secrets added.
+- No resource deletion.
+
+## Expected Outcome
+Role assignment resources become idempotent and recovery-safe across identity recreation events because GUID seeds now track the effective principal object ID.
+
+## Validation State
+- Bicep compile/build/test commands rerun in this revision.
+- Full `azure-validate` remains pending; deployment plan status is set to **Ready for Re-Validation**.
+
+- **Source:** `.squad/decisions/inbox/revision-engineer-deployment-readiness-fixes.md`
+
+# Decision: Split ACA identities (UAMI for ACR pull, system MI for runtime)
+
+- **Date:** 2026-06-06T16:30:27.949-04:00
+- **Requested by:** Jason
+- **Scope:** Azure Container Apps identity design for deployment recovery
+
+## Context
+`azd provision --no-prompt` previously stalled with `ca-api-cctrans-kdarok` in `InProgress` and no ready revision. The API Container App was configured with system-assigned identity for both runtime operations and ACR pulls, while also provisioning with a public placeholder image.
+
+## Decision
+1. Introduce a **user-assigned managed identity (UAMI)** in Sweden Central dedicated to ACR pulls.
+2. Configure API Container App identity as **`SystemAssigned,UserAssigned`**.
+3. Keep **runtime service-to-service RBAC** (Key Vault, Cognitive Services, ACS-later) on the API Container App **system-assigned** principal.
+4. Grant **`AcrPull`** at ACR scope to the **UAMI principal** only.
+5. Make ACA `registries` auth **conditional**:
+   - If `apiContainerImage` uses deployment ACR login server, bind `registries.identity` to UAMI resource ID.
+   - Otherwise (placeholder/public image), keep `registries` empty to avoid unnecessary auth wiring during bootstrap.
+
+## Why
+- Enforces least-privilege identity boundaries by separating runtime Azure access from container image pull auth.
+- Aligns with user directive and reduces risk of ACA revision readiness issues during placeholder-image provisioning.
+- Preserves safe bootstrap defaults (`apiContainerImage` placeholder and `enableApiHealthProbes=false`).
+
+## Implementation Notes
+- `infra/main.bicep` updated with:
+  - New `Microsoft.ManagedIdentity/userAssignedIdentities` resource for ACR pull.
+  - API Container App dual identity attachment.
+  - Conditional `registries` block using UAMI only for ACR-hosted images.
+  - AcrPull role assignment module invocation switched to UAMI principal.
+  - Outputs/manual post-provision guidance updated for identity split.
+- `infra/modules/acr-pull-role-assignment.bicep` retained as-is (already generic).
+
+## Recovery Guidance
+- Do **not** run `azd provision` until validation is rerun and deployment window is approved.
+- On next provision/deploy cycle, ensure API image reference is either:
+  - placeholder public image (no ACR registries binding), or
+  - `${ACR_LOGIN_SERVER}/api:<tag>` (registries uses UAMI for pull).
+
+## Validation Requirements
+- Required local checks after this change:
+  - `az bicep build --file infra/main.bicep --stdout`
+  - `dotnet build CallCenterTranscription.sln --nologo`
+  - `dotnet test CallCenterTranscription.sln --no-build --nologo`
+- `azure-validate` must be rerun before any `azure-deploy`.
+
+- **Source:** `.squad/decisions/inbox/lacus-swedencentral-ai-resource-floor.md`
+
 # 2026-06-11T16:42:31.815-04:00 — Rep Accept Latency (Caller Connected → Rep Prompt)
 **By:** Dyakka (ACS / Telephony)
 **Status:** Recommendation (no code change in this pass)
@@ -308,35 +477,6 @@ Approve the revised accept-answer/resync path for this gate.
 ## Outcome
 
 We can likely cut worst-case “connected → rep prompt” delay by removing deferred add-rep windows and tightening registration freshness, while strictly preserving: **transcription starts only after Rep accepts**.
-
-# Lacus Decision — Sentiment Update
-
-- **Date:** 2026-06-11T16:42:31.815-04:00
-- **Owner:** Lacus
-- **Scope:** Live diarization → customer sentiment routing
-
-## Decision
-
-Keep the accepted caller-order mapping for the first two distinct known speakers only:
-1. first known speaker = `Customer`
-2. second distinct known speaker = `Rep`
-
-After both slots are latched, treat any additional diarization speaker IDs as **ambiguous** and do not route them to customer sentiment.
-
-## Why
-
-Turn-taking fallback can misclassify rep alias IDs as customer and pollute the sentiment signal. For churn/next-step trust, a conservative no-update is safer than a confident wrong update.
-
-## Impact
-
-- Preserves customer-first call-order rule.
-- Preserves customer-only sentiment integrity.
-- Prevents late-call sentiment contamination from rep alias IDs.
-- Adds tests for ambiguous post-latch speaker IDs and sentiment non-movement.
-
-## Follow-up
-
-For production-quality late-call recovery, integrate deterministic participant identity from ACS (unmixed participant identity/correlation), then map aliases with evidence rather than heuristics.
 
 # 2026-06-11T16:42:31.815-04:00 — Rep Accept Prompt Latency Fast-Path
 **By:** Meyrin
@@ -1116,7 +1256,6 @@ The `/api/events/acs/callbacks` endpoint is `AllowAnonymous` — a pre-existing 
 ## Verdict
 
 **✅ APPROVE** — Implementation is correct, race-safe, R1-compliant, and resource-clean. The CAS teardown pattern is solid. Advisories are non-blocking for POC.
-
 
 ---
 
@@ -2215,24 +2354,6 @@ The customer speaker latch only fires in the `Transcribed` (final) handler. If t
 - `src/CallCenterTranscription.Web/wwwroot/js/rep-phone.js` — Lunamaria
 - `tests/CallCenterTranscription.Tests/RepCallControlTests.cs` — Yzak (new)
 
-# Athrun Decision — Root README architecture framing
-
-- **Date:** 2026-06-10
-- **Owner:** Athrun
-- **Decision:** Reframe the root `README.md` as an architecture-facing overview for reviewers, using an explanation/reference mix rather than a scaffold or setup guide.
-
-## Why
-
-- The old README described the initial scaffold but not the current Azure system shape.
-- Reviewers need the live-path topology, POC boundaries, and Azure component roles faster than they need local setup detail.
-- The repo already holds deeper implementation docs under `docs/`; the root README should route people there instead of duplicating them.
-
-## Consequences
-
-- The README now centers on the Azure runtime split, logical flow, Mermaid architecture diagram, and a service table with caveats.
-- It explicitly states that SignalR is hosted inside the API app, not Azure SignalR Service.
-- It keeps production claims conservative: Event Grid delivery hardening, authorization detail, and full Foundry model deployment remain outside the README's claims.
-
 # Decision: Remove Churn Risk and Next Best Action Cards from Agent-Assist Dashboard
 
 **Author:** Lunamaria (Frontend Dev)
@@ -2538,7 +2659,6 @@ The prior role choice ("Communication Services Contributor" / `2b4609a5-...`) wa
 
 ---
 
-
 ## The Change
 
 Changed the ACS data residency from `'Europe'` to `'United States'` in two places (both were authoritative):
@@ -2554,7 +2674,6 @@ A 7-line comment block was added above the param in `main.bicep` explaining the 
 
 ---
 
-
 ## Why This Change
 
 `dataLocation` is ACS's data residency setting. It controls which geographic phone number pools are available for purchase:
@@ -2567,7 +2686,6 @@ Jason's goal is a US toll-free number for the demo call center scenario. `'Unite
 **Note:** ACS `location` stays `'global'` — this is unchanged and unrelated to data residency.
 
 ---
-
 
 ## Recreate-on-Provision Implication
 
@@ -2582,7 +2700,6 @@ Jason's goal is a US toll-free number for the demo call center scenario. `'Unite
 The operator must delete the existing ACS resource manually before running `azd provision`. See operator steps below.
 
 ---
-
 
 ## RBAC — Unaffected
 
@@ -2600,20 +2717,17 @@ On re-provision after the resource is recreated:
 
 ---
 
-
 ## AudioSource__Mode — Unchanged
 
 `AudioSource__Mode = 'Mock'` on the ACA Container App env vars is unchanged. Live ACS audio activation remains deferred until the phone number and Event Grid subscription are provisioned.
 
 ---
 
-
 ## Bicep Build
 
 `az bicep build --file infra/main.bicep` — **0 errors, 0 warnings** after the change.
 
 ---
-
 
 ## Operator Steps (What Follows This Change)
 
@@ -2647,7 +2761,6 @@ These steps are for Jason or whoever runs provision — not implemented here, ju
 
 ---
 
-
 ## Deferred
 
 | Item | Status |
@@ -2665,7 +2778,6 @@ These steps are for Jason or whoever runs provision — not implemented here, ju
 **Status:** ✅ **APPROVE**
 
 ---
-
 
 ## Verification Summary
 
@@ -2750,7 +2862,6 @@ Operator steps are clearly documented, including:
 
 ---
 
-
 ## Final Verdict
 
 ### ✅ **APPROVE**
@@ -2768,7 +2879,6 @@ Operator steps are clearly documented, including:
 **Ready for:** `azd provision` after operator manually deletes the existing ACS resource (per documented steps).
 
 ---
-
 
 ## Next Steps (Post-Provision)
 
@@ -2790,13 +2900,11 @@ No risk of unintended in-place update failure; all preconditions met.
 
 ---
 
-
 ## Jason's Question
 
 > "Will it be possible to use American based numbers? We can deploy our Comm Service to East US or East US 2 if needed."
 
 ---
-
 
 ## 3. What Changes in Our Setup
 
@@ -2835,7 +2943,6 @@ Event Grid subscription is already deferred (TODO in Bicep). No impact — it wa
 
 ---
 
-
 ## 4. Recommendation for the POC
 
 **Keep building on mock for now (Option C, as chosen). When ready to go live, here is the path to a US number:**
@@ -2862,7 +2969,6 @@ Event Grid subscription is already deferred (TODO in Bicep). No impact — it wa
 
 ---
 
-
 ## 5. Open Items for Jason
 
 1. **Subscription eligibility check** — Go to the current ACS resource in the portal right now and attempt to search for US toll-free numbers (Phone Numbers → Get Phone Number). This will immediately tell you if the subscription can purchase numbers at all. This is the gating question.
@@ -2872,7 +2978,6 @@ Event Grid subscription is already deferred (TODO in Bicep). No impact — it wa
 3. **Toll-free vs. local number?** — Toll-free is strongly recommended for the demo (faster, no US address needed). But if the demo scenario requires a local number (area-code realism), that's possible with a US address and a short regulatory wait. Which do you prefer?
 
 ---
-
 
 ## Summary
 
@@ -2896,7 +3001,6 @@ Event Grid subscription is already deferred (TODO in Bicep). No impact — it wa
 **Files changed:** `infra/main.bicep`, `infra/modules/acr-pull-role-assignment.bicep`, `infra/main.parameters.json`
 
 ---
-
 
 ## Decision 1: ACS Data-Plane RBAC Role Assignment
 
@@ -2944,7 +3048,6 @@ This is an accepted known gap in Azure RBAC granularity for ACS at POC stage.
 
 ---
 
-
 ## Decision 2: minReplicas = 1 (Parameter)
 
 **Before:** `minReplicas: 0` (hardcoded in scale block)
@@ -2958,7 +3061,6 @@ This is an accepted known gap in Azure RBAC granularity for ACS at POC stage.
 
 ---
 
-
 ## Decision 3: AudioSource__Mode = Mock (Env Var)
 
 **Env var added:** `AudioSource__Mode = 'Mock'` on the ACA Container App.
@@ -2968,7 +3070,6 @@ This is an accepted known gap in Azure RBAC granularity for ACS at POC stage.
 **Activation path (next round):** Once the ACS phone number is provisioned and the Event Grid subscription is wired, flip this env var to `'Acs'` via ACA env var update. No image rebuild required.
 
 ---
-
 
 ## Deferred (Out of scope this round — per Athrun's sign-off)
 
@@ -2983,7 +3084,6 @@ This is an accepted known gap in Azure RBAC granularity for ACS at POC stage.
 
 ---
 
-
 ## Bicep Validation
 
 `az bicep build infra/main.bicep` — **0 errors, 0 warnings**.
@@ -2995,7 +3095,6 @@ This is an accepted known gap in Azure RBAC granularity for ACS at POC stage.
 **Status:** Inbox — awaiting Jason's steering decisions
 
 ---
-
 
 ## 3. Hard Prerequisites and Blockers
 
@@ -3018,7 +3117,6 @@ This is an accepted known gap in Azure RBAC granularity for ACS at POC stage.
 - ACS Call Automation + media streaming: billed per minute of call + per minute of media streaming; POC rehearsal costs are low.
 
 ---
-
 
 ## 4. Recommended Phased Plan
 
@@ -3058,7 +3156,6 @@ This is an accepted known gap in Azure RBAC granularity for ACS at POC stage.
 
 ---
 
-
 ## 5. Options for How Far to Go
 
 ### Option A — Full real PSTN inbound call (end-to-end)
@@ -3084,7 +3181,6 @@ Build the plumbing first (Option C). This unblocks Lacus + Meyrin and lets us re
 
 ---
 
-
 ## 6. Open Decisions Needed from Jason
 
 1. **Buy a Swedish PSTN number? (y/n)** — If yes, I need confirmation that the Azure subscription billing country is eligible for Swedish numbers. If no, do we go Option B (ACS web call) or Option C only?
@@ -3101,7 +3197,6 @@ Build the plumbing first (Option C). This unblocks Lacus + Meyrin and lets us re
 **Status:** Code Complete — Mock Stays Default
 
 ---
-
 
 ## What Was Built
 
@@ -3167,7 +3262,6 @@ AudioSource__Mode=Acs   → IAudioSource = AcsAudioSource   (live path)
 
 ---
 
-
 ## What Is DORMANT Until Live Flip
 
 Everything below is code-complete and sitting in the codebase but produces no real-world effect until the flip:
@@ -3178,7 +3272,6 @@ Everything below is code-complete and sitting in the codebase but produces no re
 - `CallAutomationClient` — Registered (when `Acs:Endpoint` configured) but never makes API calls.
 
 ---
-
 
 ## Config Flip to Go Live
 
@@ -3199,7 +3292,6 @@ That's the only app code change needed. Prerequisites (Meyrin + portal):
 
 ---
 
-
 ## Explicit Residual TODOs
 
 | Item | Owner | Status | Notes |
@@ -3215,7 +3307,6 @@ That's the only app code change needed. Prerequisites (Meyrin + portal):
 | Full ACS callback event handling | Dyakka (future) | ❌ Minimal (200 OK) | `CallConnected`, `MediaStreamingStarted` etc.; extend when needed |
 
 ---
-
 
 ## SDK Note (Azure.Communication.CallAutomation 1.5.1)
 
@@ -3244,7 +3335,6 @@ new MediaStreamingOptions(MediaStreamingAudioChannel.Mixed, StreamingTransport.W
 
 ---
 
-
 ## Context
 
 Jason selected **Option C**: build all ACS call-path plumbing (AcsAudioSource + IncomingCall webhook + media-streaming WebSocket route + DI config swap) and supporting Bicep infra (ACS data-plane RBAC, minReplicas), but keep audio mocked: DI default stays MockAudioSource, no PSTN number purchased, Event Grid subscription deferred until routes validated.
@@ -3252,7 +3342,6 @@ Jason selected **Option C**: build all ACS call-path plumbing (AcsAudioSource + 
 This document provides the binding architectural decisions that Dyakka (call-path code) and Meyrin (Bicep) must follow during implementation.
 
 ---
-
 
 ## Decision 1: ACS Data-Plane RBAC Role (Least-Privilege)
 
@@ -3298,7 +3387,6 @@ The existing module must be extended: add a `'communicationServices'` option to 
 
 ---
 
-
 ## Decision 2: Webhook Security for IncomingCall Endpoint
 
 **Pick:** SubscriptionValidationEvent handshake + schema validation. Entra-protected delivery auth deferred to the Event Grid wiring round.
@@ -3320,7 +3408,6 @@ This round, no Event Grid subscription exists and no phone number is provisioned
 5. **No `[AllowAnonymous]` on the route if `RequireAuth` is enabled globally** — instead, the ACS event routes (`/api/events/acs/*`) must be excluded from the JWT auth policy since Event Grid cannot present a JWT Bearer token (it uses its own delivery auth). Use a separate route group without the `AgentAssistAccess` policy requirement.
 
 ---
-
 
 ## Decision 3: Media-Streaming WebSocket Topology
 
@@ -3350,7 +3437,6 @@ For the POC:
 - **Do NOT** implement reconnect logic this round. A dropped stream in a POC rehearsal = restart the call. Document this as a known limitation.
 
 ---
-
 
 ## Decision 4: DI Swap Contract
 
@@ -3383,7 +3469,6 @@ The `AddCallCenterServices` method needs an `IConfiguration` parameter passed th
 **No rebuild required to swap** — environment variable `AudioSource__Mode=Acs` on the ACA Container App flips it. This matches the existing env-var injection pattern (`Security__RequireAuth`, `Acs__Endpoint`, etc.).
 
 ---
-
 
 ## Decision 5: Scope Guard — IN / OUT
 
@@ -3423,7 +3508,6 @@ The audio → Speech consumer service (the `IHostedService` that calls `audioSou
 
 ---
 
-
 ## Decision 6: SDK & Auth
 
 **Package:** `Azure.Communication.CallAutomation` — current GA version (add to `CallCenterTranscription.Telephony.csproj`)
@@ -3441,7 +3525,6 @@ The system-assigned managed identity on the ACA Container App authenticates auto
 
 ---
 
-
 ## VERDICT: ✅ APPROVE TO BUILD
 
 Dyakka and Meyrin may proceed with implementation using the decisions above as binding spec. Key guardrails:
@@ -3454,7 +3537,6 @@ Dyakka and Meyrin may proceed with implementation using the decisions above as b
 
 ---
 
-
 ## Sign-Off
 
 | Role | Agent | Verdict |
@@ -3466,14 +3548,12 @@ Dyakka and Meyrin may proceed with implementation using the decisions above as b
 **Author:** Meyrin (Backend Dev)
 **Status:** Implemented
 
-
 ## Context
 
 Two production issues were identified on `web-cctrans-kdarok.azurewebsites.net`:
 
 1. `/lib/bootstrap/…`, `/lib/jquery/…`, and `/lib/jquery-validation-unobtrusive/…` returned HTTP 404 because `wwwroot/lib/` contained only LICENSE files — no actual dist JS/CSS. No `libman.json` existed; the files were never restored before `dotnet publish`.
 2. HTML document responses (Razor Pages) carried no `Cache-Control` header, causing Edge and other browsers to cache the HTML heuristically and show stale UI after deploys. Fingerprinted CSS/JS assets were fine; only the HTML doc went stale.
-
 
 ## Decision 1 — /lib asset provisioning via libman (not committed vendor blobs)
 
@@ -3514,7 +3594,6 @@ A `run:` step — no new action, no new SHA pin needed — added between "Restor
 - `wwwroot/lib/jquery-validation/dist/jquery.validate.min.js` — 25 KB
 - `wwwroot/lib/jquery-validation-unobtrusive/dist/jquery.validate.unobtrusive.min.js` — 5.7 KB
 
-
 ## Decision 2 — HTML document Cache-Control: no-cache middleware
 
 **Chosen approach:** Inline `app.Use` middleware with an `OnStarting` callback in `Program.cs`.
@@ -3552,20 +3631,17 @@ Lib provisioning paths match _Layout + _ValidationScriptsPartial exactly; libman
 
 ---
 
-
 ## Context
 
 Mission Control was previously an in-page hidden `<section>` inside `Index.cshtml`, toggled visible by a JavaScript `setActiveView` function when the user clicked a "Mission Control →" nav button. Jason confirmed the layout looked good but requested that Mission Control become a proper separate page rather than an in-page toggle.
 
 ---
 
-
 ## Decision
 
 Promote Mission Control from a JS-toggled hidden section to a real Razor Page at `/MissionControl`.
 
 ---
-
 
 ## Rationale
 
@@ -3575,7 +3651,6 @@ Promote Mission Control from a JS-toggled hidden section to a real Razor Page at
 - **No added complexity:** Razor Pages tag helper `asp-page` does all routing. Zero new middleware, zero new JS.
 
 ---
-
 
 ## Implementation
 
@@ -3611,7 +3686,6 @@ Promote Mission Control from a JS-toggled hidden section to a real Razor Page at
 
 ---
 
-
 ## Trade-offs / Rejected alternatives
 
 - **Keep in-page toggle but use `<a>` with `event.preventDefault()`:** Rejected — adds JS complexity for zero benefit. Real routes are the right tool.
@@ -3619,7 +3693,6 @@ Promote Mission Control from a JS-toggled hidden section to a real Razor Page at
 - **Move `ToDisplayLabel` to a shared utility:** Reasonable refactor but out of scope for this task. Both IndexModel and MissionControlModel have their own copy; they're identical static functions. Can be extracted to a `DisplayHelpers` static class in a future cleanup pass.
 
 ---
-
 
 ## Build result
 
@@ -3635,18 +3708,15 @@ Promote Mission Control from a JS-toggled hidden section to a real Razor Page at
 
 ---
 
-
 ## Critical Issue
 
 **`site.js` line 275 — `translationButton` is undeclared (ReferenceError on every click).**
 
 The nav-toggle removal accidentally also deleted the `const translationButton = target.closest(translationToggleSelector);` line. The surviving reference to `translationButton` in the click handler now throws `ReferenceError` on every click event on BOTH pages. This completely breaks translation toggles on the Agent Console and spams console errors on MissionControl.
 
-
 ## Minor Issue
 
 **`site.js` line 101 — `case "transcript-scroller":` indentation is wrong** (shifted 8 spaces left vs. sibling cases after the nav-toggle case deletion). Cosmetic but should be fixed in the same pass.
-
 
 ## Passes
 
@@ -3658,7 +3728,6 @@ The nav-toggle removal accidentally also deleted the `const translationButton = 
 - ✓ No secrets, no new external assets
 - ✓ `aria-live` on transcript preserved; no AA contrast regression
 - ✓ PageModel namespace matches project convention
-
 
 ## Disposition
 
@@ -3730,13 +3799,11 @@ Assign fix to **Meyrin** (not Lunamaria — reviewer gate policy). Fix is surgic
 **Verdict:** ⛔ REQUEST CHANGES
 ---
 
-
 ## Summary
 
 The redesign is well-crafted: the dark live-call header, speaker-turn accents, design-token system, and responsive layout are all solid work. One blocking accessibility violation prevents approval. Everything else passes.
 
 ---
-
 
 ## BLOCKING ISSUE — WCAG AA Contrast Failure
 
@@ -3775,7 +3842,6 @@ Alternatively, add a second token (e.g. `--cc-text-subtle: #6b7280`, 4.83:1) for
 **Assigned to: Meyrin** (per gate rule — the original author Lunamaria may not self-revise)
 
 ---
-
 
 ## PASSING CRITERIA
 
@@ -3826,7 +3892,6 @@ All panels intact: live-call header, transcript feed, sentiment panel, mission c
 
 ---
 
-
 ## Nice-to-haves (non-blocking, post-fix)
 
 - The `.panel-copy` descriptor text ("Diarization stays inline…") switches to `--cc-text-secondary` via the grouped rule which is correct, but visually it may feel heavier than intended once the muted bug is fixed. Consider a medium-weight token (e.g. `--cc-text-subtle: #6b7280`) as a distinct "secondary-light" tier if the design calls for visual hierarchy between labels and body copy.
@@ -3834,11 +3899,9 @@ All panels intact: live-call header, transcript feed, sentiment panel, mission c
 
 ---
 
-
 ## Next action
 
 Meyrin to fix the `--cc-text-muted` light-surface contrast failure in `site.css` and return for a re-gate by Athrun.
-
 
 ## RE-GATE: Dashboard Redesign — Accessibility Fix Verification
 **Timestamp:** 2026-06-08T09:48:02.673-04:00
@@ -3885,13 +3948,11 @@ The accessibility fix is complete and correct. All WCAG AA 4.5:1 contrast requir
 
 ---
 
-
 ## Context
 
 The initial rep-console (`Index.cshtml`) shipped with solid semantics and a functional two-column layout, but the visual language was plain — uniform white cards, no speaker differentiation in the transcript, no live-call signal in the header, and a sentiment meter that didn't command immediate attention. The task was a visual redesign with no content changes.
 
 ---
-
 
 ## Research: Patterns from Real Agent-Desktop Products
 
@@ -3916,7 +3977,6 @@ A small animated dot (`.console-status::before`) pulses green while the call is 
 
 ---
 
-
 ## Decisions Made
 
 | Decision | Rationale |
@@ -3931,18 +3991,15 @@ A small animated dot (`.console-status::before`) pulses green while the call is 
 
 ---
 
-
 ## Files Changed
 
 - `src/CallCenterTranscription.Web/wwwroot/css/site.css` — complete token-based rewrite
 - `src/CallCenterTranscription.Web/Pages/Index.cshtml` — added `data-speaker-role` attribute to transcript `<li>` items
 
-
 ## Files Verified Unchanged (JS hooks intact)
 
 All `site.js` data-attribute selectors confirmed present in post-edit Index.cshtml:
 `data-console-refresh-root`, `data-console-refresh-region` (header/columns/mission), `data-console-nav-view`, `data-console-nav-toggle`, `data-translation-toggle`, `data-transcript-scroll`, `.mission-control-scroller`, `.translation-panel`, `#representative-view`, `#mission-control-view`.
-
 
 ## Build Result
 
@@ -3974,96 +4031,6 @@ Swapped `color: var(--cc-text-muted)` (#94a3b8, fails WCAG AA 4.5:1) → `color:
 - **Source evidence:** `azure.yaml`, `src/CallCenterTranscription.Web/CallCenterTranscription.Web.csproj`, `infra/main.bicep`, `README.md`, `.github/workflows/deploy-frontend.yml`
 
 - **Source:** `.squad/decisions/inbox/meyrin-azd-api-docker-context.md`
-
-# Decision: RBAC Role Assignment GUID Seeds Must Include Principal ID
-
-- **Decision ID:** rbac-idempotency-fixer-role-assignment-guid-seeds
-- **Date:** 2026-06-06T16:36:28.287-04:00
-- **Requester:** Jason
-- **Revision Author:** rbac-idempotency-fixer
-
-
-## Context
-Security/deployment review rejected the prior revision because role assignment names were seeded with principal/resource names instead of principal IDs. This is not recovery-safe when managed identities are recreated and receive new principal IDs.
-
-
-## Decision
-1. Runtime role assignments in `infra/main.bicep` now use:
-   - `guid(scope.id, apiContainerApp.identity.principalId, roleDefinitionId)`
-2. `infra/modules/acr-pull-role-assignment.bicep` now seeds role assignment name with:
-   - `guid(registry.id, principalId, acrPullRoleDefinitionId)`
-3. The module parameter `principalName` is removed; callers pass only `principalId`.
-
-
-## Constraints Preserved
-- ACA **user-assigned** identity remains dedicated to ACR pulls.
-- ACA **system-assigned** identity remains dedicated to runtime Key Vault/Cognitive/ACS RBAC.
-- No secrets added.
-- No resource deletion.
-
-
-## Expected Outcome
-Role assignment resources become idempotent and recovery-safe across identity recreation events because GUID seeds now track the effective principal object ID.
-
-
-## Validation State
-- Bicep compile/build/test commands rerun in this revision.
-- Full `azure-validate` remains pending; deployment plan status is set to **Ready for Re-Validation**.
-
-- **Source:** `.squad/decisions/inbox/revision-engineer-deployment-readiness-fixes.md`
-
-# Decision: Split ACA identities (UAMI for ACR pull, system MI for runtime)
-
-- **Date:** 2026-06-06T16:30:27.949-04:00
-- **Requested by:** Jason
-- **Scope:** Azure Container Apps identity design for deployment recovery
-
-
-## Context
-`azd provision --no-prompt` previously stalled with `ca-api-cctrans-kdarok` in `InProgress` and no ready revision. The API Container App was configured with system-assigned identity for both runtime operations and ACR pulls, while also provisioning with a public placeholder image.
-
-
-## Decision
-1. Introduce a **user-assigned managed identity (UAMI)** in Sweden Central dedicated to ACR pulls.
-2. Configure API Container App identity as **`SystemAssigned,UserAssigned`**.
-3. Keep **runtime service-to-service RBAC** (Key Vault, Cognitive Services, ACS-later) on the API Container App **system-assigned** principal.
-4. Grant **`AcrPull`** at ACR scope to the **UAMI principal** only.
-5. Make ACA `registries` auth **conditional**:
-   - If `apiContainerImage` uses deployment ACR login server, bind `registries.identity` to UAMI resource ID.
-   - Otherwise (placeholder/public image), keep `registries` empty to avoid unnecessary auth wiring during bootstrap.
-
-
-## Why
-- Enforces least-privilege identity boundaries by separating runtime Azure access from container image pull auth.
-- Aligns with user directive and reduces risk of ACA revision readiness issues during placeholder-image provisioning.
-- Preserves safe bootstrap defaults (`apiContainerImage` placeholder and `enableApiHealthProbes=false`).
-
-
-## Implementation Notes
-- `infra/main.bicep` updated with:
-  - New `Microsoft.ManagedIdentity/userAssignedIdentities` resource for ACR pull.
-  - API Container App dual identity attachment.
-  - Conditional `registries` block using UAMI only for ACR-hosted images.
-  - AcrPull role assignment module invocation switched to UAMI principal.
-  - Outputs/manual post-provision guidance updated for identity split.
-- `infra/modules/acr-pull-role-assignment.bicep` retained as-is (already generic).
-
-
-## Recovery Guidance
-- Do **not** run `azd provision` until validation is rerun and deployment window is approved.
-- On next provision/deploy cycle, ensure API image reference is either:
-  - placeholder public image (no ACR registries binding), or
-  - `${ACR_LOGIN_SERVER}/api:<tag>` (registries uses UAMI for pull).
-
-
-## Validation Requirements
-- Required local checks after this change:
-  - `az bicep build --file infra/main.bicep --stdout`
-  - `dotnet build CallCenterTranscription.sln --nologo`
-  - `dotnet test CallCenterTranscription.sln --no-build --nologo`
-- `azure-validate` must be rerun before any `azure-deploy`.
-
-- **Source:** `.squad/decisions/inbox/lacus-swedencentral-ai-resource-floor.md`
 
 # Revision Engineer — Deployment Readiness Fixes
 
@@ -4137,7 +4104,6 @@ Role assignment resources become idempotent and recovery-safe across identity re
 **Reviewer:** Yzak
 **Verdict:** REJECT
 
-
 ## What I reviewed
 
 - Established Squad decisions in `.squad/decisions.md`
@@ -4148,12 +4114,10 @@ Role assignment resources become idempotent and recovery-safe across identity re
   - `src/CallCenterTranscription.Web/Program.cs`
   - `tests/CallCenterTranscription.Tests/ApiWiringSmokeTests.cs`
 
-
 ## Bottom line
 
 The Azure direction itself is still fine: backend on Azure Container Apps, frontend on App Service, real ACS in the final demo, and mock audio as the fallback.
 What is **not** fine is pretending the deployment plan is ready. Right now it is just a placeholder checklist plus RG/region. That is nowhere near enough for a live-demo gate.
-
 
 ## Evidence behind the rejection
 
@@ -4178,7 +4142,6 @@ What is **not** fine is pretending the deployment plan is ready. Right now it is
 5. **Validation gates are incomplete.**
    - Current baseline is good: `dotnet build CallCenterTranscription.sln` passed and `dotnet test CallCenterTranscription.sln --no-build` passed (4/4).
    - But those only prove scaffold health. They do not prove Azure runtime readiness, managed identity access, public ingress behavior, or demo survivability.
-
 
 ## Required changes before this gets out of QA jail
 
@@ -4210,7 +4173,6 @@ What is **not** fine is pretending the deployment plan is ready. Right now it is
    - Minimum warm instances / anti-cold-start posture for the demo window
    - Logging/telemetry checkpoints needed to debug a failed rehearsal fast
    - Cost/budget note for ACS + AI service usage so the POC does not surprise-bill itself during repeated rehearsals
-
 
 ## Reviewer note
 

@@ -63,3 +63,11 @@
 - **Original blocker is closed.** The old `if (data && data.callId)` reopen path is gone, so accepted live calls and mock/scripted snapshots no longer regress into a fake pending/Accept state on reload or reconnect.
 - **Validation:** `dotnet test tests/CallCenterTranscription.Tests/CallCenterTranscription.Tests.csproj --nologo --no-restore --filter "RepCallControlTests|ApiHost_LiveMode_ExposesPendingCallStateBeforeAnyTranscript|ApiHost_LiveMode_ExposesAcceptedCallStateWithoutReopeningAccept|ApiHost_LiveMode_ExposesAcceptedCallStateEvenIfPendingWasMissed|ApiHost_MockMode_DoesNotExposeSyntheticPendingAcceptState|EmitCallPendingAsync_EmitsPendingEvent|IsCurrentActiveCall_MatchesOnlyExactActiveCallId"` passed (32 total, 30 pass, 2 skip, 0 fail). `dotnet test CallCenterTranscription.sln --nologo --no-restore` passed (133 total, 131 pass, 2 skip, 0 fail).
 - **QA learning:** for live-call resync, `/api/calls/active` alone is not a safe source of truth for accepted recovery; pair it with `/api/session/current-state` call-id + non-mock + state agreement before dispatching accepted UI.
+
+## Learnings — 2026-06-12T14:14:36.351-04:00 (Release build review)
+
+- **Verdict: APPROVE.** Meyrin's Dockerfile fix is the right deployment-build correction for the post-accept-state break.
+- **Root cause reproduced without Docker:** `CallCenterTranscription.Ai.csproj` embeds `../../samples/agent-assist-demo-scripts.v1.json` and `../../samples/agent-assist-demo-trigger-expectations.v1.json`; a source-only publish context fails with `CSC : error CS1566` because those files are absent.
+- **Fix path validated:** simulating the old Docker context (`src/` only) reproduced the missing-resource publish failure, and simulating the new context (`src/` + `samples/`) made `dotnet publish src/CallCenterTranscription.Api/CallCenterTranscription.Api.csproj -c Release --nologo` succeed.
+- **Release validation:** `dotnet build CallCenterTranscription.sln -c Release --nologo` succeeded and `dotnet test CallCenterTranscription.sln -c Release --nologo --no-restore` passed (133 total, 131 pass, 2 skip, 0 fail).
+- **Caveat:** Docker CLI is unavailable in this QA environment, so the final release gate still needs one real `docker build -f src/CallCenterTranscription.Api/Dockerfile .` run in CI or another Docker-capable environment.
